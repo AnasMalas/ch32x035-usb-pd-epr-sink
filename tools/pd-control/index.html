@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="theme-color" content="#17251f">
+    <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
+    <title>USB PD Control</title>
+    <link rel="stylesheet" href="styles.css">
+    <script src="app.js" defer></script>
+  </head>
+  <body>
+    <header class="app-bar">
+      <a class="brand" href="#top" aria-label="USB PD Control home">
+        <span class="brand-mark" aria-hidden="true">PD</span>
+        <span>
+          <strong>USB PD Control</strong>
+          <small>Programmable sink console</small>
+        </span>
+      </a>
+      <div class="connection-cluster">
+        <div class="connection-state" aria-live="polite">
+          <span id="connection-dot" class="status-dot"></span>
+          <span id="connection-label">Disconnected</span>
+        </div>
+        <button id="connect-button" class="button button-primary" type="button">Connect device</button>
+      </div>
+    </header>
+
+    <main id="top" class="page-shell">
+      <noscript>
+        <div class="notice notice-error">JavaScript is required to communicate with the USB PD controller.</div>
+      </noscript>
+      <div id="browser-notice" class="notice notice-error hidden" role="alert">
+        Web Serial is unavailable. Open this page in a current desktop version of Chrome or Edge over localhost.
+      </div>
+
+      <section class="hero panel">
+        <div>
+          <p class="eyebrow">Live device</p>
+          <h1>Power contract at a glance</h1>
+          <p id="device-description" class="subtle">Connect the running USB-console firmware to begin.</p>
+        </div>
+        <button id="safe-five-button" class="button button-safe" type="button" disabled>
+          Request safe 5 V
+        </button>
+      </section>
+
+      <section class="metric-grid" aria-label="Current power contract">
+        <article class="metric-card">
+          <span>Port state</span>
+          <strong id="port-state">Offline</strong>
+          <small id="port-detail">No serial connection</small>
+        </article>
+        <article class="metric-card metric-accent">
+          <span>Contract voltage</span>
+          <strong id="contract-voltage">—</strong>
+          <small id="contract-supply">No confirmed contract</small>
+        </article>
+        <article class="metric-card">
+          <span>Usable current</span>
+          <strong id="usable-current">—</strong>
+          <small id="current-confidence">Awaiting negotiation</small>
+        </article>
+        <article class="metric-card">
+          <span>Source capabilities</span>
+          <strong id="source-kind">—</strong>
+          <small id="source-summary">Not received</small>
+        </article>
+      </section>
+
+      <div class="content-grid">
+        <section class="panel request-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Set output</p>
+              <h2>Request voltage</h2>
+            </div>
+            <span class="resolution-note">20 mV PPS · 100 mV AVS</span>
+          </div>
+
+          <form id="voltage-form" class="request-form">
+            <label>
+              <span>Voltage</span>
+              <span class="field-with-unit">
+                <input id="voltage-input" type="number" inputmode="decimal" min="3.3" max="48" step="0.02" value="5" required>
+                <span>V</span>
+              </span>
+            </label>
+            <label>
+              <span>Requested current</span>
+              <span class="field-with-unit">
+                <input id="current-input" type="number" inputmode="decimal" min="0.05" max="5" step="0.05" placeholder="Max" aria-describedby="current-request-note">
+                <span>A</span>
+              </span>
+            </label>
+            <label>
+              <span>Supply preference</span>
+              <select id="preference-input">
+                <option value="auto">Automatic</option>
+                <option value="fixed">Fixed PDO</option>
+                <option value="pps">PPS</option>
+                <option value="spr-avs">SPR AVS</option>
+                <option value="epr-avs">EPR AVS</option>
+                <option value="epr-avs-nonstandard">EPR AVS (advertised non-standard range)</option>
+              </select>
+            </label>
+            <button class="button button-primary request-submit" type="submit" disabled>Request contract</button>
+          </form>
+          <p id="current-request-note" class="request-note">
+            Current is requested from the source; usable current is an allowed draw, not a live measurement.
+            The non-standard EPR AVS option is an explicit opt-in and never exceeds the source's advertisement or 48 V.
+          </p>
+
+          <fieldset class="voltage-ceiling">
+            <legend>Maximum request for this board</legend>
+            <div class="ceiling-options" role="radiogroup" aria-describedby="voltage-ceiling-note">
+              <label><input type="radio" name="voltage-ceiling" value="5000" checked><span>5 V max</span></label>
+              <label><input type="radio" name="voltage-ceiling" value="28000"><span>28 V max</span></label>
+              <label><input type="radio" name="voltage-ceiling" value="48000"><span>48 V max</span></label>
+            </div>
+            <small id="voltage-ceiling-note">Defaults to 5 V and is saved locally for this MCU after its identity is received.</small>
+          </fieldset>
+          <p id="request-feedback" class="feedback" aria-live="polite"></p>
+        </section>
+
+        <section class="panel command-panel">
+          <div class="section-heading">
+            <div>
+              <p class="eyebrow">Device actions</p>
+              <h2>Inspect and manage</h2>
+            </div>
+          </div>
+          <div class="command-grid">
+            <button class="button button-secondary command-button" data-command="caps" type="button" disabled>Refresh capabilities</button>
+            <button class="button button-secondary command-button" data-command="plans" type="button" disabled>Preview all plans</button>
+            <button class="button button-secondary command-button" data-command="status" type="button" disabled>Refresh contract</button>
+            <button class="button button-secondary command-button" data-command="source-info" type="button" disabled>Request Source_Info</button>
+            <button id="enter-epr-button" class="button button-secondary command-button" data-command="enter-epr" type="button" disabled>Enter EPR and load list</button>
+            <button id="epr-caps-button" class="button button-secondary command-button" data-command="epr-caps" type="button" disabled>Refresh EPR list</button>
+            <button id="exit-epr-button" class="button button-warning command-button" data-command="exit-epr" type="button" disabled>Exit EPR mode</button>
+          </div>
+
+          <details class="advanced-request">
+            <summary>Advanced direct-PDO request</summary>
+            <form id="pdo-form">
+              <label>
+                <span>PDO position</span>
+                <input id="pdo-position" type="number" min="1" max="11" step="1" value="1" required>
+              </label>
+              <label>
+                <span>Demand</span>
+                <select id="pdo-demand">
+                  <option value="max">Maximum</option>
+                  <option value="current">Requested current</option>
+                  <option value="adjust">Adjustable voltage</option>
+                </select>
+              </label>
+              <label id="pdo-voltage-field" class="hidden">
+                <span>Voltage (V)</span>
+                <input id="pdo-voltage" type="number" min="3.3" max="48" step="0.02" value="5">
+              </label>
+              <label id="pdo-current-field" class="hidden">
+                <span>Current (A)</span>
+                <input id="pdo-current" type="number" min="0.05" max="5" step="0.05" placeholder="Max">
+              </label>
+              <button class="button button-secondary request-submit" type="submit" disabled>Send PDO request</button>
+            </form>
+          </details>
+        </section>
+      </div>
+
+      <section class="panel capabilities-panel">
+        <div class="section-heading capabilities-heading">
+          <div>
+            <p class="eyebrow">Advertised power</p>
+            <h2>Source capabilities</h2>
+          </div>
+          <span id="capability-count" class="pill">No PDOs</span>
+        </div>
+        <div class="table-scroll">
+          <table>
+            <thead>
+              <tr>
+                <th>PDO</th>
+                <th>Type</th>
+                <th>Voltage</th>
+                <th>Current / power</th>
+                <th>Status</th>
+                <th>Raw</th>
+                <th><span class="sr-only">Action</span></th>
+              </tr>
+            </thead>
+            <tbody id="capability-body">
+              <tr class="empty-row">
+                <td colspan="7">Connect and refresh capabilities to populate this table.</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <details class="panel terminal-panel">
+        <summary class="terminal-summary">
+          <span>
+            <strong>Diagnostics console</strong>
+            <small>Optional raw device stream and advanced command entry</small>
+          </span>
+          <span class="pill">Show terminal</span>
+        </summary>
+        <div class="terminal-content">
+          <div class="section-heading terminal-heading">
+            <div>
+              <p class="eyebrow">Raw device stream</p>
+              <h2>Console</h2>
+            </div>
+            <div class="terminal-tools">
+              <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> Auto-scroll</label>
+              <button id="copy-log" class="button button-quiet" type="button">Copy</button>
+              <button id="save-log" class="button button-quiet" type="button">Save</button>
+              <button id="clear-log" class="button button-quiet" type="button">Clear</button>
+            </div>
+          </div>
+          <div id="terminal" class="terminal" tabindex="0" aria-live="polite" aria-label="USB PD device log"></div>
+          <form id="raw-command-form" class="raw-command-form">
+            <span aria-hidden="true">&rsaquo;</span>
+            <label class="sr-only" for="raw-command">Firmware command</label>
+            <input id="raw-command" type="text" maxlength="126" autocomplete="off" placeholder="Enter a firmware command" disabled>
+            <button class="button button-secondary" type="submit" disabled>Send</button>
+          </form>
+
+          <details class="command-reference">
+            <summary>
+              <span>
+                <strong>Commands</strong>
+                <small>Console legend, syntax, and advanced examples</small>
+              </span>
+              <span class="pill">Show reference</span>
+            </summary>
+            <div class="command-reference-content">
+              <p>Most users can use the controls above. Raw commands are useful for diagnosis and uncommon direct-PDO operations. Voltages are in millivolts and currents are in milliamps.</p>
+              <div class="console-legend" aria-label="Console line legend">
+                <span><code>&lt;</code> message from the device</span>
+                <span><code>&gt;</code> command sent to the device</span>
+                <span><code>•</code> local browser event</span>
+              </div>
+              <div class="table-scroll command-table-scroll">
+                <table class="command-table">
+                  <thead>
+                    <tr><th>Command</th><th>What it does</th></tr>
+                  </thead>
+                  <tbody>
+                    <tr><td><code>status</code></td><td>Show the current contract and EPR state.</td></tr>
+                    <tr><td><code>caps</code></td><td>Print the currently advertised source capabilities.</td></tr>
+                    <tr><td><code>plans</code></td><td>Preview every requestable PDO without changing the live contract.</td></tr>
+                    <tr><td><code>source-info</code></td><td>Ask the source for its present and maximum power information.</td></tr>
+                    <tr><td><code>device</code></td><td>Print the MCU identity used for this browser's saved ceiling.</td></tr>
+                    <tr><td><code>enter-epr</code></td><td>Enter EPR mode while holding the existing safe 5 V contract.</td></tr>
+                    <tr><td><code>epr-caps</code></td><td>Refresh the EPR capability list after EPR entry.</td></tr>
+                    <tr><td><code>exit-epr</code></td><td>Return to SPR mode through a safe SPR contract.</td></tr>
+                    <tr><td><code>request 17200 2300 pps</code></td><td>Request 17.2 V and 2.3 A using PPS.</td></tr>
+                    <tr><td><code>request 19400 max epr-avs</code></td><td>Request 19.4 V using standards-valid EPR AVS and the maximum usable current.</td></tr>
+                    <tr><td><code>pdo 10 max</code></td><td>Request PDO 10 at its fixed or adjustable maximum.</td></tr>
+                    <tr><td><code>pdo 11 adjust 19400 2300</code></td><td>Request 19.4 V and 2.3 A directly from adjustable PDO 11.</td></tr>
+                    <tr><td><code>help</code></td><td>Print the compact command syntax in the console.</td></tr>
+                  </tbody>
+                </table>
+              </div>
+            </div>
+          </details>
+        </div>
+      </details>
+    </main>
+
+    <footer>
+      <span>Runs locally in your browser. Serial data never leaves this computer.</span>
+      <span id="device-id">No device selected</span>
+    </footer>
+  </body>
+</html>

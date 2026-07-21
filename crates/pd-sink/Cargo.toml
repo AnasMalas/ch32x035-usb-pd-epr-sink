@@ -1,0 +1,16 @@
+[package]
+name = "ch32x035-usb-pd-epr-sink"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "USB Power Delivery sink policy and CH32X035 integration with PPS and EPR AVS support"
+keywords = ["ch32x035", "usb-pd", "epr", "pps", "embedded"]
+categories = ["embedded", "no-std", "hardware-support"]
+publish = false
+
+[lib]
+name = "pd_sink"
+path = "src/lib.rs"
+
+[dependencies]

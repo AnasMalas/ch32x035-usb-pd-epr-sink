@@ -1,0 +1,37 @@
+[package]
+name = "ch32x035-usb-pd-epr-sink-example"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["sdi-log"]
+sdi-log = []
+usb-console = []
+pps-capable-hardware = []
+epr-capable-hardware = []
+bench-pps-19v4 = ["pps-capable-hardware"]
+bench-epr-avs-19v4 = ["epr-capable-hardware"]
+bench-epr-fixed-48v = ["epr-capable-hardware"]
+
+[dependencies]
+pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink" }
+ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = [
+    "ch32x035f8u6",
+    "memory-x",
+    "embassy",
+    "exti",
+    "rt",
+    "time-driver-tim2",
+] }
+embassy-executor = { version = "0.10.0", features = ["platform-spin", "executor-thread"] }
+embassy-futures = "0.1.2"
+embassy-sync = "0.8.0"
+embassy-time = "0.5.1"
+panic-halt = "1.0"
+qingke = "0.7"
+qingke-rt = "0.7"
+usbpd = { path = "../../vendor/usbpd" }
+usbpd-traits = { path = "../../vendor/usbpd-traits" }

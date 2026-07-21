@@ -1,0 +1,17 @@
+[workspace]
+members = ["crates/pd-sink", "examples/usb-console", "tests/protocol"]
+exclude = ["vendor/ch32-hal", "vendor/usbpd", "vendor/usbpd-traits"]
+resolver = "2"
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink"
+
+[profile.release]
+codegen-units = 1
+debug = 2
+lto = true
+opt-level = "z"
+strip = false

@@ -1,0 +1,62 @@
+# USB PD Control
+
+USB PD Control is the product-facing browser interface for the sink firmware.
+It connects directly to the firmware's USB CDC console with the Web Serial API;
+there is no cloud service, driver-specific bridge, Node installation, or build
+step.
+
+## Start
+
+Flash a firmware profile that includes `usb-console`, then run from the
+repository root:
+
+```powershell
+.\scripts\gui.ps1
+```
+
+The launcher serves the static files only on `127.0.0.1` and opens
+`http://127.0.0.1:8765/`. Use a current desktop Chrome or Edge browser, select
+the CH32 USB CDC port, and allow serial access when prompted. Pass `-NoBrowser`
+to suppress automatic launch or `-Port 9000` to select another local port.
+
+The PowerShell process is only the local HTTP server and browser launcher. It
+does not relay serial data. Web Serial requires a secure browser context, and
+Chrome/Edge treat localhost as secure; opening `index.html` directly from a
+`file:` URL is therefore not an equivalent replacement. Once loaded, the page
+communicates directly with the MCU.
+
+## Interface
+
+The application exposes the stable firmware command surface:
+
+- automatic, fixed, PPS, SPR AVS, and standards-valid EPR AVS voltage requests;
+- an explicit non-standard EPR AVS preference for a bounded lower range that a
+  source actually advertised;
+- an optional requested current and the confirmed usable-current report;
+- direct PDO maximum, current, and adjustable requests;
+- complete capability and dry-run plan queries;
+- Source_Info, contract status, explicit EPR entry, EPR capability refresh,
+  and EPR exit;
+- a raw command console, a collapsed command/line-format reference, and
+  copyable/downloadable session logs.
+
+The firmware reports the CH32X035's programmed 8-byte factory UID, matching the
+identifier exposed by WCH's USB bootloader. The nominal third ESIG word is
+unprogrammed (`0xffffffff`) on observed X035 silicon and is deliberately not
+used as the short board label or cache key. The browser keeps a local 5 V,
+28 V, or 48 V GUI request ceiling for each valid UID; an unknown board always
+begins at 5 V. This is an accidental-command guard, not a substitute for
+firmware limits or correctly rated hardware. The identity and setting remain
+local to this browser profile.
+
+The main controls do not require the diagnostics terminal to be open. The
+terminal is collapsed by default, but every line is still retained for support
+and testing. The application currently parses the firmware's stable text
+protocol to populate its summary cards and capability table.
+
+## Browser support
+
+Web Serial currently makes this a desktop Chrome/Edge application. The UI and
+protocol parsing are transport-independent enough to reuse later, but mobile
+support will require a platform-supported USB serial transport or a native
+wrapper. No serial data leaves the browser.

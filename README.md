@@ -1,0 +1,118 @@
+# CH32X035 USB PD EPR Sink
+
+Rust USB Power Delivery sink software for the WCH CH32X035. The project is
+aimed at user-configurable power sinks that need fixed SPR/EPR PDOs, PPS, EPR
+AVS, and an explicit report of the current permitted by the source, cable, and
+configured hardware limits.
+
+The repository is under private review while its application integration is
+being extracted into a stable library API. It is not yet a crates.io release,
+a USB-IF certified implementation, or a claim of complete specification
+compliance.
+
+## Implemented behavior
+
+- Decode and validate all eleven SPR/EPR Source PDO positions.
+- Plan fixed, PPS, SPR AVS, and EPR AVS requests.
+- Encode exact 20 mV PPS and 100 mV AVS requests through 48 V.
+- Enter and exit EPR mode, retrieve chunked EPR capabilities, and send EPR
+  keepalives.
+- Begin every attachment at fixed 5 V and discover capabilities without
+  automatically selecting a high voltage.
+- Report requested, source-advertised, and usable current plus the limiting
+  reason and confidence.
+- Handle SinkTxOK/SinkTxNG, Soft Reset, Hard Reset, detach, bounded retries,
+  source-owned AMS traffic, and tested real-source compatibility cases.
+- Expose an optional CH32X035 USB CDC command console and static browser GUI.
+
+Battery and variable PDOs remain visible when advertised but are deliberately
+not requestable because they are outside this project's sink use case.
+
+## Safety boundary
+
+Firmware negotiation does not make a board safe for 28-48 V. The complete
+connector, switch, FETs, discharge path, protection, spacing, measurement
+network, and load must be rated for the selected voltage and fault energy.
+
+The reference integration assumes a 3.3 V-safe `VBUS_PRESENT` input and a
+firmware `LOAD_ENABLE` output. The effective hardware gate must remain:
+
+```text
+LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
+```
+
+The VBUS and hardware-health terms must disable the power path without working
+firmware. See [`docs/hardware_interface.md`](docs/hardware_interface.md) before
+adapting the reference firmware.
+
+## Repository layout
+
+- `crates/pd-sink/` - the public, `no_std` request planning, capability,
+  contract, command, and safety API; CH32X035 runtime integration is being
+  moved here behind hardware-specific modules.
+- `vendor/usbpd*` - the maintained protocol and policy-engine descendant.
+- `vendor/ch32-hal/` - the pinned CH32 HAL descendant with PD PHY repairs and
+  the compact USBFS CDC implementation.
+- `examples/usb-console/` - the complete hardware reference firmware and
+  interactive command surface.
+- `tests/protocol/` - host-scripted protocol, reset, PPS, EPR, and malformed
+  frame tests.
+- `tools/pd-control/` - optional browser GUI using Web Serial.
+- `scripts/` - reproducible checks, profile builds, USB ISP flashing, serial
+  console, and GUI launcher.
+- `docs/` - publishable architecture, hardware contract, interoperability, and
+  validation material. USB-IF specifications and third-party datasheet files
+  are intentionally not redistributed.
+
+## Development
+
+The repository pins a dated Rust toolchain and all resolved dependencies.
+Docker is not required. On Windows, install Rust through
+[rustup](https://rustup.rs/) and Microsoft C++ Build Tools, then run:
+
+```powershell
+.\scripts\bootstrap.ps1
+.\scripts\check.ps1
+.\scripts\build.ps1 -Profile usb-epr
+```
+
+The interactive example always negotiates 5 V first. Its main commands include:
+
+```text
+caps
+plans
+status
+enter-epr
+request 19400 max pps
+request 19400 2300 epr-avs
+request 48000 2000 fixed
+exit-epr
+```
+
+Launch the optional browser interface with:
+
+```powershell
+.\scripts\gui.ps1
+```
+
+## Current evidence and limitations
+
+Host tests cover request encoding and the protocol flows represented in this
+repository. Physical CH32X035 hardware has completed SPR, PPS, 28 V EPR, and a
+fixed 48 V EPR contract with real chargers. Those tests established protocol
+interoperability; they did not validate a connected 48 V load path.
+
+Important remaining work includes finalizing the reusable runtime API,
+validating the intended hardware gate and detach behavior on the target board,
+replacing the development USB VID/PID before distribution, and expanding
+interoperability testing.
+
+## Origins and licensing
+
+Project-owned code is offered under either the MIT License or Apache License
+2.0. Maintained upstream descendants retain their original licensing and
+provenance. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and each
+`vendor/*/UPSTREAM.md` file.
+
+USB and USB-C are used descriptively. This project is not endorsed or certified
+by USB-IF and does not distribute USB-IF specification documents.

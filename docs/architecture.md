@@ -1,0 +1,131 @@
+# Firmware architecture
+
+## Product objective
+
+The CH32X035F8U6 is a pure USB-C power sink. A user can inspect every source
+offer, select a fixed PDO, or ask for a PPS/AVS voltage such as 19.4 V. The
+result reports the exact wire-encoded voltage and a conservative usable
+current derived from source and configured product limits.
+
+## Layer boundaries
+
+### CH32 hardware layer
+
+The vendored `ch32-hal` owns clocks, interrupts, USBFS, and the USB-PD PHY. The
+F8U6's linker map exposes a 62 KiB application region. Local repairs include a
+34-byte PD receive buffer, strict transmit lengths, bounded error recovery,
+detach cancellation, and active-CC sampling at the 1.23 V comparator threshold
+for PD 3.x SinkTxOK.
+
+The product-specific USBFS module is intentionally compact: fixed endpoint 0
+control, endpoint 1 notification, endpoint 2 bulk OUT, and endpoint 3 bulk IN.
+Control requests execute in the USB interrupt; application tasks exchange one
+64-byte packet at a time through reset-safe async wrappers.
+
+### USB-PD protocol and policy layer
+
+The vendored `usbpd` engine supplies message parsing, protocol counters,
+timers, and sink states. Local work adds chunked EPR Source Capabilities,
+first-class SPR AVS decoding, mode-aware requests, entry/exit/failure
+handling, EPR keepalive, bounded PHY
+retries, Source_Info, lifecycle callbacks that invalidate contracts, and
+revision-aware SinkTx collision avoidance. If a PD 3.x source advertises
+SinkTxNG, the engine retains the exact pending command or refresh, continues
+servicing source-initiated messages, polls CC, and transmits when SinkTxOK
+appears. PD 1.0/2.0 sessions bypass that PD 3.x mechanism. Source queries for
+ordinary Sink Capabilities, EPR Sink Capabilities, and the 24-byte Sink
+Capabilities Extended block receive padded, object-count-correct frames; its
+140 W EPR Operational PDP matches the EPR Enter message. Receive parsing
+requires the exact `2 + 4 * NumDO` wire length, bounds chunk assembly, rejects
+out-of-order or inconsistent chunks, and maps malformed or reserved partner
+traffic to protocol recovery instead of panicking.
+
+### Product core and device policy manager
+
+`crates/pd-sink` has no MCU dependencies. It owns:
+
+- supported source PDO decoding and validity checks, with raw/position-preserving
+  retention of unrequestable battery and variable offers;
+- fixed/PPS/SPR-AVS/EPR-AVS selection and encoding;
+- direct `max` selection for every requestable PDO position, with adjustable
+  PDOs resolving to their advertised maximum voltage;
+- bounded compatibility handling for noncanonical commercial PPS offers,
+  while retaining the advertised voltage range and 5 A sink ceiling;
+- source, board, cable, power, and requested-current limits;
+- contract state and the user command grammar;
+- EPR intent, discovery, and exit sequencing;
+- safe 5 V fallback when changed capabilities invalidate a retained request;
+- the detach safety model.
+
+The firmware DPM converts the vendored stack's PDOs into this integer-only
+model. Avoiding floating-point unit conversions saves several kilobytes and
+makes capability reports deterministic.
+
+Every attachment starts with no retained user intent. The sequence for an
+EPR-capable profile is:
+
+```text
+SPR capabilities -> request 5 V -> PS_RDY -> Source_Info
+                 -> EPR entry attempt -> EPR capabilities
+                 -> EPR request for fixed 5 V -> PS_RDY -> await user command
+```
+
+A Hard Reset invalidates the contract and holds the load off for a fixed
+two-second source-recovery window without requiring a PA6 edge. The product
+permits at most two automatic EPR entry attempts per physical attachment. If
+the retry also fails, it remains usable in SPR and leaves further EPR retries
+to explicit user commands. Software-session restarts preserve this budget and
+use a bounded cooldown instead of creating a reset storm.
+
+### Port and safety supervisor
+
+The supervisor owns PA6 attach/detach, PB12 load enable, and cancellation of
+blocked PD I/O. Its invariant is that reset, detach, protocol loss, or an
+unconfirmed transition leaves the load off. The separate hardware gate in
+`hardware_interface.md` remains the primary fast cutoff. PA6 is not required
+to pulse for protocol recovery after Hard Reset; this keeps the isolated
+always-high fixture usable while preserving PA6 as a load-safety input.
+
+### Diagnostics and commands
+
+Messages are produced independently of transport. Builds can select LinkE
+SDI, native USB CDC, both, or neither. USB output uses a bounded non-blocking
+32-line queue sized to retain a complete 11-PDO planning report, so a missing
+or slow host cannot block PD or safety work. USB input and delayed bench tasks
+feed the same typed four-entry command queue.
+
+The `plans` command dry-runs `Demand::Maximum` against every current PDO,
+printing either the exact encoded voltage, usable current, confidence, and
+limit or an explicit unsupported result.
+It neither retains user intent nor starts a PD AMS, and finishes by printing
+the still-active contract. This makes complete capability-policy inspection
+possible during the 5 V-only board phase.
+
+The interactive USB-only image prints request-planning rejection reasons and
+their relevant position/voltage details. The dual-log build deliberately keeps
+that one diagnostic generic to preserve flash for the protocol path; its LinkE
+and USB streams still carry the capability, request, contract, and reset trace.
+
+## Verification strategy
+
+- the `pd-sink` unit tests validate every requestable PDO family, battery/variable
+  rejection without losing advertised positions, quantization, limits, command
+  parsing, direct maximum selection across positions 1-11, every adjustable
+  minimum/maximum endpoint, Source_Info limits across requestable families,
+  controller behavior, contract lifecycle, and safety debounce.
+- `tests/protocol` drives the real vendored policy engine with scripted wire
+  messages, including typed SPR AVS and its ordinary 19.4 V Request,
+  two-chunk EPR capabilities, 48 V fixed, 19.4 V EPR AVS, legal EPR exit,
+  Source_Info, a 19.4 V PPS refresh, source traffic while a
+  sink AMS is held by SinkTxNG, PD 2.0 bypass, detach, and bounded retry
+  failure. A `Wait` trace proves the deferred user request is replanned after
+  SinkRequestTimer even when the Source inserts its own AMS, and periodic PPS
+  maintenance uses the same DPM/contract path as user requests. Adversarial
+  traces cover truncated and oversized frames, malformed chunks, and reserved
+  EPR values through the real sink policy engine.
+- `scripts/check.ps1` builds every runtime and bench feature combination.
+- `docs/first_board_verification.md` turns first hardware observations into a
+  repeatable evidence checklist and future regression tests.
+
+Desktop tests prove decisions and bytes, not CH32 register behavior or analog
+timing. Those remain explicit first-board gates.

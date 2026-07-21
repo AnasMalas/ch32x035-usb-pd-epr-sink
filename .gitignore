@@ -1,0 +1,21 @@
+# Rust build output
+/target/
+/firmware/target/
+/artifacts/
+/vendor/*/Cargo.lock
+/vendor/*/target/
+
+# Local research checkouts and generated scratch files
+/tmp/
+
+# Editor and operating-system state
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*.log
+
+# Local environment overrides
+.env
+.env.*
+!.env.example

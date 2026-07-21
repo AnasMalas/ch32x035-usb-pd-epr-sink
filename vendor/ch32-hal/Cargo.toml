@@ -1,0 +1,179 @@
+[package]
+name = "ch32-hal"
+version = "0.1.0"
+edition = "2021"
+authors = ["Andelf <andelf@gmail.com>"]
+repository = "https://github.com/ch32-rs/ch32-hal"
+documentation = "https://docs.rs/ch32-hal"
+homepage = "https://github.com/andech32-rslf/ch32-hal"
+categories = ["embedded", "no-std", "hardware-support"]
+description = "HAL for the WCH's RISC-V family of microcontrollers"
+keywords = ["ch32v", "risc-v", "hal"]
+readme = "README.md"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+ch32-metapac = { features = [
+    "rt",
+], git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d667214e30fae690c739d27efca4cfe0e042d0" }
+
+qingke = { version = "0.7", features = ["critical-section-impl"] }
+qingke-rt = { version = "0.7", optional = true }
+
+# TODO: remove this
+embedded-hal-02 = { package = "embedded-hal", version = "0.2.6", features = [
+    "unproven",
+] }
+embedded-hal = { package = "embedded-hal", version = "1.0" }
+embedded-hal-async = "1.0.0"
+embedded-can = "0.4.1"
+
+critical-section = { version = "1.2.0" }
+defmt = { version = "0.3.8", optional = true }
+
+embassy-sync = { version = "0.8.0" }
+embassy-futures = { version = "0.1.2" }
+embassy-time-queue-utils = { version = "0.3.0", optional = true }
+embassy-time-driver = { version = "0.2.0", optional = true }
+embassy-time = { version = "0.5.1", optional = true }
+embassy-usb-driver = "0.2.0"
+embassy-net-driver = "0.2.0"
+embassy-net-driver-channel = "0.4.0"
+embassy-hal-internal = "0.3.0"
+
+nb = "1.1.0"
+embedded-hal-nb = "1.0.0"
+futures = { version = "0.3.31", default-features = false, features = [
+    "async-await",
+] }
+
+bitmaps = { version = "3", default-features = false }
+rand_core = "0.6.3"
+sdio-host = "0.5.0"
+
+embedded-storage = "0.3.1"
+
+[build-dependencies]
+ch32-metapac = { features = [
+    "metadata",
+], git = "https://github.com/ch32-rs/ch32-metapac", rev = "23d667214e30fae690c739d27efca4cfe0e042d0" }
+
+proc-macro2 = "1.0"
+quote = "1.0"
+
+[features]
+default = ["embassy", "rt", "exti"]
+rt = ["dep:qingke-rt", "rt-wfi"]
+highcode = ["qingke-rt/highcode"]
+embassy = [
+    "dep:embassy-time-queue-utils",
+    "dep:embassy-time-driver",
+    "dep:embassy-time",
+]
+defmt = ["dep:defmt"]
+memory-x = ["ch32-metapac/memory-x"]
+## Built-in EXTI driver and interrupt handlers. Disable to provide your own.
+exti = []
+
+
+# Features starting with `_` are for internal use only. They're not intended
+# to be enabled by other crates, and are not covered by semver guarantees.
+_time-driver = []
+
+## Use any time driver
+time-driver-any = ["_time-driver"]
+## Use TIM1 as time driver
+time-driver-tim1 = ["_time-driver"]
+## Use TIM2 as time driver
+time-driver-tim2 = ["_time-driver"]
+## Use TIM3 as time driver
+time-driver-tim3 = ["_time-driver"]
+## Use TIM4 as time driver
+time-driver-tim4 = ["_time-driver"]
+## Use TIM5 as time driver
+time-driver-tim5 = ["_time-driver"]
+## Use TIM8 as time driver
+time-driver-tim8 = ["_time-driver"]
+## Use TIM9 as time driver
+time-driver-tim9 = ["_time-driver"]
+## Use TIM10 as time driver
+time-driver-tim10 = ["_time-driver"]
+rt-wfi = []
+
+# Chip-selection features
+
+ch32l103c8t6 = ["ch32-metapac/ch32l103c8t6", "qingke-rt/v4"]
+ch32l103f7p6 = ["ch32-metapac/ch32l103f7p6", "qingke-rt/v4"]
+ch32l103f8p6 = ["ch32-metapac/ch32l103f8p6", "qingke-rt/v4"]
+ch32l103f8u6 = ["ch32-metapac/ch32l103f8u6", "qingke-rt/v4"]
+ch32l103g8r6 = ["ch32-metapac/ch32l103g8r6", "qingke-rt/v4"]
+ch32l103k8u6 = ["ch32-metapac/ch32l103k8u6", "qingke-rt/v4"]
+ch32v002f4p6 = ["ch32-metapac/ch32v002x4x6", "qingke-rt/v2"]
+ch32v002f4u6 = ["ch32-metapac/ch32v002x4x6", "qingke-rt/v2"]
+ch32v002a4m6 = ["ch32-metapac/ch32v002x4x6", "qingke-rt/v2"]
+ch32v002d4u6 = ["ch32-metapac/ch32v002x4x6", "qingke-rt/v2"]
+ch32v002j4m6 = ["ch32-metapac/ch32v002x4x6", "qingke-rt/v2"]
+ch32v003a4m6 = ["ch32-metapac/ch32v003a4m6", "qingke-rt/v2"]
+ch32v003f4p6 = ["ch32-metapac/ch32v003f4p6", "qingke-rt/v2"]
+ch32v003f4u6 = ["ch32-metapac/ch32v003f4u6", "qingke-rt/v2"]
+ch32v003j4m6 = ["ch32-metapac/ch32v003j4m6", "qingke-rt/v2"]
+ch32v004f6p1 = ["ch32-metapac/ch32v004x6x1", "qingke-rt/v2"]
+ch32v004f6u1 = ["ch32-metapac/ch32v004x6x1", "qingke-rt/v2"]
+ch32v005e6r6 = ["ch32-metapac/ch32v005x6x6", "qingke-rt/v2"]
+ch32v005f6u6 = ["ch32-metapac/ch32v005x6x6", "qingke-rt/v2"]
+ch32v005f6p6 = ["ch32-metapac/ch32v005x6x6", "qingke-rt/v2"]
+ch32v005d6u6 = ["ch32-metapac/ch32v005x6x6", "qingke-rt/v2"]
+ch32v006k8u6 = ["ch32-metapac/ch32v006x8x6", "qingke-rt/v2"]
+ch32v006e8r6 = ["ch32-metapac/ch32v006x8x6", "qingke-rt/v2"]
+ch32v006f8u6 = ["ch32-metapac/ch32v006x8x6", "qingke-rt/v2"]
+ch32v006f8p6 = ["ch32-metapac/ch32v006x8x6", "qingke-rt/v2"]
+ch32v006f4u6 = ["ch32-metapac/ch32v006x8x6", "qingke-rt/v2"]
+ch32m007g8r6 = ["ch32-metapac/ch32m007x8x6", "qingke-rt/v2"]
+ch32m007e8r6 = ["ch32-metapac/ch32m007x8x6", "qingke-rt/v2"]
+ch32m007e8u6 = ["ch32-metapac/ch32m007x8x6", "qingke-rt/v2"]
+ch32v007e8r6 = ["ch32-metapac/ch32v007x8x6", "qingke-rt/v2"]
+ch32v007k8u6 = ["ch32-metapac/ch32v007x8x6", "qingke-rt/v2"]
+ch32v103c6t6 = ["ch32-metapac/ch32v103c6t6", "qingke-rt/v3a"]
+ch32v103c8t6 = ["ch32-metapac/ch32v103c8t6", "qingke-rt/v3a"]
+ch32v103c8u6 = ["ch32-metapac/ch32v103c8u6", "qingke-rt/v3a"]
+ch32v103r8t6 = ["ch32-metapac/ch32v103r8t6", "qingke-rt/v3a"]
+ch32v203c6t6 = ["ch32-metapac/ch32v203c6t6", "qingke-rt/v4"]
+ch32v203c8t6 = ["ch32-metapac/ch32v203c8t6", "qingke-rt/v4"]
+ch32v203c8u6 = ["ch32-metapac/ch32v203c8u6", "qingke-rt/v4"]
+ch32v203f6p6 = ["ch32-metapac/ch32v203f6p6", "qingke-rt/v4"]
+ch32v203f8p6 = ["ch32-metapac/ch32v203f8p6", "qingke-rt/v4"]
+ch32v203f8u6 = ["ch32-metapac/ch32v203f8u6", "qingke-rt/v4"]
+ch32v203g6u6 = ["ch32-metapac/ch32v203g6u6", "qingke-rt/v4"]
+ch32v203g8r6 = ["ch32-metapac/ch32v203g8r6", "qingke-rt/v4"]
+ch32v203k6t6 = ["ch32-metapac/ch32v203k6t6", "qingke-rt/v4"]
+ch32v203k8t6 = ["ch32-metapac/ch32v203k8t6", "qingke-rt/v4"]
+ch32v203rbt6 = ["ch32-metapac/ch32v203rbt6", "qingke-rt/v4"]
+ch32v208cbu6 = ["ch32-metapac/ch32v208cbu6", "qingke-rt/v4"]
+ch32v208gbu6 = ["ch32-metapac/ch32v208gbu6", "qingke-rt/v4"]
+ch32v208rbt6 = ["ch32-metapac/ch32v208rbt6", "qingke-rt/v4"]
+ch32v208wbu6 = ["ch32-metapac/ch32v208wbu6", "qingke-rt/v4"]
+ch32v303cbt6 = ["ch32-metapac/ch32v303cbt6", "qingke-rt/v4"]
+ch32v303rbt6 = ["ch32-metapac/ch32v303rbt6", "qingke-rt/v4"]
+ch32v303rct6 = ["ch32-metapac/ch32v303rct6", "qingke-rt/v4"]
+ch32v303vct6 = ["ch32-metapac/ch32v303vct6", "qingke-rt/v4"]
+ch32v305fbp6 = ["ch32-metapac/ch32v305fbp6", "qingke-rt/v4"]
+ch32v305gbu6 = ["ch32-metapac/ch32v305gbu6", "qingke-rt/v4"]
+ch32v305rbt6 = ["ch32-metapac/ch32v305rbt6", "qingke-rt/v4"]
+ch32v307rct6 = ["ch32-metapac/ch32v307rct6", "qingke-rt/v4"]
+ch32v307vct6 = ["ch32-metapac/ch32v307vct6", "qingke-rt/v4"]
+ch32v307wcu6 = ["ch32-metapac/ch32v307wcu6", "qingke-rt/v4"]
+ch32x033f8p6 = ["ch32-metapac/ch32x033f8p6", "qingke-rt/v4"]
+ch32x034f8p6 = ["ch32-metapac/ch32x034f8p6", "qingke-rt/v4"]
+ch32x034f8u6 = ["ch32-metapac/ch32x034f8u6", "qingke-rt/v4"]
+ch32x035c8t6 = ["ch32-metapac/ch32x035c8t6", "qingke-rt/v4"]
+ch32x035f7p6 = ["ch32-metapac/ch32x035f7p6", "qingke-rt/v4"]
+ch32x035f8u6 = ["ch32-metapac/ch32x035f8u6", "qingke-rt/v4"]
+ch32x035g8r6 = ["ch32-metapac/ch32x035g8r6", "qingke-rt/v4"]
+ch32x035g8u6 = ["ch32-metapac/ch32x035g8u6", "qingke-rt/v4"]
+ch32x035r8t6 = ["ch32-metapac/ch32x035r8t6", "qingke-rt/v4"]
+ch641 = ["ch32-metapac/ch641", "qingke-rt/v2"]
+ch643 = ["ch32-metapac/ch643", "qingke-rt/v4"]
+
+# Keep this maintained descendant independently formattable and testable when
+# consumed as a path dependency from another workspace.
+[workspace]
