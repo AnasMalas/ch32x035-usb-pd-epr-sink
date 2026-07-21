@@ -47,9 +47,9 @@ adapting the reference firmware.
 
 ## Repository layout
 
-- `crates/pd-sink/` - the public, `no_std` request planning, capability,
-  contract, command, and safety API; CH32X035 runtime integration is being
-  moved here behind hardware-specific modules.
+- `crates/pd-sink/` - the public `no_std` API: request planning, capability and
+  contract models, the reusable stack policy manager, and an optional
+  pin-agnostic CH32X035 PHY adapter.
 - `vendor/usbpd*` - the maintained protocol and policy-engine descendant.
 - `vendor/ch32-hal/` - the pinned CH32 HAL descendant with PD PHY repairs and
   the compact USBFS CDC implementation.
@@ -95,6 +95,12 @@ Launch the optional browser interface with:
 .\scripts\gui.ps1
 ```
 
+For application integration, enable the crate's `ch32x035` feature, provide
+the small `SinkRuntime` and `Ch32x035Port` adapters, and keep the GPIO choices
+in your application. See [`docs/integration.md`](docs/integration.md). The
+reference firmware is a consumer of the same API; PA6 and PB12 are not fixed
+library requirements.
+
 ## Current evidence and limitations
 
 Host tests cover request encoding and the protocol flows represented in this
@@ -102,7 +108,7 @@ repository. Physical CH32X035 hardware has completed SPR, PPS, 28 V EPR, and a
 fixed 48 V EPR contract with real chargers. Those tests established protocol
 interoperability; they did not validate a connected 48 V load path.
 
-Important remaining work includes finalizing the reusable runtime API,
+Important remaining work includes stabilizing the new reusable runtime API,
 validating the intended hardware gate and detach behavior on the target board,
 replacing the development USB VID/PID before distribution, and expanding
 interoperability testing.

@@ -40,9 +40,9 @@ requires the exact `2 + 4 * NumDO` wire length, bounds chunk assembly, rejects
 out-of-order or inconsistent chunks, and maps malformed or reserved partner
 traffic to protocol recovery instead of panicking.
 
-### Product core and device policy manager
+### Public library and device policy manager
 
-`crates/pd-sink` has no MCU dependencies. It owns:
+The default `crates/pd-sink` build has no MCU dependency. It owns:
 
 - supported source PDO decoding and validity checks, with raw/position-preserving
   retention of unrequestable battery and variable offers;
@@ -57,9 +57,16 @@ traffic to protocol recovery instead of panicking.
 - safe 5 V fallback when changed capabilities invalidate a retained request;
 - the detach safety model.
 
-The firmware DPM converts the vendored stack's PDOs into this integer-only
-model. Avoiding floating-point unit conversions saves several kilobytes and
-makes capability reports deterministic.
+The reusable `SinkDevice` DPM converts the vendored stack's PDOs into this
+integer-only model. Applications supply a `SinkRuntime` adapter for commands,
+diagnostics, delays, and their firmware-controlled load request. Avoiding
+floating-point unit conversions saves several kilobytes and makes capability
+reports deterministic.
+
+With the optional `ch32x035` feature, `Ch32x035UsbPdDriver` connects the DPM to
+the integrated CH32X035 PHY. Its `Ch32x035Port` trait deliberately contains no
+pin assignments: the application supplies VBUS-present waits, immediate load
+disable, and diagnostics.
 
 Every attachment starts with no retained user intent. The sequence for an
 EPR-capable profile is:
@@ -79,12 +86,13 @@ use a bounded cooldown instead of creating a reset storm.
 
 ### Port and safety supervisor
 
-The supervisor owns PA6 attach/detach, PB12 load enable, and cancellation of
-blocked PD I/O. Its invariant is that reset, detach, protocol loss, or an
-unconfirmed transition leaves the load off. The separate hardware gate in
-`hardware_interface.md` remains the primary fast cutoff. PA6 is not required
-to pulse for protocol recovery after Hard Reset; this keeps the isolated
-always-high fixture usable while preserving PA6 as a load-safety input.
+The reference application's supervisor owns PA6 attach/detach and PB12 load
+enable; neither pin is selected by the library. Its invariant is that reset,
+detach, protocol loss, or an unconfirmed transition leaves the load off. The
+separate hardware gate in `hardware_interface.md` remains the primary fast
+cutoff. PA6 is not required to pulse for protocol recovery after Hard Reset;
+this keeps the isolated always-high fixture usable while preserving PA6 as a
+load-safety input.
 
 ### Diagnostics and commands
 
@@ -112,7 +120,8 @@ and USB streams still carry the capability, request, contract, and reset trace.
   rejection without losing advertised positions, quantization, limits, command
   parsing, direct maximum selection across positions 1-11, every adjustable
   minimum/maximum endpoint, Source_Info limits across requestable families,
-  controller behavior, contract lifecycle, and safety debounce.
+  controller behavior, contract lifecycle, safety debounce, reusable DPM
+  contract/reset behavior, configuration validation, and automatic EPR entry.
 - `tests/protocol` drives the real vendored policy engine with scripted wire
   messages, including typed SPR AVS and its ordinary 19.4 V Request,
   two-chunk EPR capabilities, 48 V fixed, 19.4 V EPR AVS, legal EPR exit,

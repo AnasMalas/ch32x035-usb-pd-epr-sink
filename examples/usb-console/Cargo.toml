@@ -17,7 +17,7 @@ bench-epr-avs-19v4 = ["epr-capable-hardware"]
 bench-epr-fixed-48v = ["epr-capable-hardware"]
 
 [dependencies]
-pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink" }
+pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink", features = ["ch32x035"] }
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = [
     "ch32x035f8u6",
     "memory-x",

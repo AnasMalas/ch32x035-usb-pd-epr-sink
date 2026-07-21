@@ -12,7 +12,7 @@ use ch32_hal::gpio::{Level, Output, Pull, Speed};
 use ch32_hal::usb_x0fs::cdc::{
     CdcAcm, InterruptHandler as UsbFsInterruptHandler, Receiver as CdcReceiver, Sender as CdcSender,
 };
-use ch32_hal::usbpd::{Error as UsbpdError, InterruptHandler, Sop, UsbPdPhy};
+use ch32_hal::usbpd::{Error as UsbpdError, InterruptHandler, UsbPdPhy};
 use ch32_hal::{bind_interrupts, peripherals};
 use embassy_executor::Spawner;
 #[cfg(feature = "usb-console")]
@@ -24,32 +24,19 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use panic_halt as _;
-#[cfg(feature = "epr-capable-hardware")]
-use pd_sink::EprState;
 #[cfg(not(all(feature = "usb-console", feature = "sdi-log")))]
 use pd_sink::PlanError;
 use pd_sink::{
-    CapabilitiesKind, Command, ContractState, ContractTracker, ControllerAction, ControllerConfig, ControllerError,
-    CurrentConfidence, LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage,
-    RequestContext, RequestFlags, RequestMessage, RequestPlan, SinkController, SinkLimits,
-    SourceCapabilities as ProductSourceCapabilities, SourceSupply, SupplyKind,
+    CapabilitiesKind, CapabilityPlan, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError,
+    CurrentConfidence, HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PhyEvent,
+    PlannedOperating, PlannedVoltage, RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestResult,
+    SinkConfig, SinkDevice, SinkLimits, SinkPowerDescriptor, SinkRuntime,
+    SourceCapabilities as ProductSourceCapabilities, SourceSupply,
 };
 #[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
 use pd_sink::{Preference, UserRequest};
-use usbpd::protocol_layer::message::data::epr_mode::DataEnterFailed;
-use usbpd::protocol_layer::message::data::request::{self, EprRequestDataObject, PowerSource};
-use usbpd::protocol_layer::message::data::sink_capabilities::SinkCapabilities;
-use usbpd::protocol_layer::message::data::source_capabilities::{
-    parse_raw_pdo, Augmented, PowerDataObject, SourceCapabilities,
-};
-use usbpd::protocol_layer::message::data::source_info::SourceInfo;
-use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
-    SinkCapabilitiesExtended, SINK_MODE_AVS_SUPPORTED, SINK_MODE_PPS_SUPPORTED, SINK_MODE_VBUS_POWERED,
-};
-use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin, RequestRejection};
 use usbpd::sink::policy_engine::Sink;
 use usbpd::timers::Timer as SinkTimer;
-use usbpd_traits::Driver as SinkDriver;
 
 #[cfg(any(
     all(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4"),
@@ -169,7 +156,7 @@ fn request_load(command: LoadCommand) {
     LOAD_COMMAND.signal(command);
 }
 
-fn controller_config() -> ControllerConfig {
+fn sink_config() -> SinkConfig {
     let epr_capable = cfg!(feature = "epr-capable-hardware");
     let pps_capable = cfg!(feature = "pps-capable-hardware");
     let limits = if epr_capable {
@@ -195,13 +182,32 @@ fn controller_config() -> ControllerConfig {
         }
     };
 
-    ControllerConfig {
-        request_context: RequestContext {
-            flags: RequestFlags { epr_capable, ..RequestFlags::default() },
-            limits,
-            source_present_pdp: None,
+    SinkConfig {
+        controller: ControllerConfig {
+            request_context: RequestContext {
+                flags: RequestFlags { epr_capable, ..RequestFlags::default() },
+                limits,
+                source_present_pdp: None,
+            },
+            epr_operational_pdp: epr_capable.then_some(Milliwatts(140_000)),
         },
-        epr_operational_pdp: epr_capable.then_some(Milliwatts(140_000)),
+        descriptor: SinkPowerDescriptor {
+            // Temporary WCH development identifiers, matching the USB
+            // descriptor. Replace before distributing hardware.
+            vendor_id: 0x1a86,
+            product_id: 0xfe0c,
+            maximum_current: if epr_capable || pps_capable { Milliamps(5_000) } else { Milliamps(3_000) },
+            pps_supported: epr_capable || pps_capable,
+            avs_supported: epr_capable,
+            spr_minimum_pdp_watts: 5,
+            spr_operational_pdp_watts: 15,
+            spr_maximum_pdp_watts: if epr_capable || pps_capable { 100 } else { 15 },
+            epr_minimum_pdp_watts: if epr_capable { 5 } else { 0 },
+            epr_operational_pdp_watts: if epr_capable { 140 } else { 0 },
+            epr_maximum_pdp_watts: if epr_capable { 140 } else { 0 },
+        },
+        max_auto_epr_attempts: if epr_capable { MAX_AUTO_EPR_ATTEMPTS } else { 0 },
+        hard_reset_recovery_ms: HARD_RESET_RECOVERY_MS,
     }
 }
 
@@ -531,48 +537,6 @@ fn log_product_capabilities(capabilities: &ProductSourceCapabilities) {
     }
 }
 
-fn raw_pdo(pdo: &PowerDataObject) -> u32 {
-    match pdo {
-        PowerDataObject::FixedSupply(fixed) => fixed.0,
-        PowerDataObject::Battery(battery) => battery.0,
-        PowerDataObject::VariableSupply(variable) => variable.0,
-        PowerDataObject::Augmented(Augmented::Spr(pps)) => pps.0,
-        PowerDataObject::Augmented(Augmented::SprAvs(avs)) => avs.0,
-        PowerDataObject::Augmented(Augmented::Epr(avs)) => avs.0,
-        PowerDataObject::Augmented(Augmented::Unknown(raw)) => *raw,
-        PowerDataObject::Unknown(raw) => raw.0,
-    }
-}
-
-fn product_capabilities(capabilities: &SourceCapabilities) -> ProductSourceCapabilities {
-    let mut pdos = [0u32; pd_sink::capabilities::MAX_SOURCE_PDOS];
-    let count = capabilities.pdos().len();
-    assert!(count <= pdos.len(), "source advertised too many PDOs");
-
-    for (destination, source) in pdos.iter_mut().zip(capabilities.pdos()) {
-        *destination = raw_pdo(source);
-    }
-
-    let kind = if capabilities.is_epr_capabilities() { CapabilitiesKind::Epr } else { CapabilitiesKind::Spr };
-    ProductSourceCapabilities::new(kind, &pdos[..count]).expect("source capability container has an invalid length")
-}
-
-fn protocol_request(plan: RequestPlan) -> PowerSource {
-    if matches!(plan.message, RequestMessage::EprRequest) {
-        return PowerSource::EprRequest(EprRequestDataObject {
-            rdo: plan.rdo,
-            pdo: parse_raw_pdo(plan.pdo_copy.expect("EPR Request must copy its selected PDO")),
-        });
-    }
-
-    match plan.supply {
-        SupplyKind::Fixed => PowerSource::FixedVariableSupply(request::FixedVariableSupply(plan.rdo)),
-        SupplyKind::Pps => PowerSource::Pps(request::Pps(plan.rdo)),
-        SupplyKind::SprAvs | SupplyKind::EprAvs => PowerSource::Avs(request::Avs(plan.rdo)),
-        SupplyKind::ZeroPadding | SupplyKind::Unsupported => panic!("request planner selected an invalid PDO"),
-    }
-}
-
 fn confidence_name(confidence: CurrentConfidence) -> &'static str {
     match confidence {
         CurrentConfidence::Advertised => "advertised",
@@ -649,454 +613,183 @@ impl SinkTimer for EmbassySinkTimer {
     }
 }
 
-struct UsbpdSinkDriver<'d> {
-    usbpd: UsbPdPhy<'d, peripherals::USBPD, hal::mode::Async>,
-    last_sink_tx_ok: Option<bool>,
-}
+#[derive(Clone, Copy)]
+struct FirmwarePort;
 
-impl<'d> UsbpdSinkDriver<'d> {
-    fn new(usbpd: UsbPdPhy<'d, peripherals::USBPD, hal::mode::Async>) -> Self {
-        Self { usbpd, last_sink_tx_ok: None }
+impl Ch32x035Port for FirmwarePort {
+    #[inline(always)]
+    fn vbus_present(&self) -> bool {
+        vbus_is_present()
     }
 
-    fn reset(&mut self) -> Result<(), UsbpdError> {
-        self.last_sink_tx_ok = None;
-        self.usbpd.reset()
+    async fn wait_for_vbus_present(&self) {
+        VBUS_ATTACHED.wait().await;
     }
-}
 
-impl SinkDriver for UsbpdSinkDriver<'_> {
-    async fn wait_for_vbus(&mut self) {
-        while !vbus_is_present() {
-            VBUS_ATTACHED.wait().await;
-        }
+    async fn wait_for_vbus_absent(&self) {
+        VBUS_DETACHED.wait().await;
+    }
+
+    fn begin_session(&self) {
         // A low pulse from a completed Hard Reset or an earlier physical
         // detach belongs to the old, already-invalidated session. Do not let
         // that stored signal immediately cancel the first receive of this
         // fresh startup.
         VBUS_DETACHED.reset();
-        logln!("Attached; PD starts at 5 V");
     }
 
-    fn sink_tx_ok(&mut self) -> bool {
-        let sink_tx_ok = self.usbpd.sink_tx_ok();
-        if self.last_sink_tx_ok != Some(sink_tx_ok) {
-            if sink_tx_ok {
-                logln!("SinkTxOK; resume");
-            } else {
-                logln!("SinkTxNG; deferred");
-            }
-            self.last_sink_tx_ok = Some(sink_tx_ok);
-        }
-        sink_tx_ok
+    #[inline(always)]
+    fn set_load_enabled(&self, enabled: bool) {
+        request_load(if enabled { LoadCommand::Enable } else { LoadCommand::Disable });
     }
 
-    async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, usbpd_traits::DriverRxError> {
-        if !vbus_is_present() {
-            request_load(LoadCommand::Disable);
-            return Err(usbpd_traits::DriverRxError::Detached);
-        }
-
-        let received = match select(self.usbpd.receive(buffer), VBUS_DETACHED.wait()).await {
-            Either::First(received) => received,
-            Either::Second(()) => {
-                request_load(LoadCommand::Disable);
-                return Err(usbpd_traits::DriverRxError::Detached);
-            }
-        };
-
-        if !vbus_is_present() {
-            request_load(LoadCommand::Disable);
-            return Err(usbpd_traits::DriverRxError::Detached);
-        }
-
-        match received {
-            Ok((Sop::Sop, size)) => Ok(size),
-            Ok(_) => Err(usbpd_traits::DriverRxError::Discarded),
-            Err(UsbpdError::HardReset) => {
-                request_load(LoadCommand::Disable);
-                Err(usbpd_traits::DriverRxError::HardReset)
-            }
-            Err(_) => Err(usbpd_traits::DriverRxError::Discarded),
-        }
-    }
-
-    async fn transmit(&mut self, data: &[u8]) -> Result<(), usbpd_traits::DriverTxError> {
-        if !vbus_is_present() {
-            request_load(LoadCommand::Disable);
-            return Err(usbpd_traits::DriverTxError::Detached);
-        }
-
-        let transmitted = match select(self.usbpd.transmit(data), VBUS_DETACHED.wait()).await {
-            Either::First(transmitted) => transmitted,
-            Either::Second(()) => {
-                request_load(LoadCommand::Disable);
-                return Err(usbpd_traits::DriverTxError::Detached);
-            }
-        };
-
-        if !vbus_is_present() {
-            request_load(LoadCommand::Disable);
-            return Err(usbpd_traits::DriverTxError::Detached);
-        }
-
-        transmitted.map_err(|error| match error {
-            UsbpdError::HardReset => {
-                request_load(LoadCommand::Disable);
-                usbpd_traits::DriverTxError::HardReset
-            }
-            _ => usbpd_traits::DriverTxError::Discarded,
-        })
-    }
-
-    async fn transmit_hard_reset(&mut self) -> Result<(), usbpd_traits::DriverTxError> {
-        request_load(LoadCommand::Disable);
-        if !vbus_is_present() {
-            return Err(usbpd_traits::DriverTxError::Detached);
-        }
-
-        match select(self.usbpd.transmit_hardreset(), VBUS_DETACHED.wait()).await {
-            Either::First(result) => result.map_err(|error| match error {
-                UsbpdError::HardReset => usbpd_traits::DriverTxError::HardReset,
-                _ => usbpd_traits::DriverTxError::Discarded,
-            }),
-            Either::Second(()) => Err(usbpd_traits::DriverTxError::Detached),
+    #[inline(always)]
+    fn observe_phy(&self, event: PhyEvent) {
+        match event {
+            PhyEvent::Attached => logln!("Attached; PD starts at 5 V"),
+            PhyEvent::SinkTxAllowed => logln!("SinkTxOK; resume"),
+            PhyEvent::SinkTxDeferred => logln!("SinkTxNG; deferred"),
         }
     }
 }
 
-struct Device {
-    controller: SinkController,
-    contract: ContractTracker,
-    source_info_requested: bool,
-    epr_discovery_attempts: u8,
-    epr_exhaustion_reported: bool,
-}
+struct FirmwareRuntime;
 
-impl Device {
-    fn new() -> Self {
-        Self {
-            controller: SinkController::new(controller_config()),
-            contract: ContractTracker::new(),
-            source_info_requested: false,
-            epr_discovery_attempts: 0,
-            epr_exhaustion_reported: false,
+impl SinkRuntime for FirmwareRuntime {
+    #[inline(always)]
+    fn set_load_enabled(&mut self, enabled: bool) {
+        request_load(if enabled { LoadCommand::Enable } else { LoadCommand::Disable });
+    }
+
+    #[inline(always)]
+    fn clear_pending_commands(&mut self) {
+        discard_pending_commands();
+    }
+
+    #[inline(always)]
+    fn capability_plans_enabled(&self) -> bool {
+        !cfg!(all(feature = "usb-console", feature = "sdi-log"))
+    }
+
+    async fn wait_for_command(&mut self) -> Command {
+        COMMANDS.receive().await
+    }
+
+    async fn delay_millis(&mut self, milliseconds: u64) {
+        Timer::after_millis(milliseconds).await;
+    }
+
+    fn on_source_capabilities(&mut self, capabilities: ProductSourceCapabilities) {
+        log_product_capabilities(&capabilities);
+    }
+
+    fn on_capability_plans_started(&mut self, count: u8) {
+        logln!("Capability plans: count={} (live contract unchanged)", count);
+    }
+
+    fn on_capability_plans_unavailable(&mut self) {
+        logln!("Plans unavailable in dual-log; use usb-epr");
+    }
+
+    fn on_capability_plan(&mut self, plan: CapabilityPlan) {
+        match plan {
+            CapabilityPlan::Unavailable { position, validity } => {
+                logln!("Plan PDO{} unavailable {}", position, validity_name(validity))
+            }
+            CapabilityPlan::Ready(plan) => log_request_plan("Plan", plan),
+            CapabilityPlan::Rejected(error) => log_controller_error(error),
         }
     }
 
-    fn begin_request(&mut self, plan: RequestPlan) {
-        // Do not expose a changing supply to the load. An identical PPS
-        // maintenance request keeps the confirmed contract and load stable;
-        // a request that changes any encoded operating parameter cuts it.
-        if self.contract.request_changes_power(plan) {
-            request_load(LoadCommand::Disable);
-        }
-        self.contract.on_request(plan).expect("request must follow advertised capabilities");
+    fn on_requesting(&mut self, plan: RequestPlan) {
+        log_request_plan("Requesting", plan);
+        logln!("RDO={:#010x}", plan.rdo);
     }
 
-    fn log_confirmed_contract(&self) {
-        if let Some(plan) = self.contract.active_plan() {
+    fn on_contract_ready(&mut self, plan: Option<RequestPlan>) {
+        if let Some(plan) = plan {
             log_request_plan("Contract ready", plan);
         } else {
             logln!("No confirmed contract");
         }
     }
 
-    #[cfg(not(all(feature = "usb-console", feature = "sdi-log")))]
-    fn log_capability_plans(&self, source_capabilities: &SourceCapabilities) {
-        let capabilities = product_capabilities(source_capabilities);
-        logln!("Capability plans: count={} (live contract unchanged)", capabilities.len());
-        for pdo in capabilities.iter() {
-            if !pdo.is_requestable() {
-                logln!("Plan PDO{} unavailable {}", pdo.position, validity_name(pdo.validity));
-                continue;
-            }
-
-            match self
-                .controller
-                .preview(pd_sink::UserRequest::Pdo { position: pdo.position, demand: pd_sink::Demand::Maximum })
-            {
-                Ok(plan) => log_request_plan("Plan", plan),
-                Err(error) => log_controller_error(error),
-            }
-        }
-        self.log_confirmed_contract();
+    fn on_controller_rejected(&mut self, error: ControllerError) {
+        log_controller_error(error);
     }
 
-    #[cfg(all(feature = "usb-console", feature = "sdi-log"))]
-    fn log_capability_plans(&self, _source_capabilities: &SourceCapabilities) {
-        logln!("Plans unavailable in dual-log; use usb-epr");
+    fn on_stack_capabilities_rejected(&mut self, _error: pd_sink::CapabilityListError) {
+        logln!("Source capabilities rejected by integration");
     }
 
-    fn event_for_action(&mut self, action: ControllerAction) -> Event {
-        match action {
-            ControllerAction::Request(plan) => {
-                self.begin_request(plan);
-                Event::RequestPower(protocol_request(plan))
-            }
-            ControllerAction::EnterEprMode { operational_pdp } => {
-                Event::enter_epr_mode_watts((operational_pdp.get() / 1_000) as u8)
-            }
-            ControllerAction::RequestEprCapabilities => Event::RequestEprSourceCapabilities,
-            ControllerAction::ExitEprMode => Event::ExitEprMode,
-            ControllerAction::None => Event::None,
-        }
-    }
-}
-
-impl DevicePolicyManager for Device {
-    fn sink_capabilities(&self) -> SinkCapabilities {
-        let current_10ma =
-            if cfg!(any(feature = "pps-capable-hardware", feature = "epr-capable-hardware")) { 500 } else { 300 };
-        SinkCapabilities::new_vsafe5v_only(current_10ma)
+    fn on_stack_request_rejected(&mut self, _error: pd_sink::StackConversionError) {
+        logln!("Request rejected by integration");
     }
 
-    fn sink_capabilities_extended(&self) -> SinkCapabilitiesExtended {
-        let epr_capable = cfg!(feature = "epr-capable-hardware");
-        let programmable = epr_capable || cfg!(feature = "pps-capable-hardware");
-        let mut sink_modes = SINK_MODE_VBUS_POWERED;
-        if programmable {
-            sink_modes |= SINK_MODE_PPS_SUPPORTED;
-        }
-        if epr_capable {
-            sink_modes |= SINK_MODE_AVS_SUPPORTED;
-        }
-
-        SinkCapabilitiesExtended::new_v1_power_descriptor(
-            // Temporary WCH development identifiers, matching the USB
-            // descriptor. Replace before distributing hardware.
-            0x1a86,
-            0xfe0c,
-            sink_modes,
-            5,
-            15,
-            if programmable { 100 } else { 15 },
-            if epr_capable { 5 } else { 0 },
-            // Must match Event::enter_epr_mode_watts() below.
-            if epr_capable { 140 } else { 0 },
-            if epr_capable { 140 } else { 0 },
-        )
+    fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
+        logln!("Source_Info: present={} W, maximum={} W, reported={} W", present_watts, maximum_watts, reported_watts);
     }
 
-    async fn inform(&mut self, source_capabilities: &SourceCapabilities) {
-        if matches!(self.contract.state(), ContractState::Detached | ContractState::Lost) {
-            self.contract.on_attach();
-        }
-        self.contract.on_capabilities().expect("capabilities require an attached port");
-
-        let product = product_capabilities(source_capabilities);
-        log_product_capabilities(&product);
-        self.controller.observe_capabilities(product);
-        self.source_info_requested = false;
-    }
-
-    async fn request(&mut self, source_capabilities: &SourceCapabilities) -> PowerSource {
-        let capabilities = product_capabilities(source_capabilities);
-        let plan = self
-            .controller
-            .request_for_capabilities(capabilities)
-            .expect("every compliant source must advertise a valid 5 V fixed PDO");
-
-        self.begin_request(plan);
-        log_request_plan("Requesting", plan);
-        logln!("RDO={:#010x}", plan.rdo);
-        protocol_request(plan)
-    }
-
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
-        // The policy engine invokes this only after receiving PS_RDY. Until
-        // this point the requested current must not be presented to the load.
-        self.contract.on_accept().expect("PS_RDY must correspond to a pending request");
-        self.contract.on_ps_ready().expect("accepted request must become the active contract");
-        self.controller.on_ps_ready();
-        request_load(LoadCommand::Enable);
-        self.log_confirmed_contract();
-    }
-
-    async fn request_not_accepted(&mut self, reason: RequestRejection) {
-        self.contract.on_reject_or_wait();
-        match reason {
-            RequestRejection::Reject => self.controller.request_rejected(),
-            RequestRejection::Wait => self.controller.request_deferred(),
-        }
-        if self.contract.load_may_enable() {
-            request_load(LoadCommand::Enable);
-        }
-        match reason {
-            RequestRejection::Reject => logln!("Request rejected; old contract active"),
-            RequestRejection::Wait => logln!("Request deferred; retry armed"),
+    fn on_request_result(&mut self, result: RequestResult) {
+        match result {
+            RequestResult::Rejected => logln!("Request rejected; old contract active"),
+            RequestResult::Deferred => logln!("Request deferred; retry armed"),
         }
     }
 
-    async fn inform_source_info(&mut self, source_info: &SourceInfo) {
-        let watts = source_info.port_present_pdp_watts();
-        let pdp = (watts != 0).then_some(Milliwatts(u32::from(watts) * 1_000));
-        self.controller.set_source_present_pdp(pdp);
-        logln!(
-            "Source_Info: present={} W, maximum={} W, reported={} W",
-            watts,
-            source_info.object1.port_maximum_pdp_watts(),
-            source_info.object1.port_reported_pdp_watts()
-        );
+    fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
+        match direction {
+            HardResetDirection::Received => logln!("Hard reset received; load off; wait={}ms", recovery_ms),
+            HardResetDirection::Sent => logln!("Hard reset sent; load off; wait={}ms", recovery_ms),
+        }
     }
 
-    async fn hard_reset(&mut self, origin: HardResetOrigin) {
-        request_load(LoadCommand::Disable);
-        discard_pending_commands();
-        self.contract.on_protocol_loss();
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        match origin {
-            HardResetOrigin::Source => {
-                logln!("Hard reset received; load off; wait={}ms", HARD_RESET_RECOVERY_MS)
-            }
-            HardResetOrigin::Sink => {
-                logln!("Hard reset sent; load off; wait={}ms", HARD_RESET_RECOVERY_MS)
-            }
-        }
-
-        // Let even the slow EPR-to-default source timing complete before the
-        // Sink listens for fresh SPR capabilities. This recovery path does
-        // not require PA6 to pulse: the isolated fixture may hold it high.
-        Timer::after_millis(HARD_RESET_RECOVERY_MS).await;
+    fn on_hard_reset_recovery_complete(&mut self) {
         logln!("Reset wait complete; listen SPR");
     }
 
-    async fn detached(&mut self) {
-        request_load(LoadCommand::Disable);
-        discard_pending_commands();
-        self.contract.on_detach();
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        self.epr_discovery_attempts = 0;
-        self.epr_exhaustion_reported = false;
+    fn on_detached(&mut self) {
         logln!("Detached; contract lost; load off");
     }
 
-    async fn protocol_lost(&mut self) {
-        request_load(LoadCommand::Disable);
-        discard_pending_commands();
-        self.contract.on_protocol_loss();
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        // Preserve the bounded automatic EPR attempt budget. Restarting the
-        // software session without a physical detach must not create another
-        // unlimited series of EPR entries.
-        logln!("Protocol lost; load off; EPR={}/{}", self.epr_discovery_attempts, MAX_AUTO_EPR_ATTEMPTS);
+    fn on_protocol_lost(&mut self, epr_attempts: u8, maximum_epr_attempts: u8) {
+        logln!("Protocol lost; load off; EPR={}/{}", epr_attempts, maximum_epr_attempts);
     }
 
-    async fn epr_mode_entry_failed(&mut self, reason: DataEnterFailed) {
-        self.controller.epr_entry_failed();
-        self.source_info_requested = false;
-        // An explicit EnterFailed response describes a persistent source or
-        // cable decision. Remain useful in SPR and leave any later EPR retry
-        // to an explicit user command.
-        self.epr_discovery_attempts = MAX_AUTO_EPR_ATTEMPTS;
-        logln!("EPR entry failed reason={}; auto off", u8::from(reason));
+    fn on_epr_entry_failed(&mut self, reason: u8) {
+        logln!("EPR entry failed reason={}; auto off", reason);
     }
 
-    async fn get_event(&mut self, source_capabilities: &SourceCapabilities) -> Event {
-        loop {
-            if let Some(action) = self.controller.take_ready_action() {
-                return self.event_for_action(action);
-            }
+    fn on_epr_discovery_started(&mut self, attempt: u8, maximum_attempts: u8) {
+        logln!("EPR discovery: enter attempt={}/{}; hold 5 V", attempt, maximum_attempts);
+    }
 
-            if self.contract.load_may_enable() && !self.source_info_requested {
-                self.source_info_requested = true;
-                return Event::RequestSourceInfo;
-            }
+    fn on_epr_discovery_unavailable(&mut self) {
+        logln!("EPR discovery unavailable; auto off");
+    }
 
-            #[cfg(feature = "epr-capable-hardware")]
-            if self.contract.load_may_enable()
-                && self.source_info_requested
-                && matches!(self.controller.epr_state(), EprState::Spr)
-                && source_capabilities.epr_mode_capable()
-                && self.epr_discovery_attempts < MAX_AUTO_EPR_ATTEMPTS
-            {
-                match self.controller.begin_epr_discovery() {
-                    Ok(action) => {
-                        self.epr_discovery_attempts += 1;
-                        self.epr_exhaustion_reported = false;
-                        logln!(
-                            "EPR discovery: enter attempt={}/{}; hold 5 V",
-                            self.epr_discovery_attempts,
-                            MAX_AUTO_EPR_ATTEMPTS
-                        );
-                        return self.event_for_action(action);
-                    }
-                    // A Source may first advertise a temporary 5 V-only
-                    // capability set and replace it shortly afterward. That
-                    // is not an EPR attempt and must not consume the retry
-                    // budget. The guard above normally filters this case; the
-                    // match also closes a capability-update race.
-                    Err(ControllerError::EprUnavailable | ControllerError::NoCapabilities(_)) => {}
-                    Err(_) => {
-                        self.epr_discovery_attempts = MAX_AUTO_EPR_ATTEMPTS;
-                        logln!("EPR discovery unavailable; auto off");
-                    }
-                }
-            }
+    fn on_epr_automatic_discovery_disabled(&mut self) {
+        logln!("EPR auto off; staying SPR; manual retry available");
+    }
 
-            #[cfg(feature = "epr-capable-hardware")]
-            if self.contract.load_may_enable()
-                && self.source_info_requested
-                && matches!(self.controller.epr_state(), EprState::Spr)
-                && self.epr_discovery_attempts >= MAX_AUTO_EPR_ATTEMPTS
-                && !self.epr_exhaustion_reported
-            {
-                self.epr_exhaustion_reported = true;
-                logln!("EPR auto off; staying SPR; manual retry available");
-            }
+    fn on_epr_manual_entry_started(&mut self) {
+        logln!("EPR manual enter; hold 5 V");
+    }
 
-            let command = COMMANDS.receive().await;
-            let action = match command {
-                Command::Request(request) => self.controller.submit(request),
-                Command::Identity => {
-                    log_device_identity();
-                    continue;
-                }
-                Command::Capabilities => {
-                    let product = product_capabilities(source_capabilities);
-                    log_product_capabilities(&product);
-                    continue;
-                }
-                Command::Plans => {
-                    self.log_capability_plans(source_capabilities);
-                    continue;
-                }
-                Command::RequestSourceInfo => {
-                    self.source_info_requested = true;
-                    return Event::RequestSourceInfo;
-                }
-                Command::EnterEpr => {
-                    let action = self.controller.begin_epr_discovery();
-                    if action.is_ok() {
-                        logln!("EPR manual enter; hold 5 V");
-                    }
-                    action
-                }
-                Command::RequestEprCapabilities => self.controller.request_epr_capabilities(),
-                Command::ExitEpr => self.controller.exit_epr(),
-                Command::Status => {
-                    self.log_confirmed_contract();
-                    continue;
-                }
-                Command::Help => {
-                    continue;
-                }
-            };
+    fn on_identity_requested(&mut self) {
+        log_device_identity();
+    }
 
-            match action {
-                Ok(action) => return self.event_for_action(action),
-                Err(error) => log_controller_error(error),
-            }
-        }
+    fn on_help_requested(&mut self) {
+        #[cfg(feature = "usb-console")]
+        log_console_help();
     }
 }
 
 async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) -> ! {
-    let driver = UsbpdSinkDriver::new(phy);
-    let mut sink: Sink<_, EmbassySinkTimer, _> = Sink::new(driver, Device::new());
+    let driver = Ch32x035UsbPdDriver::new(phy, FirmwarePort);
+    let device = SinkDevice::new(sink_config(), FirmwareRuntime).expect("firmware sink configuration must be valid");
+    let mut sink: Sink<_, EmbassySinkTimer, _> = Sink::new(driver, device);
 
     loop {
         while let Err(error) = sink.driver_mut().reset() {

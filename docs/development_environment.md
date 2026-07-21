@@ -63,9 +63,10 @@ Useful interactive builds are:
 ```
 
 The dual-log image is useful when the CDC path itself is under test. At the
-current checkpoint, `usb-epr` uses 61,000 of 63,488 flash bytes (2,488 free),
-while dual-log uses 59,944 bytes (3,544 free). Both reserve 7,560 of 20,480
-static RAM bytes, leaving 12,920 bytes for stack/runtime. Dual-log is smaller
+current library-extraction checkpoint, `usb-epr` uses 61,936 of 63,488 flash
+bytes (1,552 free), while dual-log uses 60,896 bytes (2,592 free). Both reserve
+7,656 of 20,480 static RAM bytes, leaving 12,824 bytes for stack/runtime.
+Dual-log is smaller
 because it deliberately omits some detailed interactive responses and now
 formats each log line only once, but it remains a bring-up diagnostic rather
 than the primary user image.
