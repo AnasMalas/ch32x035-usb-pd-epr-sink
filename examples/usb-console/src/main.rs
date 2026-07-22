@@ -2,20 +2,23 @@
 #![no_main]
 
 use core::cell::Cell;
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 use core::fmt::{self, Write};
+
+#[cfg(feature = "usb-control")]
+mod control_transport;
 
 use ch32_hal as hal;
 use ch32_hal::exti::ExtiInput;
 use ch32_hal::gpio::{Level, Output, Pull, Speed};
-#[cfg(feature = "usb-console")]
-use ch32_hal::usb_x0fs::cdc::{
-    CdcAcm, InterruptHandler as UsbFsInterruptHandler, Receiver as CdcReceiver, Sender as CdcSender,
-};
+#[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
+use ch32_hal::usb_x0fs::cdc::{CdcAcm, InterruptHandler as UsbFsInterruptHandler};
+#[cfg(feature = "dev-text-console")]
+use ch32_hal::usb_x0fs::cdc::{Receiver as CdcReceiver, Sender as CdcSender};
 use ch32_hal::usbpd::{Error as UsbpdError, InterruptHandler, UsbPdPhy};
 use ch32_hal::{bind_interrupts, peripherals};
 use embassy_executor::Spawner;
-#[cfg(feature = "usb-console")]
+#[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 use embassy_futures::join::join3;
 use embassy_futures::select::{select, Either};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
@@ -24,7 +27,7 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::Timer;
 use panic_halt as _;
-#[cfg(not(all(feature = "usb-console", feature = "sdi-log")))]
+#[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 use pd_sink::PlanError;
 use pd_sink::{
     CapabilitiesKind, CapabilityPlan, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError,
@@ -32,6 +35,10 @@ use pd_sink::{
     PlannedOperating, PlannedVoltage, RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestResult,
     SinkConfig, SinkDevice, SinkLimits, SinkPowerDescriptor, SinkRuntime,
     SourceCapabilities as ProductSourceCapabilities, SourceSupply,
+};
+#[cfg(feature = "usb-control")]
+use pd_sink::{
+    ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
 };
 #[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
 use pd_sink::{Preference, UserRequest};
@@ -45,21 +52,24 @@ use usbpd::timers::Timer as SinkTimer;
 ))]
 compile_error!("select at most one bench request feature");
 
+#[cfg(all(feature = "usb-control", feature = "dev-text-console"))]
+compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
+
 static COMMANDS: Channel<CriticalSectionRawMutex, Command, 4> = Channel::new();
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 const CONSOLE_LINE_CAPACITY: usize = 128;
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 const CONSOLE_QUEUE_DEPTH: usize = 32;
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 #[derive(Clone, Copy)]
 struct ConsoleLine {
     bytes: [u8; CONSOLE_LINE_CAPACITY],
     len: u8,
 }
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 impl ConsoleLine {
     const fn new() -> Self {
         Self { bytes: [0; CONSOLE_LINE_CAPACITY], len: 0 }
@@ -79,7 +89,7 @@ impl ConsoleLine {
     }
 }
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 impl fmt::Write for ConsoleLine {
     fn write_str(&mut self, value: &str) -> fmt::Result {
         let start = usize::from(self.len);
@@ -91,10 +101,10 @@ impl fmt::Write for ConsoleLine {
     }
 }
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 static CONSOLE_LINES: Channel<CriticalSectionRawMutex, ConsoleLine, CONSOLE_QUEUE_DEPTH> = Channel::new();
 
-#[cfg(all(feature = "usb-console", not(feature = "sdi-log")))]
+#[cfg(all(feature = "dev-text-console", not(feature = "sdi-log")))]
 fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
     let mut line = ConsoleLine::new();
     let _ = line.write_fmt(arguments);
@@ -102,7 +112,7 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
     let _ = CONSOLE_LINES.try_send(line);
 }
 
-#[cfg(all(feature = "usb-console", feature = "sdi-log"))]
+#[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
 fn enqueue_dual_log(arguments: fmt::Arguments<'_>) {
     let mut line = ConsoleLine::new();
     let _ = line.write_fmt(arguments);
@@ -156,10 +166,10 @@ fn request_load(command: LoadCommand) {
     LOAD_COMMAND.signal(command);
 }
 
-fn sink_config() -> SinkConfig {
+fn board_limits() -> SinkLimits {
     let epr_capable = cfg!(feature = "epr-capable-hardware");
     let pps_capable = cfg!(feature = "pps-capable-hardware");
-    let limits = if epr_capable {
+    if epr_capable {
         SinkLimits {
             max_voltage: Some(Millivolts(48_000)),
             board_max_current: Some(Milliamps(5_000)),
@@ -180,7 +190,13 @@ fn sink_config() -> SinkConfig {
             cable_max_current: None,
             max_power: Some(Milliwatts(15_000)),
         }
-    };
+    }
+}
+
+fn sink_config() -> SinkConfig {
+    let epr_capable = cfg!(feature = "epr-capable-hardware");
+    let pps_capable = cfg!(feature = "pps-capable-hardware");
+    let limits = board_limits();
 
     SinkConfig {
         controller: ControllerConfig {
@@ -211,6 +227,33 @@ fn sink_config() -> SinkConfig {
     }
 }
 
+#[cfg(any(feature = "usb-control", feature = "dev-text-console", feature = "sdi-log"))]
+fn programmed_device_uid() -> Option<[u8; 8]> {
+    let id = hal::signature::unique_id();
+    let mut programmed = [0; 8];
+    programmed.copy_from_slice(&id[..8]);
+    if programmed.iter().all(|byte| *byte == 0x00) || programmed.iter().all(|byte| *byte == 0xff) {
+        None
+    } else {
+        Some(programmed)
+    }
+}
+
+#[cfg(feature = "usb-control")]
+fn device_info() -> DeviceInfo {
+    let limits = board_limits();
+    let epr_capable = cfg!(feature = "epr-capable-hardware");
+    let pps_capable = epr_capable || cfg!(feature = "pps-capable-hardware");
+    DeviceInfo {
+        uid: programmed_device_uid().unwrap_or([0; 8]),
+        flags: (u8::from(pps_capable) * DeviceInfo::PPS_SUPPORTED)
+            | (u8::from(epr_capable) * DeviceInfo::EPR_SUPPORTED),
+        max_voltage: limits.max_voltage.unwrap_or(Millivolts(5_000)),
+        max_current: limits.board_max_current.unwrap_or(Milliamps(3_000)),
+        max_power: limits.max_power.unwrap_or(Milliwatts(15_000)),
+    }
+}
+
 #[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
 #[embassy_executor::task]
 async fn bench_request_task() {
@@ -228,14 +271,21 @@ async fn bench_request_task() {
 
 macro_rules! logln {
     ($($arg:tt)*) => {{
-        #[cfg(all(feature = "sdi-log", not(feature = "usb-console")))]
+        #[cfg(all(feature = "sdi-log", not(feature = "dev-text-console")))]
         hal::println!($($arg)*);
-        #[cfg(all(feature = "usb-console", not(feature = "sdi-log")))]
+        #[cfg(all(feature = "dev-text-console", not(feature = "sdi-log")))]
         enqueue_console_log(core::format_args!($($arg)*));
-        #[cfg(all(feature = "usb-console", feature = "sdi-log"))]
+        #[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
         enqueue_dual_log(core::format_args!($($arg)*));
-        #[cfg(not(any(feature = "sdi-log", feature = "usb-console")))]
+        #[cfg(not(any(feature = "sdi-log", feature = "dev-text-console")))]
         let _ = core::format_args!($($arg)*);
+    }};
+}
+
+macro_rules! control_event {
+    ($event:expr) => {{
+        #[cfg(feature = "usb-control")]
+        control_transport::try_emit($event);
     }};
 }
 
@@ -296,14 +346,14 @@ async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_ena
     }
 }
 
-#[cfg(not(feature = "usb-console"))]
+#[cfg(not(any(feature = "usb-control", feature = "dev-text-console")))]
 bind_interrupts!(
     struct Irq {
         USBPD => InterruptHandler<peripherals::USBPD>;
     }
 );
 
-#[cfg(feature = "usb-console")]
+#[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 bind_interrupts!(
     struct Irq {
         USBPD => InterruptHandler<peripherals::USBPD>;
@@ -315,25 +365,23 @@ fn discard_pending_commands() {
     while COMMANDS.try_receive().is_ok() {}
 }
 
+#[cfg(any(feature = "dev-text-console", feature = "sdi-log"))]
 fn log_device_identity() {
-    let id = hal::signature::unique_id();
-
     // CH32X035 production silicon exposes the same first eight UID bytes as
     // the WCH USB bootloader. Although the reference manual describes a
     // 96-bit ESIG, the final word reads as erased (0xffff_ffff) on observed
     // X035 parts. Do not turn that unprogrammed word into the board label.
-    let programmed_id = &id[..8];
-    if programmed_id.iter().all(|byte| *byte == 0x00) || programmed_id.iter().all(|byte| *byte == 0xff) {
+    let Some(id) = programmed_device_uid() else {
         logln!("Device id=unavailable");
         return;
-    }
+    };
 
     let word0 = u32::from_be_bytes([id[0], id[1], id[2], id[3]]);
     let word1 = u32::from_be_bytes([id[4], id[5], id[6], id[7]]);
     logln!("Device id={:08x}{:08x}", word0, word1);
 }
 
-#[cfg(feature = "usb-console")]
+#[cfg(feature = "dev-text-console")]
 fn log_console_help() {
     logln!("Commands:");
     logln!("device caps plans source-info status enter-epr epr-caps exit-epr help");
@@ -342,8 +390,8 @@ fn log_console_help() {
     logln!("pdo N [max(=maxV APDO)|current mA|adjust mV [mA|max]]");
 }
 
-#[cfg(feature = "usb-console")]
-async fn usb_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
+#[cfg(feature = "dev-text-console")]
+async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
     let mut packet = [0u8; 64];
     let mut command = [0u8; CONSOLE_LINE_CAPACITY];
     let mut command_len = 0usize;
@@ -401,8 +449,8 @@ async fn usb_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
     }
 }
 
-#[cfg(feature = "usb-console")]
-async fn usb_console_tx(mut sender: CdcSender<'static>) -> ! {
+#[cfg(feature = "dev-text-console")]
+async fn dev_text_console_tx(mut sender: CdcSender<'static>) -> ! {
     'connection: loop {
         sender.wait_connection().await;
         loop {
@@ -430,7 +478,7 @@ fn validity_name(validity: PdoValidity) -> &'static str {
     }
 }
 
-#[cfg(not(all(feature = "usb-console", feature = "sdi-log")))]
+#[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 fn log_controller_error(error: ControllerError) {
     let (reason, detail, extra) = match error {
         ControllerError::NoCapabilities(kind) => ("no-caps", kind as u32, 0),
@@ -459,7 +507,7 @@ fn log_controller_error(error: ControllerError) {
     logln!("Rejected {} detail={} extra={}", reason, detail, extra);
 }
 
-#[cfg(all(feature = "usb-console", feature = "sdi-log"))]
+#[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
 fn log_controller_error(_error: ControllerError) {
     logln!("Command rejected");
 }
@@ -646,9 +694,26 @@ impl Ch32x035Port for FirmwarePort {
     #[inline(always)]
     fn observe_phy(&self, event: PhyEvent) {
         match event {
-            PhyEvent::Attached => logln!("Attached; PD starts at 5 V"),
-            PhyEvent::SinkTxAllowed => logln!("SinkTxOK; resume"),
-            PhyEvent::SinkTxDeferred => logln!("SinkTxNG; deferred"),
+            PhyEvent::Attached => {
+                control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::Attached, detail: 0, extra: 0 });
+                logln!("Attached; PD starts at 5 V");
+            }
+            PhyEvent::SinkTxAllowed => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::SinkTxAllowed,
+                    detail: 0,
+                    extra: 0,
+                });
+                logln!("SinkTxOK; resume");
+            }
+            PhyEvent::SinkTxDeferred => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::SinkTxDeferred,
+                    detail: 0,
+                    extra: 0,
+                });
+                logln!("SinkTxNG; deferred");
+            }
         }
     }
 }
@@ -668,7 +733,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     #[inline(always)]
     fn capability_plans_enabled(&self) -> bool {
-        !cfg!(all(feature = "usb-console", feature = "sdi-log"))
+        !cfg!(all(feature = "dev-text-console", feature = "sdi-log"))
     }
 
     async fn wait_for_command(&mut self) -> Command {
@@ -680,33 +745,45 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_source_capabilities(&mut self, capabilities: ProductSourceCapabilities) {
+        control_event!(ControlEvent::Capabilities(capabilities));
         log_product_capabilities(&capabilities);
     }
 
     fn on_capability_plans_started(&mut self, count: u8) {
+        control_event!(ControlEvent::CapabilityPlansStarted { count });
         logln!("Capability plans: count={} (live contract unchanged)", count);
     }
 
     fn on_capability_plans_unavailable(&mut self) {
+        control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable));
         logln!("Plans unavailable in dual-log; use usb-epr");
     }
 
     fn on_capability_plan(&mut self, plan: CapabilityPlan) {
         match plan {
             CapabilityPlan::Unavailable { position, validity } => {
+                control_event!(ControlEvent::CapabilityPlanUnavailable { position, validity });
                 logln!("Plan PDO{} unavailable {}", position, validity_name(validity))
             }
-            CapabilityPlan::Ready(plan) => log_request_plan("Plan", plan),
-            CapabilityPlan::Rejected(error) => log_controller_error(error),
+            CapabilityPlan::Ready(plan) => {
+                control_event!(ControlEvent::Plan { stage: ControlPlanStage::Preview, plan: Some(plan) });
+                log_request_plan("Plan", plan);
+            }
+            CapabilityPlan::Rejected(error) => {
+                control_event!(ControlEvent::ControllerError(error));
+                log_controller_error(error);
+            }
         }
     }
 
     fn on_requesting(&mut self, plan: RequestPlan) {
+        control_event!(ControlEvent::Plan { stage: ControlPlanStage::Requesting, plan: Some(plan) });
         log_request_plan("Requesting", plan);
         logln!("RDO={:#010x}", plan.rdo);
     }
 
     fn on_contract_ready(&mut self, plan: Option<RequestPlan>) {
+        control_event!(ControlEvent::Plan { stage: ControlPlanStage::Contract, plan });
         if let Some(plan) = plan {
             log_request_plan("Contract ready", plan);
         } else {
@@ -715,22 +792,27 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_controller_rejected(&mut self, error: ControllerError) {
+        control_event!(ControlEvent::ControllerError(error));
         log_controller_error(error);
     }
 
     fn on_stack_capabilities_rejected(&mut self, _error: pd_sink::CapabilityListError) {
+        control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilitiesRejected));
         logln!("Source capabilities rejected by integration");
     }
 
     fn on_stack_request_rejected(&mut self, _error: pd_sink::StackConversionError) {
+        control_event!(ControlEvent::IntegrationError(ControlIntegrationError::RequestRejected));
         logln!("Request rejected by integration");
     }
 
     fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
+        control_event!(ControlEvent::SourceInfo { present_watts, maximum_watts, reported_watts });
         logln!("Source_Info: present={} W, maximum={} W, reported={} W", present_watts, maximum_watts, reported_watts);
     }
 
     fn on_request_result(&mut self, result: RequestResult) {
+        control_event!(ControlEvent::RequestResult(result));
         match result {
             RequestResult::Rejected => logln!("Request rejected; old contract active"),
             RequestResult::Deferred => logln!("Request deferred; retry armed"),
@@ -738,6 +820,7 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
+        control_event!(ControlEvent::HardReset { direction, recovery_ms: recovery_ms.min(u64::from(u32::MAX)) as u32 });
         match direction {
             HardResetDirection::Received => logln!("Hard reset received; load off; wait={}ms", recovery_ms),
             HardResetDirection::Sent => logln!("Hard reset sent; load off; wait={}ms", recovery_ms),
@@ -745,43 +828,66 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_hard_reset_recovery_complete(&mut self) {
+        control_event!(ControlEvent::Lifecycle {
+            event: ControlLifecycleEvent::HardResetRecoveryComplete,
+            detail: 0,
+            extra: 0,
+        });
         logln!("Reset wait complete; listen SPR");
     }
 
     fn on_detached(&mut self) {
+        control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::Detached, detail: 0, extra: 0 });
         logln!("Detached; contract lost; load off");
     }
 
     fn on_protocol_lost(&mut self, epr_attempts: u8, maximum_epr_attempts: u8) {
+        control_event!(ControlEvent::Lifecycle {
+            event: ControlLifecycleEvent::ProtocolLost,
+            detail: u32::from(epr_attempts),
+            extra: u32::from(maximum_epr_attempts),
+        });
         logln!("Protocol lost; load off; EPR={}/{}", epr_attempts, maximum_epr_attempts);
     }
 
     fn on_epr_entry_failed(&mut self, reason: u8) {
+        control_event!(ControlEvent::Epr { event: ControlEprEvent::EntryFailed, detail: reason, extra: 0 });
         logln!("EPR entry failed reason={}; auto off", reason);
     }
 
     fn on_epr_discovery_started(&mut self, attempt: u8, maximum_attempts: u8) {
+        control_event!(ControlEvent::Epr {
+            event: ControlEprEvent::DiscoveryStarted,
+            detail: attempt,
+            extra: maximum_attempts,
+        });
         logln!("EPR discovery: enter attempt={}/{}; hold 5 V", attempt, maximum_attempts);
     }
 
     fn on_epr_discovery_unavailable(&mut self) {
+        control_event!(ControlEvent::Epr { event: ControlEprEvent::DiscoveryUnavailable, detail: 0, extra: 0 });
         logln!("EPR discovery unavailable; auto off");
     }
 
     fn on_epr_automatic_discovery_disabled(&mut self) {
+        control_event!(ControlEvent::Epr { event: ControlEprEvent::AutomaticDiscoveryDisabled, detail: 0, extra: 0 });
         logln!("EPR auto off; staying SPR; manual retry available");
     }
 
     fn on_epr_manual_entry_started(&mut self) {
+        control_event!(ControlEvent::Epr { event: ControlEprEvent::ManualEntryStarted, detail: 0, extra: 0 });
         logln!("EPR manual enter; hold 5 V");
     }
 
     fn on_identity_requested(&mut self) {
+        control_event!(ControlEvent::Device(device_info()));
+        #[cfg(any(feature = "dev-text-console", feature = "sdi-log"))]
         log_device_identity();
     }
 
     fn on_help_requested(&mut self) {
-        #[cfg(feature = "usb-console")]
+        control_event!(ControlEvent::Help);
+        #[cfg(feature = "dev-text-console")]
         log_console_help();
     }
 }
@@ -794,38 +900,74 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
     loop {
         while let Err(error) = sink.driver_mut().reset() {
             if !matches!(error, UsbpdError::CCNotConnected) {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdResetFailed,
+                    detail: 0,
+                    extra: 0,
+                });
                 logln!("PD reset failed");
             }
             Timer::after_millis(20).await;
         }
 
         sink.restart();
+        control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::CcDetected, detail: 0, extra: 0 });
         logln!("CC detected; waiting for VBUS");
 
         let result = sink.run().await;
         let restart_delay_ms = match result {
             Ok(()) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStopped,
+                    detail: 20,
+                    extra: 0,
+                });
                 logln!("PD stopped");
                 20
             }
             Err(usbpd::sink::policy_engine::Error::Detached) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStoppedDetach,
+                    detail: 20,
+                    extra: 0,
+                });
                 logln!("PD stopped: detach");
                 20
             }
             Err(usbpd::sink::policy_engine::Error::PhyUnstable) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStoppedPhy,
+                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
+                    extra: 0,
+                });
                 logln!("PD stopped: PHY; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
                 PROTOCOL_RESTART_COOLDOWN_MS
             }
             Err(usbpd::sink::policy_engine::Error::PortPartnerUnresponsive) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStoppedTimeout,
+                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
+                    extra: 0,
+                });
                 logln!("PD stopped: timeout; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
                 PROTOCOL_RESTART_COOLDOWN_MS
             }
             Err(usbpd::sink::policy_engine::Error::Protocol(_)) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStoppedProtocol,
+                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
+                    extra: 0,
+                });
                 logln!("PD stopped: protocol; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
                 PROTOCOL_RESTART_COOLDOWN_MS
             }
             Err(usbpd::sink::policy_engine::Error::InvalidEprOperationalPdp)
             | Err(usbpd::sink::policy_engine::Error::InvalidRequestForMode) => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdStoppedPolicy,
+                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
+                    extra: 0,
+                });
                 logln!("PD stopped: policy; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
                 PROTOCOL_RESTART_COOLDOWN_MS
             }
@@ -852,13 +994,20 @@ async fn main(_spawner: Spawner) {
 
     let phy = UsbPdPhy::new_async(peripherals.USBPD, peripherals.PC14, peripherals.PC15, Irq);
 
-    #[cfg(not(feature = "usb-console"))]
+    #[cfg(not(any(feature = "usb-control", feature = "dev-text-console")))]
     run_pd(phy).await;
 
-    #[cfg(feature = "usb-console")]
+    #[cfg(feature = "dev-text-console")]
     {
         let cdc = CdcAcm::new(peripherals.USBFS, peripherals.PC16, peripherals.PC17, Irq);
         let (sender, receiver) = cdc.split();
-        join3(usb_console_rx(receiver), usb_console_tx(sender), run_pd(phy)).await;
+        join3(dev_text_console_rx(receiver), dev_text_console_tx(sender), run_pd(phy)).await;
+    }
+
+    #[cfg(feature = "usb-control")]
+    {
+        let cdc = CdcAcm::new(peripherals.USBFS, peripherals.PC16, peripherals.PC17, Irq);
+        let (sender, receiver) = cdc.split();
+        join3(control_transport::receive(receiver), control_transport::transmit(sender), run_pd(phy)).await;
     }
 }

@@ -1,0 +1,128 @@
+use ch32_hal::usb_x0fs::cdc::{Receiver as CdcReceiver, Sender as CdcSender};
+use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
+use embassy_sync::channel::Channel;
+use pd_sink::{
+    decode_control_command, encode_control_event, Command, CommandStatus, ControlCommandDecodeError, ControlEvent,
+    ControlFrameDecoder, ControlLifecycleEvent, CONTROL_MAX_FRAME_LEN,
+};
+
+use crate::{device_info, COMMANDS};
+
+const CONTROL_QUEUE_DEPTH: usize = 16;
+
+#[derive(Clone, Copy)]
+struct ControlPacket {
+    bytes: [u8; CONTROL_MAX_FRAME_LEN],
+    len: u8,
+}
+
+impl ControlPacket {
+    fn encode(event: ControlEvent, sequence: u8) -> Option<Self> {
+        let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+        let len = encode_control_event(event, sequence, &mut bytes).ok()?;
+        Some(Self { bytes, len: len as u8 })
+    }
+
+    fn as_bytes(&self) -> &[u8] {
+        &self.bytes[..usize::from(self.len)]
+    }
+}
+
+static CONTROL_PACKETS: Channel<CriticalSectionRawMutex, ControlPacket, CONTROL_QUEUE_DEPTH> = Channel::new();
+
+pub fn try_emit(event: ControlEvent) {
+    try_emit_sequence(event, 0);
+}
+
+pub fn try_emit_sequence(event: ControlEvent, sequence: u8) {
+    if let Some(packet) = ControlPacket::encode(event, sequence) {
+        let _ = CONTROL_PACKETS.try_send(packet);
+    }
+}
+
+async fn emit(event: ControlEvent, sequence: u8) {
+    if let Some(packet) = ControlPacket::encode(event, sequence) {
+        CONTROL_PACKETS.send(packet).await;
+    }
+}
+
+fn clear_packets() {
+    while CONTROL_PACKETS.try_receive().is_ok() {}
+}
+
+pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
+    let mut packet = [0u8; 64];
+    let mut decoder = ControlFrameDecoder::new();
+
+    loop {
+        receiver.wait_connection().await;
+        decoder.reset();
+        clear_packets();
+        emit(ControlEvent::Lifecycle { event: ControlLifecycleEvent::UsbReady, detail: 0, extra: 0 }, 0).await;
+        emit(ControlEvent::Device(device_info()), 0).await;
+
+        loop {
+            let count = match receiver.read_packet(&mut packet).await {
+                Ok(count) => count,
+                Err(_) => break,
+            };
+
+            for &byte in &packet[..count] {
+                let Some(frame) = decoder.push(byte) else {
+                    continue;
+                };
+                let Ok(frame) = frame else {
+                    continue;
+                };
+                let sequence = frame.sequence;
+                let decoded = match decode_control_command(&frame) {
+                    Ok(decoded) => decoded,
+                    Err(error) => {
+                        let status = match error {
+                            ControlCommandDecodeError::UnsupportedVersion
+                            | ControlCommandDecodeError::UnknownCommand => CommandStatus::Unsupported,
+                            ControlCommandDecodeError::InvalidLength | ControlCommandDecodeError::InvalidValue => {
+                                CommandStatus::Invalid
+                            }
+                        };
+                        emit(ControlEvent::CommandResult(status), sequence).await;
+                        continue;
+                    }
+                };
+
+                match decoded.command {
+                    Command::Identity => {
+                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                        emit(ControlEvent::Device(device_info()), sequence).await;
+                    }
+                    Command::Help => {
+                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                        emit(ControlEvent::Help, sequence).await;
+                    }
+                    command => {
+                        let status = if COMMANDS.try_send(command).is_ok() {
+                            CommandStatus::Queued
+                        } else {
+                            CommandStatus::Busy
+                        };
+                        emit(ControlEvent::CommandResult(status), sequence).await;
+                    }
+                }
+            }
+        }
+    }
+}
+
+pub async fn transmit(mut sender: CdcSender<'static>) -> ! {
+    'connection: loop {
+        sender.wait_connection().await;
+        loop {
+            let packet = CONTROL_PACKETS.receive().await;
+            for chunk in packet.as_bytes().chunks(sender.max_packet_size()) {
+                if sender.write_packet(chunk).await.is_err() {
+                    continue 'connection;
+                }
+            }
+        }
+    }
+}

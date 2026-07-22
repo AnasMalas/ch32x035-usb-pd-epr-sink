@@ -9,7 +9,11 @@ publish = false
 [features]
 default = ["sdi-log"]
 sdi-log = []
-usb-console = []
+usb-control = []
+dev-text-console = []
+# Compatibility alias for commands documented by the private development
+# repository before the production control protocol was separated.
+usb-console = ["dev-text-console"]
 pps-capable-hardware = []
 epr-capable-hardware = []
 bench-pps-19v4 = ["pps-capable-hardware"]
