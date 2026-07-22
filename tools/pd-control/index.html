@@ -7,6 +7,7 @@
     <meta http-equiv="Content-Security-Policy" content="default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'">
     <title>USB PD Control</title>
     <link rel="stylesheet" href="styles.css">
+    <script src="protocol.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -39,7 +40,7 @@
         <div>
           <p class="eyebrow">Live device</p>
           <h1>Power contract at a glance</h1>
-          <p id="device-description" class="subtle">Connect the running USB-console firmware to begin.</p>
+          <p id="device-description" class="subtle">Connect USB-control or development text-console firmware to begin.</p>
         </div>
         <button id="safe-five-button" class="button button-safe" type="button" disabled>
           Request safe 5 V
@@ -204,14 +205,14 @@
         <summary class="terminal-summary">
           <span>
             <strong>Diagnostics console</strong>
-            <small>Optional raw device stream and advanced command entry</small>
+            <small>Translated compact events or raw development text, plus advanced command entry</small>
           </span>
           <span class="pill">Show terminal</span>
         </summary>
         <div class="terminal-content">
           <div class="section-heading terminal-heading">
             <div>
-              <p class="eyebrow">Raw device stream</p>
+              <p class="eyebrow">Device event stream</p>
               <h2>Console</h2>
             </div>
             <div class="terminal-tools">

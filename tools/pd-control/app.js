@@ -1,6 +1,7 @@
 "use strict";
 
 const $ = (selector) => document.querySelector(selector);
+const controlProtocol = globalThis.PdControlProtocol;
 
 const ui = {
   connectButton: $("#connect-button"),
@@ -53,6 +54,11 @@ const state = {
   readTask: null,
   keepReading: false,
   connected: false,
+  transport: null,
+  detectionBuffer: [],
+  controlDecoder: new controlProtocol.FrameDecoder(),
+  textDecoder: new TextDecoder(),
+  nextSequence: 1,
   lineBuffer: "",
   log: [],
   pdos: new Map(),
@@ -66,7 +72,6 @@ const state = {
 };
 
 const encoder = new TextEncoder();
-const decoder = new TextDecoder();
 const MAX_LOG_LINES = 1500;
 const BOARD_SETTING_PREFIX = "usb-pd-control.board.";
 const ALLOWED_VOLTAGE_CEILINGS = new Set([5000, 28000, 48000]);
@@ -128,6 +133,19 @@ function displayBoardId(uid) {
   return uid ? `Board ${uid.slice(-8).toUpperCase()}` : "Board identity pending";
 }
 
+function transportLabel() {
+  if (state.transport === "usb-control") return "Compact USB control";
+  if (state.transport === "dev-text-console") return "Development text console";
+  return "USB CDC detecting protocol";
+}
+
+function refreshDeviceDescription() {
+  const board = state.deviceUid ? displayBoardId(state.deviceUid) : null;
+  const id = [board, state.usbId].filter(Boolean).join(" · ") || "device identity pending";
+  ui.deviceDescription.textContent = `${transportLabel()} · ${id}`;
+  ui.deviceId.textContent = id;
+}
+
 function setVoltageCeiling(value, { persist = false } = {}) {
   const ceiling = Number(value);
   state.maxVoltageMillivolts = ALLOWED_VOLTAGE_CEILINGS.has(ceiling) ? ceiling : 5000;
@@ -156,9 +174,7 @@ function applyDeviceIdentity(rawUid) {
   const uid = normalizeDeviceIdentity(rawUid);
   if (!uid) {
     state.deviceUid = null;
-    const id = state.usbId || "USB CDC connected";
-    ui.deviceDescription.textContent = `USB CDC connected at 115200 baud · ${id}`;
-    ui.deviceId.textContent = id;
+    refreshDeviceDescription();
     ui.deviceId.removeAttribute("title");
     setVoltageCeiling(5000);
     ui.voltageCeilingNote.textContent = "The MCU did not provide a usable identity. This connection stays at the safe 5 V default and is not cached.";
@@ -167,39 +183,42 @@ function applyDeviceIdentity(rawUid) {
 
   state.deviceUid = uid;
   const board = displayBoardId(state.deviceUid);
-  const id = state.usbId ? `${board} · ${state.usbId}` : board;
-  ui.deviceDescription.textContent = `USB CDC connected at 115200 baud · ${id}`;
-  ui.deviceId.textContent = id;
+  refreshDeviceDescription();
   ui.deviceId.title = `MCU unique ID ${state.deviceUid.toUpperCase()}`;
   setVoltageCeiling(savedVoltageCeiling(state.deviceUid));
   ui.voltageCeilingNote.textContent = `Loaded the saved GUI ceiling for ${board}. This is not a hardware rating.`;
 }
 
 function updateActionAvailability() {
-  const connected = state.connected;
-  for (const input of ui.voltageCeilingInputs) input.disabled = !connected;
-  ui.enterEprButton.disabled = !connected || state.inEpr || !state.sourceEprCapable;
-  ui.eprCapsButton.disabled = !connected || !state.inEpr;
-  ui.exitEprButton.disabled = !connected || !state.inEpr;
+  const ready = state.connected && state.transport !== null;
+  for (const input of ui.voltageCeilingInputs) input.disabled = !ready;
+  ui.safeFiveButton.disabled = !ready;
+  document.querySelectorAll(".command-button, .request-submit").forEach((button) => {
+    button.disabled = !ready;
+  });
+  ui.rawCommand.disabled = !ready;
+  ui.rawCommandForm.querySelector("button").disabled = !ready;
+  ui.enterEprButton.disabled = !ready || state.inEpr || !state.sourceEprCapable;
+  ui.eprCapsButton.disabled = !ready || !state.inEpr;
+  ui.exitEprButton.disabled = !ready || !state.inEpr;
 }
 
 function setConnected(connected) {
   state.connected = connected;
   ui.connectionDot.classList.toggle("connected", connected);
-  ui.connectionLabel.textContent = connected ? "Connected" : "Disconnected";
+  ui.connectionLabel.textContent = connected ? (state.transport ? "Connected" : "Detecting device") : "Disconnected";
   ui.connectButton.textContent = connected ? "Disconnect" : "Connect device";
-  ui.safeFiveButton.disabled = !connected;
-  document.querySelectorAll(".command-button, .request-submit").forEach((button) => {
-    button.disabled = !connected;
-  });
-  ui.rawCommand.disabled = !connected;
-  ui.rawCommandForm.querySelector("button").disabled = !connected;
 
   if (!connected) {
+    state.transport = null;
+    state.detectionBuffer.length = 0;
+    state.controlDecoder.reset();
+    state.textDecoder = new TextDecoder();
+    state.nextSequence = 1;
     state.usbId = null;
     state.deviceUid = null;
     setVoltageCeiling(5000);
-    ui.deviceDescription.textContent = "Connect the running USB-console firmware to begin.";
+    ui.deviceDescription.textContent = "Connect USB-control or development text-console firmware to begin.";
     ui.deviceId.textContent = "No device selected";
     ui.deviceId.removeAttribute("title");
   }
@@ -265,13 +284,94 @@ function addLog(text, direction = "incoming", severity = "normal") {
 }
 
 function appendSerialText(chunk) {
-  state.lineBuffer += decoder.decode(chunk, { stream: true }).replaceAll("\r", "");
+  state.lineBuffer += state.textDecoder.decode(chunk, { stream: true }).replaceAll("\r", "");
   const lines = state.lineBuffer.split("\n");
   state.lineBuffer = lines.pop() ?? "";
   for (const line of lines) {
     if (line.length > 0) {
       parseDeviceLine(line);
     }
+  }
+}
+
+function appendControlData(chunk) {
+  const decoded = state.controlDecoder.push(chunk);
+  if (decoded.errors > 0) {
+    addLog(`Ignored ${decoded.errors} damaged USB-control frame${decoded.errors === 1 ? "" : "s"}.`, "system", "error");
+  }
+  for (const frame of decoded.frames) {
+    try {
+      for (const line of controlProtocol.translateFrame(frame)) parseDeviceLine(line);
+    } catch (error) {
+      addLog(`Could not decode USB-control event: ${error.message}`, "system", "error");
+    }
+  }
+}
+
+async function initializeTransport() {
+  try {
+    await sendCommand("device", { echo: false });
+    await new Promise((resolve) => setTimeout(resolve, 40));
+    await sendCommand("status", { echo: false });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await sendCommand("caps", { echo: false });
+  } catch (error) {
+    if (state.connected) addLog(`Device initialization failed: ${error.message}`, "system", "error");
+  }
+}
+
+function selectTransport(transport) {
+  if (state.transport) return;
+  state.transport = transport;
+  ui.connectionLabel.textContent = "Connected";
+  refreshDeviceDescription();
+  updateActionAvailability();
+  addLog(
+    transport === "usb-control"
+      ? "Using compact USB control; the browser translates typed device events."
+      : "Using the development text console compatibility transport.",
+    "system",
+  );
+  setTimeout(() => void initializeTransport(), 0);
+}
+
+function appendSerialData(chunk) {
+  if (state.transport === "usb-control") {
+    appendControlData(chunk);
+    return;
+  }
+  if (state.transport === "dev-text-console") {
+    appendSerialText(chunk);
+    return;
+  }
+
+  state.detectionBuffer.push(...chunk);
+  const bytes = state.detectionBuffer;
+  let controlStart = -1;
+  for (let index = 0; index + 2 < bytes.length; index += 1) {
+    if (bytes[index] === 0x50 && bytes[index + 1] === 0x44 && bytes[index + 2] === controlProtocol.VERSION) {
+      controlStart = index;
+      break;
+    }
+  }
+  if (controlStart >= 0) {
+    selectTransport("usb-control");
+    const buffered = Uint8Array.from(bytes.slice(controlStart));
+    state.detectionBuffer.length = 0;
+    appendControlData(buffered);
+    return;
+  }
+
+  const newline = bytes.indexOf(0x0a);
+  const printableLine = newline >= 0 && bytes.slice(0, newline).every((byte) => byte === 0x0d || (byte >= 0x20 && byte <= 0x7e));
+  if (printableLine) {
+    selectTransport("dev-text-console");
+    const buffered = Uint8Array.from(bytes);
+    state.detectionBuffer.length = 0;
+    appendSerialText(buffered);
+  } else if (bytes.length > 256) {
+    state.detectionBuffer.splice(0, bytes.length - 2);
+    addLog("Waiting for a valid USB-control frame or text-console line.", "system", "error");
   }
 }
 
@@ -509,6 +609,9 @@ async function sendCommand(command, { echo = true } = {}) {
   if (!state.connected || !state.writer) {
     throw new Error("Connect the device first.");
   }
+  if (!state.transport) {
+    throw new Error("Waiting for the device control protocol.");
+  }
   const requestedVoltage = commandRequestedVoltage(trimmed);
   if (requestedVoltage === "unknown-pdo" && state.maxVoltageMillivolts < 48000) {
     throw new Error("Load the full capability list before making a direct PDO request under a limited board ceiling.");
@@ -518,7 +621,13 @@ async function sendCommand(command, { echo = true } = {}) {
       `This request exceeds the board's ${displayMillivolts(state.maxVoltageMillivolts)} GUI ceiling.`,
     );
   }
-  await state.writer.write(encoder.encode(`${trimmed}\n`));
+  if (state.transport === "usb-control") {
+    const sequence = state.nextSequence;
+    state.nextSequence = sequence === 0xff ? 1 : sequence + 1;
+    await state.writer.write(controlProtocol.encodeCommand(trimmed, sequence));
+  } else {
+    await state.writer.write(encoder.encode(`${trimmed}\n`));
+  }
   if (echo) addLog(trimmed, "outgoing");
 }
 
@@ -530,7 +639,7 @@ async function readSerial() {
         while (state.keepReading) {
           const { value, done } = await state.reader.read();
           if (done) break;
-          if (value) appendSerialText(value);
+          if (value) appendSerialData(value);
         }
       } finally {
         state.reader.releaseLock();
@@ -565,6 +674,11 @@ async function connectPort() {
     state.port = port;
     state.writer = port.writable.getWriter();
     state.keepReading = true;
+    state.transport = null;
+    state.detectionBuffer.length = 0;
+    state.controlDecoder.reset();
+    state.textDecoder = new TextDecoder();
+    state.nextSequence = 1;
     state.lineBuffer = "";
     state.deviceUid = null;
     setConnected(true);
@@ -573,19 +687,11 @@ async function connectPort() {
     const info = port.getInfo();
     const id = `VID ${formatUsbId(info.usbVendorId)} · PID ${formatUsbId(info.usbProductId)}`;
     state.usbId = id;
-    ui.deviceDescription.textContent = `USB CDC connected at 115200 baud · ${id}`;
-    ui.deviceId.textContent = id;
+    refreshDeviceDescription();
     ui.portState.textContent = "Connected";
-    ui.portDetail.textContent = "Waiting for device output";
+    ui.portDetail.textContent = "Detecting compact control or text console";
     addLog(`Connected to ${id}`, "system");
     state.readTask = readSerial();
-
-    await new Promise((resolve) => setTimeout(resolve, 180));
-    await sendCommand("device", { echo: false });
-    await new Promise((resolve) => setTimeout(resolve, 40));
-    await sendCommand("status", { echo: false });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    await sendCommand("caps", { echo: false });
   } catch (error) {
     if (error.name !== "NotFoundError") {
       addLog(`Connection failed: ${error.message}`, "system", "error");
@@ -782,4 +888,4 @@ setConnected(false);
 clearDeviceState();
 updatePdoFields();
 updateActionAvailability();
-addLog("USB PD Control is ready. Connect a USB-console device to begin.", "system");
+addLog("USB PD Control is ready. Connect a USB-control or development text-console device to begin.", "system");
