@@ -23,7 +23,8 @@ compliance.
   reason and confidence.
 - Handle SinkTxOK/SinkTxNG, Soft Reset, Hard Reset, detach, bounded retries,
   source-owned AMS traffic, and tested real-source compatibility cases.
-- Expose an optional CH32X035 USB CDC command console and static browser GUI.
+- Expose a compact product-facing USB control protocol, an optional development
+  text console, and a static browser GUI that automatically supports either.
 
 Battery and variable PDOs remain visible when advertised but are deliberately
 not requestable because they are outside this project's sink use case.
@@ -94,6 +95,12 @@ Launch the optional browser interface with:
 ```powershell
 .\scripts\gui.ps1
 ```
+
+The normal `usb-safe-5v`, `usb-pps`, and `usb-epr` profiles use compact binary
+`usb-control`; the browser translates it into the readable interface and
+diagnostic stream. Use `usb-epr-text` only when a direct ASCII serial console
+is useful during development. The legacy `usb-console` Cargo feature remains a
+compatibility alias for `dev-text-console`.
 
 For application integration, enable the crate's `ch32x035` feature, provide
 the small `SinkRuntime` and `Ch32x035Port` adapters, and keep the GPIO choices

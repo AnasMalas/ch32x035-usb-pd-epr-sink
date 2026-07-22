@@ -26,7 +26,7 @@ if (-not $Port) {
         $Port = $ports[0]
     }
     elseif ($ports.Count -eq 0) {
-        throw 'No serial port found. Connect the running USB-console firmware and try again.'
+        throw 'No serial port found. Connect the running development text-console firmware and try again.'
     }
     else {
         throw "More than one serial port was found ($($ports -join ', ')). Select one with -Port COMx."

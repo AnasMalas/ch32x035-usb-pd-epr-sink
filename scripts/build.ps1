@@ -5,6 +5,7 @@ param(
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
+        'usb-epr-text',
         'usb-epr-dual-log',
         'pps-19v4',
         'epr-avs-19v4',
@@ -30,10 +31,11 @@ Push-Location $workspace
 try {
     $profileArguments = switch ($Profile) {
         'safe-5v' { @() }
-        'usb-safe-5v' { @('--no-default-features', '--features', 'usb-console') }
-        'usb-pps' { @('--no-default-features', '--features', 'usb-console,pps-capable-hardware') }
-        'usb-epr' { @('--no-default-features', '--features', 'usb-console,epr-capable-hardware') }
-        'usb-epr-dual-log' { @('--features', 'usb-console,epr-capable-hardware') }
+        'usb-safe-5v' { @('--no-default-features', '--features', 'usb-control') }
+        'usb-pps' { @('--no-default-features', '--features', 'usb-control,pps-capable-hardware') }
+        'usb-epr' { @('--no-default-features', '--features', 'usb-control,epr-capable-hardware') }
+        'usb-epr-text' { @('--no-default-features', '--features', 'dev-text-console,epr-capable-hardware') }
+        'usb-epr-dual-log' { @('--features', 'dev-text-console,epr-capable-hardware') }
         'pps-19v4' { @('--features', 'bench-pps-19v4') }
         'epr-avs-19v4' { @('--features', 'bench-epr-avs-19v4') }
         'epr-fixed-48v' { @('--features', 'bench-epr-fixed-48v') }

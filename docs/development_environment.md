@@ -59,17 +59,15 @@ Useful interactive builds are:
 .\scripts\build.ps1 -Profile usb-safe-5v
 .\scripts\build.ps1 -Profile usb-pps
 .\scripts\build.ps1 -Profile usb-epr
+.\scripts\build.ps1 -Profile usb-epr-text
 .\scripts\build.ps1 -Profile usb-epr-dual-log
 ```
 
-The dual-log image is useful when the CDC path itself is under test. At the
-current library-extraction checkpoint, `usb-epr` uses 61,936 of 63,488 flash
-bytes (1,552 free), while dual-log uses 60,896 bytes (2,592 free). Both reserve
-7,656 of 20,480 static RAM bytes, leaving 12,824 bytes for stack/runtime.
-Dual-log is smaller
-because it deliberately omits some detailed interactive responses and now
-formats each log line only once, but it remains a bring-up diagnostic rather
-than the primary user image.
+`usb-epr` is the normal compact binary control image. It uses 54,864 of 63,488
+flash bytes (8,624 free) and reserves 4,584 of 20,480 static RAM bytes. The
+development ASCII `usb-epr-text` image uses 61,920 flash bytes (1,568 free) and
+7,656 static RAM bytes. `usb-epr-dual-log` sends human-readable logs over both
+CDC and SDI and remains a bring-up diagnostic rather than a primary user image.
 
 ## USB ISP and runtime CDC
 
@@ -96,9 +94,19 @@ and immediately program the same explicit profile in one command, use:
 The lower-level `flash.ps1 -Firmware <path>` form remains available when an
 exact archived or reviewed ELF must be programmed.
 
-After leaving ISP mode and resetting normally, list and open the COM port:
+After leaving ISP mode and resetting normally, launch the browser GUI. It
+speaks the compact protocol directly and translates device events locally:
 
 ```powershell
+.\scripts\gui.ps1
+```
+
+For direct ASCII terminal work, build and flash `usb-epr-text`, then list and
+open the COM port:
+
+```powershell
+.\scripts\build.ps1 -Profile usb-epr-text
+.\scripts\flash.ps1 -Profile usb-epr-text
 .\scripts\console.ps1 -List
 .\scripts\console.ps1 -Port COM7
 ```
@@ -110,8 +118,8 @@ For a scripted smoke test:
 ```
 
 The baud-rate argument is conventional metadata for USB CDC; there is no UART
-baud clock in the data path. The firmware accepts ASCII lines terminated by
-LF or CRLF. Type `help` for the complete command grammar.
+baud clock in the data path. The development text firmware accepts ASCII lines
+terminated by LF or CRLF. Type `help` for the complete command grammar.
 
 USB logging is non-blocking with respect to the PD task. A disconnected or
 slow host may lose diagnostic lines, but it cannot stop negotiation or the
@@ -124,7 +132,7 @@ Treat either as a deliberate source change:
 1. change the exact version/revision or dated toolchain;
 2. update `Cargo.lock` if needed;
 3. run `scripts/check.ps1`;
-4. compare flash use for `usb-epr` and `usb-epr-dual-log`;
+4. compare flash use for `usb-epr`, `usb-epr-text`, and `usb-epr-dual-log`;
 5. commit the lockfile/toolchain change with the code that required it.
 
 Do not point the project at moving Git branches or an unpinned nightly.

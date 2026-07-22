@@ -89,10 +89,11 @@ VID/PID `1A86:FE0C`.
 
 ## 4. Establish and inspect the safe contract
 
-Open the console, then attach an ordinary PD source:
+Start the local GUI, connect the CDC device in the browser, then attach an
+ordinary PD source:
 
 ```powershell
-.\scripts\console.ps1 -Port COM7
+.\scripts\gui.ps1
 ```
 
 Expected ordering is:

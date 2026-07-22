@@ -30,8 +30,11 @@ try {
     cargo clippy -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --all-targets --target x86_64-pc-windows-msvc --locked -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "host clippy failed with exit code $LASTEXITCODE" }
 
-    cargo clippy -p ch32x035-usb-pd-epr-sink-example --release --locked --no-default-features --features 'usb-console,epr-capable-hardware' -- -D warnings
-    if ($LASTEXITCODE -ne 0) { throw "USB EPR firmware clippy failed with exit code $LASTEXITCODE" }
+    cargo clippy -p ch32x035-usb-pd-epr-sink-example --release --locked --no-default-features --features 'usb-control,epr-capable-hardware' -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "USB-control EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
+    cargo clippy -p ch32x035-usb-pd-epr-sink-example --release --locked --no-default-features --features 'dev-text-console,epr-capable-hardware' -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "development text-console EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
     cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --target x86_64-pc-windows-msvc --locked
     if ($LASTEXITCODE -ne 0) { throw "host tests failed with exit code $LASTEXITCODE" }
@@ -45,16 +48,25 @@ try {
     }
 
     foreach ($feature in @(
-        'usb-console',
-        'usb-console,pps-capable-hardware',
-        'usb-console,epr-capable-hardware'
+        'usb-control',
+        'usb-control,pps-capable-hardware',
+        'usb-control,epr-capable-hardware',
+        'dev-text-console,epr-capable-hardware'
     )) {
         cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
     }
 
-    cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features 'usb-console,epr-capable-hardware'
+    cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features 'dev-text-console,epr-capable-hardware'
     if ($LASTEXITCODE -ne 0) { throw "dual-log USB EPR firmware build failed with exit code $LASTEXITCODE" }
+
+    if (Get-Command node -ErrorAction SilentlyContinue) {
+        node tools/pd-control/protocol.test.js
+        if ($LASTEXITCODE -ne 0) { throw "browser protocol tests failed with exit code $LASTEXITCODE" }
+    }
+    else {
+        Write-Host 'Node.js is not installed; browser protocol tests were skipped (the GUI itself does not require Node.js).'
+    }
 }
 finally {
     Pop-Location

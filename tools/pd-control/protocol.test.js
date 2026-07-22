@@ -28,6 +28,11 @@ function eventLines(kind, payload, sequence = 0) {
   assert.equal(second.frames[0].kind, 0x10);
   assert.equal(second.frames[0].sequence, 42);
   assert.deepEqual([...second.frames[0].payload], [...u32(17200), ...u32(2300), 2]);
+
+  assert.deepEqual([...protocol.encodeCommand("request 17200 2300 pps", 37)], [
+    0x50, 0x44, 0x01, 0x10, 0x25, 0x09, 0x30, 0x43,
+    0x00, 0x00, 0xfc, 0x08, 0x00, 0x00, 0x02, 0xb4,
+  ]);
 }
 
 {

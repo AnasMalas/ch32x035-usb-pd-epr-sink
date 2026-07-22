@@ -33,6 +33,10 @@ fn framed_commands_round_trip_through_stream_decoder() {
         &mut bytes,
     )
     .unwrap();
+    assert_eq!(
+        &bytes[..len],
+        &[0x50, 0x44, 0x01, 0x10, 0x25, 0x09, 0x30, 0x43, 0x00, 0x00, 0xfc, 0x08, 0x00, 0x00, 0x02, 0xb4]
+    );
     let decoded = decode_control_command(&decode_one(&bytes[..len])).unwrap();
     assert_eq!(decoded.sequence, 37);
     assert_eq!(
