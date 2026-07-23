@@ -146,6 +146,21 @@ fn bounded_noncanonical_pps_offers_remain_requestable_and_are_capped_safely() {
 }
 
 #[test]
+fn deprecated_three_point_three_volt_pps_endpoint_remains_requestable() {
+    let capabilities = spr_capabilities(&[fixed(5_000, 3_000, false), pps(3_300, 11_000, 3_000, false)]);
+    assert_eq!(capabilities.pdo(2).unwrap().validity, PdoValidity::Valid);
+
+    let plan = RequestPlanner::new()
+        .for_voltage(&capabilities, PortMode::Spr, Millivolts(3_300), None, Preference::Pps, RequestContext::default())
+        .unwrap();
+    assert_eq!(
+        plan.voltage,
+        PlannedVoltage::Adjustable { requested: Millivolts(3_300), encoded: Millivolts(3_300), step_mv: 20 }
+    );
+    assert_eq!((plan.rdo >> 9) & 0xfff, 165);
+}
+
+#[test]
 fn aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen_volts() {
     let aohi_avs = epr_avs_range(5_000, 28_000, 140_000);
     assert_eq!(aohi_avs, 0xd230_328c);
@@ -203,10 +218,74 @@ fn aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen
 
 #[test]
 fn unsafe_epr_avs_extensions_remain_malformed() {
-    for raw in [epr_avs_range(4_900, 28_000, 140_000), epr_avs_range(5_000, 50_000, 140_000)] {
+    for raw in [epr_avs_range(4_900, 28_000, 140_000), epr_avs_range(15_000, 50_100, 140_000)] {
         let capabilities = epr_capabilities(0, raw);
         assert_eq!(capabilities.pdo(8).unwrap().validity, PdoValidity::Malformed(PdoError::InvalidVoltageRange));
     }
+}
+
+#[test]
+fn advertised_fifty_volt_epr_avs_is_compatible_and_explicit() {
+    let capabilities = epr_capabilities(0, epr_avs_range(15_000, 50_000, 140_000));
+    let pdo = capabilities.pdo(8).unwrap();
+    assert_eq!(pdo.validity, PdoValidity::Compatible);
+    assert_eq!(pdo.voltage_range(), Some((Millivolts(15_000), Millivolts(50_000))));
+    assert_eq!(pdo.standard_voltage_range(), Some((Millivolts(15_000), Millivolts(48_000))));
+
+    let planner = RequestPlanner::new();
+    assert_eq!(
+        planner.for_voltage(
+            &capabilities,
+            PortMode::Epr,
+            Millivolts(50_000),
+            None,
+            Preference::EprAvs,
+            RequestContext {
+                limits: SinkLimits { max_voltage: Some(Millivolts(50_000)), ..SinkLimits::default() },
+                ..RequestContext::default()
+            },
+        ),
+        Err(PlanError::VoltageUnavailable(Millivolts(50_000)))
+    );
+    assert_eq!(
+        planner.for_voltage(
+            &capabilities,
+            PortMode::Epr,
+            Millivolts(50_000),
+            None,
+            Preference::EprAvsNonstandard,
+            RequestContext::default(),
+        ),
+        Err(PlanError::VoltageAboveSinkLimit { requested: Millivolts(50_000), maximum: Millivolts(48_000) })
+    );
+
+    let plan = planner
+        .for_voltage(
+            &capabilities,
+            PortMode::Epr,
+            Millivolts(50_000),
+            None,
+            Preference::EprAvsNonstandard,
+            RequestContext {
+                limits: SinkLimits { max_voltage: Some(Millivolts(50_000)), ..SinkLimits::default() },
+                ..RequestContext::default()
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        plan.voltage,
+        PlannedVoltage::Adjustable { requested: Millivolts(50_000), encoded: Millivolts(50_000), step_mv: 100 }
+    );
+    assert_eq!((plan.rdo >> 9) & 0xfff, 2_000);
+    assert_eq!(plan.rdo & 0x7f, 56, "140 W at 50 V is limited to 2.8 A");
+}
+
+#[test]
+fn any_bounded_fifteen_to_forty_eight_volt_avs_range_is_standard() {
+    let capabilities = epr_capabilities(0, epr_avs_range(20_000, 47_500, 140_000));
+    let pdo = capabilities.pdo(8).unwrap();
+    assert_eq!(pdo.validity, PdoValidity::Valid);
+    assert_eq!(pdo.standard_voltage_range(), Some((Millivolts(20_000), Millivolts(47_500))));
 }
 
 #[test]

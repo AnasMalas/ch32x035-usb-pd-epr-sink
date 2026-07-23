@@ -2,6 +2,9 @@ use crate::units::{Milliamps, Millivolts, Milliwatts};
 
 pub const MAX_SOURCE_PDOS: usize = 11;
 pub const EPR_AVS_STANDARD_MIN_VOLTAGE: Millivolts = Millivolts(15_000);
+pub const EPR_AVS_STANDARD_MAX_VOLTAGE: Millivolts = Millivolts(48_000);
+/// Deliberate interoperability ceiling for bounded, non-standard source APDOs.
+pub const EPR_AVS_COMPATIBLE_MAX_VOLTAGE: Millivolts = Millivolts(50_000);
 const EPR_AVS_COMPATIBLE_MIN_VOLTAGE: Millivolts = Millivolts(5_000);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -105,6 +108,24 @@ impl EprAvsSupply {
             self.min_voltage
         }
     }
+
+    pub const fn standard_max_voltage(self) -> Millivolts {
+        if self.max_voltage.0 > EPR_AVS_STANDARD_MAX_VOLTAGE.0 {
+            EPR_AVS_STANDARD_MAX_VOLTAGE
+        } else {
+            self.max_voltage
+        }
+    }
+
+    pub const fn standard_voltage_range(self) -> Option<(Millivolts, Millivolts)> {
+        let minimum = self.standard_min_voltage();
+        let maximum = self.standard_max_voltage();
+        if minimum.0 <= maximum.0 {
+            Some((minimum, maximum))
+        } else {
+            None
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -167,7 +188,7 @@ impl AdvertisedPdo {
     /// range of a bounded compatible offer.
     pub fn standard_voltage_range(self) -> Option<(Millivolts, Millivolts)> {
         match self.supply {
-            SourceSupply::EprAvs(avs) => Some((avs.standard_min_voltage(), avs.max_voltage)),
+            SourceSupply::EprAvs(avs) => avs.standard_voltage_range(),
             _ => self.voltage_range(),
         }
     }
@@ -373,17 +394,18 @@ fn parse_augmented(kind: CapabilitiesKind, position: u8, raw: u32) -> Advertised
             };
             let validity = if position < 8 || !matches!(kind, CapabilitiesKind::Epr) {
                 PdoValidity::Malformed(PdoError::InvalidPosition)
-            } else if !matches!(supply.max_voltage.0, 28_000 | 36_000 | 48_000)
-                || supply.min_voltage < EPR_AVS_COMPATIBLE_MIN_VOLTAGE
+            } else if supply.min_voltage < EPR_AVS_COMPATIBLE_MIN_VOLTAGE
+                || supply.max_voltage > EPR_AVS_COMPATIBLE_MAX_VOLTAGE
                 || supply.min_voltage > supply.max_voltage
             {
                 PdoValidity::Malformed(PdoError::InvalidVoltageRange)
             } else if supply.pdp == Milliwatts(0) || supply.pdp > Milliwatts(240_000) {
                 PdoValidity::Malformed(PdoError::InvalidPower)
-            } else if supply.min_voltage != EPR_AVS_STANDARD_MIN_VOLTAGE {
-                // Early high-power sources have shipped a wire-compatible
-                // 5 V lower bound. Preserve that advertised range for an
-                // explicit opt-in, while normal planning starts at 15 V.
+            } else if supply.min_voltage < EPR_AVS_STANDARD_MIN_VOLTAGE
+                || supply.max_voltage > EPR_AVS_STANDARD_MAX_VOLTAGE
+            {
+                // Preserve bounded source extensions for an explicit opt-in,
+                // while normal planning remains inside 15-48 V.
                 PdoValidity::Compatible
             } else {
                 PdoValidity::Valid

@@ -1,9 +1,9 @@
 use crate::capabilities::{
     AdvertisedPdo, CapabilitiesKind, PdoError, PdoValidity, SourceCapabilities, SourceSupply, SupplyKind,
+    EPR_AVS_COMPATIBLE_MAX_VOLTAGE, EPR_AVS_STANDARD_MAX_VOLTAGE,
 };
 use crate::units::{current_for_power, floor_to, Milliamps, Millivolts, Milliwatts};
 
-const PROTOCOL_MAX_VOLTAGE: Millivolts = Millivolts(48_000);
 const PROTOCOL_MAX_CURRENT: Milliamps = Milliamps(5_000);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -26,8 +26,8 @@ pub enum Preference {
     Pps,
     SprAvs,
     EprAvs,
-    /// Explicitly allow a bounded EPR AVS range outside the standard 15 V
-    /// lower bound when the Source advertised it.
+    /// Explicitly allow a bounded EPR AVS range outside the standard 15-48 V
+    /// range when the Source advertised it.
     EprAvsNonstandard,
 }
 
@@ -382,7 +382,7 @@ fn common_rdo_bits(position: u8, flags: RequestFlags) -> u32 {
 }
 
 fn validate_voltage_limit(voltage: Millivolts, limits: SinkLimits) -> Result<(), PlanError> {
-    let maximum = limits.max_voltage.unwrap_or(PROTOCOL_MAX_VOLTAGE).min(PROTOCOL_MAX_VOLTAGE);
+    let maximum = limits.max_voltage.unwrap_or(EPR_AVS_STANDARD_MAX_VOLTAGE).min(EPR_AVS_COMPATIBLE_MAX_VOLTAGE);
     if voltage > maximum {
         Err(PlanError::VoltageAboveSinkLimit { requested: voltage, maximum })
     } else {
