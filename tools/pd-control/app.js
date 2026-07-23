@@ -68,13 +68,14 @@ const state = {
   inEpr: false,
   usbId: null,
   deviceUid: null,
+  deviceMaxVoltageMillivolts: null,
   maxVoltageMillivolts: 5000,
 };
 
 const encoder = new TextEncoder();
 const MAX_LOG_LINES = 1500;
 const BOARD_SETTING_PREFIX = "usb-pd-control.board.";
-const ALLOWED_VOLTAGE_CEILINGS = new Set([5000, 28000, 48000]);
+const ALLOWED_VOLTAGE_CEILINGS = new Set(controlProtocol.VOLTAGE_CEILINGS);
 
 function setFeedback(message, isError = false) {
   ui.requestFeedback.textContent = message;
@@ -147,8 +148,9 @@ function refreshDeviceDescription() {
 }
 
 function setVoltageCeiling(value, { persist = false } = {}) {
-  const ceiling = Number(value);
-  state.maxVoltageMillivolts = ALLOWED_VOLTAGE_CEILINGS.has(ceiling) ? ceiling : 5000;
+  const deviceMaximum = state.deviceMaxVoltageMillivolts ?? 48000;
+  const ceiling = controlProtocol.boundedVoltageCeiling(value, deviceMaximum);
+  state.maxVoltageMillivolts = ceiling;
   for (const input of ui.voltageCeilingInputs) {
     input.checked = Number(input.value) === state.maxVoltageMillivolts;
   }
@@ -191,7 +193,10 @@ function applyDeviceIdentity(rawUid) {
 
 function updateActionAvailability() {
   const ready = state.connected && state.transport !== null;
-  for (const input of ui.voltageCeilingInputs) input.disabled = !ready;
+  const deviceMaximum = state.deviceMaxVoltageMillivolts ?? 48000;
+  for (const input of ui.voltageCeilingInputs) {
+    input.disabled = !ready || Number(input.value) > deviceMaximum;
+  }
   ui.safeFiveButton.disabled = !ready;
   document.querySelectorAll(".command-button, .request-submit").forEach((button) => {
     button.disabled = !ready;
@@ -217,6 +222,7 @@ function setConnected(connected) {
     state.nextSequence = 1;
     state.usbId = null;
     state.deviceUid = null;
+    state.deviceMaxVoltageMillivolts = null;
     setVoltageCeiling(5000);
     ui.deviceDescription.textContent = "Connect USB-control or development text-console firmware to begin.";
     ui.deviceId.textContent = "No device selected";
@@ -509,6 +515,16 @@ function parseDeviceLine(line) {
     return;
   }
 
+  const deviceLimits = line.match(/^Device limits: max=(\d+)mV current=(\d+)mA power=(\d+)mW PPS=(true|false) EPR=(true|false)$/);
+  if (deviceLimits) {
+    state.deviceMaxVoltageMillivolts = Number(deviceLimits[1]);
+    const requestedCeiling = state.deviceUid ? savedVoltageCeiling(state.deviceUid) : state.maxVoltageMillivolts;
+    setVoltageCeiling(requestedCeiling);
+    updateActionAvailability();
+    renderCapabilities();
+    return;
+  }
+
   if (/^Attached\b/.test(line)) {
     ui.portState.textContent = "Attached";
     ui.portDetail.textContent = "PD negotiation active";
@@ -613,8 +629,8 @@ async function sendCommand(command, { echo = true } = {}) {
     throw new Error("Waiting for the device control protocol.");
   }
   const requestedVoltage = commandRequestedVoltage(trimmed);
-  if (requestedVoltage === "unknown-pdo" && state.maxVoltageMillivolts < 48000) {
-    throw new Error("Load the full capability list before making a direct PDO request under a limited board ceiling.");
+  if (requestedVoltage === "unknown-pdo") {
+    throw new Error("Load the full capability list before making a direct maximum-PDO request.");
   }
   if (Number.isFinite(requestedVoltage) && requestedVoltage > state.maxVoltageMillivolts) {
     throw new Error(
@@ -681,6 +697,7 @@ async function connectPort() {
     state.nextSequence = 1;
     state.lineBuffer = "";
     state.deviceUid = null;
+    state.deviceMaxVoltageMillivolts = null;
     setConnected(true);
     clearDeviceState();
 
@@ -786,7 +803,7 @@ for (const input of ui.voltageCeilingInputs) {
 ui.voltageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const voltage = toMilli(ui.voltageInput.value, "Voltage", { maximum: 48 });
+    const voltage = toMilli(ui.voltageInput.value, "Voltage", { maximum: 50 });
     const current = toMilli(ui.currentInput.value, "Current", { optional: true, maximum: 5 });
     const preference = ui.preferenceInput.value;
     await sendCommand(`request ${voltage} ${current === null ? "max" : current} ${preference}`);
@@ -819,7 +836,7 @@ ui.pdoForm.addEventListener("submit", async (event) => {
       const current = toMilli(ui.pdoCurrent.value, "Current", { maximum: 5 });
       command = `pdo ${position} current ${current}`;
     } else if (demand === "adjust") {
-      const voltage = toMilli(ui.pdoVoltage.value, "Voltage", { maximum: 48 });
+      const voltage = toMilli(ui.pdoVoltage.value, "Voltage", { maximum: 50 });
       const current = toMilli(ui.pdoCurrent.value, "Current", { optional: true, maximum: 5 });
       command = `pdo ${position} adjust ${voltage} ${current === null ? "max" : current}`;
     }

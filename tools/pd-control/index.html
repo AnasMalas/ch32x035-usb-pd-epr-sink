@@ -84,7 +84,7 @@
             <label>
               <span>Voltage</span>
               <span class="field-with-unit">
-                <input id="voltage-input" type="number" inputmode="decimal" min="3.3" max="48" step="0.02" value="5" required>
+                <input id="voltage-input" type="number" inputmode="decimal" min="3.3" max="50" step="0.02" value="5" required>
                 <span>V</span>
               </span>
             </label>
@@ -103,14 +103,16 @@
                 <option value="pps">PPS</option>
                 <option value="spr-avs">SPR AVS</option>
                 <option value="epr-avs">EPR AVS</option>
-                <option value="epr-avs-nonstandard">EPR AVS (advertised non-standard range)</option>
+                <option value="epr-avs-nonstandard">EPR AVS (advertised compatibility range)</option>
               </select>
             </label>
             <button class="button button-primary request-submit" type="submit" disabled>Request contract</button>
           </form>
           <p id="current-request-note" class="request-note">
             Current is requested from the source; usable current is an allowed draw, not a live measurement.
-            The non-standard EPR AVS option is an explicit opt-in and never exceeds the source's advertisement or 48 V.
+            Advertised 3.3 V PPS is supported, although that PPS endpoint is deprecated in current USB PD.
+            The EPR AVS compatibility option can use a source-advertised range outside nominal 15-48 V,
+            but never above 50 V and only with firmware configured for it.
           </p>
 
           <fieldset class="voltage-ceiling">
@@ -119,6 +121,7 @@
               <label><input type="radio" name="voltage-ceiling" value="5000" checked><span>5 V max</span></label>
               <label><input type="radio" name="voltage-ceiling" value="28000"><span>28 V max</span></label>
               <label><input type="radio" name="voltage-ceiling" value="48000"><span>48 V max</span></label>
+              <label><input type="radio" name="voltage-ceiling" value="50000"><span>50 V compatibility</span></label>
             </div>
             <small id="voltage-ceiling-note">Defaults to 5 V and is saved locally for this MCU after its identity is received.</small>
           </fieldset>
@@ -159,7 +162,7 @@
               </label>
               <label id="pdo-voltage-field" class="hidden">
                 <span>Voltage (V)</span>
-                <input id="pdo-voltage" type="number" min="3.3" max="48" step="0.02" value="5">
+                <input id="pdo-voltage" type="number" min="3.3" max="50" step="0.02" value="5">
               </label>
               <label id="pdo-current-field" class="hidden">
                 <span>Current (A)</span>

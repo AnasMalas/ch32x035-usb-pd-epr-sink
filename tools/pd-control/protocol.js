@@ -5,6 +5,7 @@
   const VERSION = 1;
   const MAX_PAYLOAD_LENGTH = 56;
   const NONE_U32 = 0xffffffff;
+  const VOLTAGE_CEILINGS = Object.freeze([5000, 28000, 48000, 50000]);
 
   const COMMAND = Object.freeze({
     device: 0x01,
@@ -56,6 +57,14 @@
       }
     }
     return crc;
+  }
+
+  function boundedVoltageCeiling(value, deviceMaximum = 48000) {
+    const requested = Number(value);
+    const selected = VOLTAGE_CEILINGS.includes(requested) ? requested : 5000;
+    if (selected <= deviceMaximum) return selected;
+    return VOLTAGE_CEILINGS.filter((candidate) => candidate <= deviceMaximum)
+      .sort((left, right) => right - left)[0] ?? 5000;
   }
 
   function encodeFrame(kind, sequence, payload = new Uint8Array(), version = VERSION) {
@@ -312,11 +321,15 @@
       const peak = (raw >>> 26) & 0x03;
       let validity = "valid";
       if (position < 8 || kind !== 1) validity = "malformed";
-      else if (![28000, 36000, 48000].includes(maximum) || minimum < 5000 || minimum > maximum) validity = "malformed";
+      else if (minimum < 5000 || maximum > 50000 || minimum > maximum) validity = "malformed";
       else if (pdp === 0 || pdp > 240000) validity = "malformed";
-      else if (minimum !== 15000) validity = "compatible";
+      else if (minimum < 15000 || maximum > 48000) validity = "compatible";
       const standardMinimum = Math.max(minimum, 15000);
-      return `PDO${position} EPR-AVS ${minimum}-${maximum}mV standard=${standardMinimum}-${maximum}mV PDP=${pdp}mW peak=${peak} ${validity} raw=${hex}`;
+      const standardMaximum = Math.min(maximum, 48000);
+      const standardRange = standardMinimum <= standardMaximum
+        ? `${standardMinimum}-${standardMaximum}mV`
+        : "none";
+      return `PDO${position} EPR-AVS ${minimum}-${maximum}mV standard=${standardRange} PDP=${pdp}mW peak=${peak} ${validity} raw=${hex}`;
     }
 
     if (apdoType === 2) {
@@ -518,7 +531,9 @@
 
   const api = Object.freeze({
     VERSION,
+    VOLTAGE_CEILINGS,
     FrameDecoder,
+    boundedVoltageCeiling,
     crc8,
     encodeFrame,
     encodeCommand,
