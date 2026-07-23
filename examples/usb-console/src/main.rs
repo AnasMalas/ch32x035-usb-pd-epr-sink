@@ -30,12 +30,14 @@ use panic_halt as _;
 #[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 use pd_sink::PlanError;
 use pd_sink::{
-    CapabilitiesKind, CapabilityPlan, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError,
-    CurrentConfidence, HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PhyEvent,
-    PlannedOperating, PlannedVoltage, RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestResult,
-    SinkConfig, SinkDevice, SinkLimits, SinkPowerDescriptor, SinkRuntime,
-    SourceCapabilities as ProductSourceCapabilities, SourceSupply,
+    CapabilitiesKind, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError, CurrentConfidence,
+    HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PhyEvent, PlannedOperating, PlannedVoltage,
+    PpsStatus, RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestResult, SinkConfig, SinkDevice,
+    SinkLimits, SinkPowerDescriptor, SinkRuntime, SourceAlert, SourceCapabilities as ProductSourceCapabilities,
+    SourceStatus, StatusQuery, StatusQueryFailure,
 };
+#[cfg(not(feature = "dev-text-console"))]
+use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
 #[cfg(feature = "usb-control")]
 use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
@@ -392,7 +394,8 @@ fn log_device_identity() {
 #[cfg(feature = "dev-text-console")]
 fn log_console_help() {
     logln!("Commands:");
-    logln!("device caps plans source-info status enter-epr epr-caps exit-epr help");
+    logln!("device caps plans source-info source-status pps-status status");
+    logln!("enter-epr epr-caps exit-epr help");
     logln!("request mV [mA|max] [auto|fixed|pps|spr-avs|epr-avs]");
     logln!("request mV [mA|max] epr-avs-nonstandard (explicit opt-in)");
     logln!("pdo N [max(=maxV APDO)|current mA|adjust mV [mA|max]]");
@@ -476,6 +479,7 @@ async fn dev_text_console_tx(mut sender: CdcSender<'static>) -> ! {
     }
 }
 
+#[cfg(not(feature = "dev-text-console"))]
 fn validity_name(validity: PdoValidity) -> &'static str {
     match validity {
         PdoValidity::Valid => "valid",
@@ -520,6 +524,23 @@ fn log_controller_error(_error: ControllerError) {
     logln!("Command rejected");
 }
 
+#[cfg(feature = "dev-text-console")]
+fn log_product_capabilities(capabilities: &ProductSourceCapabilities) {
+    logln!(
+        "Source caps: kind={} count={} EPR={}",
+        match capabilities.kind() {
+            CapabilitiesKind::Spr => "SPR",
+            CapabilitiesKind::Epr => "EPR",
+        },
+        capabilities.len(),
+        capabilities.epr_mode_capable(),
+    );
+    for pdo in capabilities.iter() {
+        logln!("PDO{} raw={:#010x}", pdo.position, pdo.raw);
+    }
+}
+
+#[cfg(not(feature = "dev-text-console"))]
 fn log_product_capabilities(capabilities: &ProductSourceCapabilities) {
     logln!(
         "Source caps: kind={} count={} EPR={}",
@@ -756,7 +777,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     #[inline(always)]
     fn capability_plans_enabled(&self) -> bool {
-        !cfg!(all(feature = "dev-text-console", feature = "sdi-log"))
+        !cfg!(feature = "dev-text-console")
     }
 
     async fn wait_for_command(&mut self) -> Command {
@@ -772,6 +793,7 @@ impl SinkRuntime for FirmwareRuntime {
         log_product_capabilities(&capabilities);
     }
 
+    #[cfg(not(feature = "dev-text-console"))]
     fn on_capability_plans_started(&mut self, count: u8) {
         control_event!(ControlEvent::CapabilityPlansStarted { count });
         logln!("Capability plans: count={} (live contract unchanged)", count);
@@ -779,9 +801,10 @@ impl SinkRuntime for FirmwareRuntime {
 
     fn on_capability_plans_unavailable(&mut self) {
         control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable));
-        logln!("Plans unavailable in dual-log; use usb-epr");
+        logln!("Plans unavailable in text console; use usb-epr");
     }
 
+    #[cfg(not(feature = "dev-text-console"))]
     fn on_capability_plan(&mut self, plan: CapabilityPlan) {
         match plan {
             CapabilityPlan::Unavailable { position, validity } => {
@@ -832,6 +855,37 @@ impl SinkRuntime for FirmwareRuntime {
     fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
         control_event!(ControlEvent::SourceInfo { present_watts, maximum_watts, reported_watts });
         logln!("Source_Info: present={} W, maximum={} W, reported={} W", present_watts, maximum_watts, reported_watts);
+    }
+
+    fn on_source_alert(&mut self, alert: SourceAlert) {
+        control_event!(ControlEvent::SourceAlert(alert));
+        logln!("Alert: raw={:#010x}", alert.raw());
+    }
+
+    fn on_source_status(&mut self, status: SourceStatus) {
+        control_event!(ControlEvent::SourceStatus(status));
+        let raw = status.raw_bytes();
+        logln!(
+            "Status: pps={} raw={:02x}{:02x}{:02x}{:02x}{:02x}{:02x}{:02x}",
+            status.pps_mode_valid(),
+            raw[0],
+            raw[1],
+            raw[2],
+            raw[3],
+            raw[4],
+            raw[5],
+            raw[6]
+        );
+    }
+
+    fn on_pps_status(&mut self, status: PpsStatus) {
+        control_event!(ControlEvent::PpsStatus(status));
+        logln!("PPS_Status: raw={:#010x}", u32::from_le_bytes(status.raw_bytes()));
+    }
+
+    fn on_status_query_failed(&mut self, query: StatusQuery, failure: StatusQueryFailure) {
+        control_event!(ControlEvent::StatusQueryFailed { query, failure });
+        logln!("Status query failed: kind={} reason={}", query as u8, failure as u8);
     }
 
     fn on_request_result(&mut self, result: RequestResult) {

@@ -102,17 +102,20 @@ SDI, native USB CDC, both, or neither. USB output uses a bounded non-blocking
 or slow host cannot block PD or safety work. USB input and delayed bench tasks
 feed the same typed four-entry command queue.
 
-The `plans` command dry-runs `Demand::Maximum` against every current PDO,
-printing either the exact encoded voltage, usable current, confidence, and
-limit or an explicit unsupported result.
-It neither retains user intent nor starts a PD AMS, and finishes by printing
-the still-active contract. This makes complete capability-policy inspection
-possible during the 5 V-only board phase.
+In the normal compact USB-control image, `plans` dry-runs `Demand::Maximum`
+against every current PDO and reports either the exact encoded voltage, usable
+current, confidence, and limit or an explicit unsupported result. It neither
+retains user intent nor starts a PD AMS, and finishes by reporting the
+still-active contract. The development text-console profiles omit this verbose
+planner to preserve flash; use the compact `usb-epr` image and browser for
+complete capability-policy inspection.
 
-The interactive USB-only image prints request-planning rejection reasons and
-their relevant position/voltage details. The dual-log build deliberately keeps
-that one diagnostic generic to preserve flash for the protocol path; its LinkE
-and USB streams still carry the capability, request, contract, and reset trace.
+`Alert`, general `Status`, and `PPS_Status` are delivered as typed application
+events. A non-battery Source Alert schedules one `Get_Status` request so PPS
+CV/CL transitions and fault/thermal changes can update a display or indicator
+without polling. Applications may request PPS_Status manually or periodically
+for source-side voltage/current measurements and compatibility with Sources
+that fail to send the expected Alert.
 
 ## Verification strategy
 
@@ -125,7 +128,8 @@ and USB streams still carry the capability, request, contract, and reset trace.
 - `tests/protocol` drives the real vendored policy engine with scripted wire
   messages, including typed SPR AVS and its ordinary 19.4 V Request,
   two-chunk EPR capabilities, 48 V fixed, 19.4 V EPR AVS, legal EPR exit,
-  Source_Info, a 19.4 V PPS refresh, source traffic while a
+  Source_Info, PPS_Status, Alert-triggered general Status, a 19.4 V PPS
+  refresh, source traffic while a
   sink AMS is held by SinkTxNG, PD 2.0 bypass, detach, and bounded retry
   failure. A `Wait` trace proves the deferred user request is replanned after
   SinkRequestTimer even when the Source inserts its own AMS, and periodic PPS

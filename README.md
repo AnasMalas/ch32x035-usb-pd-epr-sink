@@ -24,6 +24,9 @@ compliance.
   automatically selecting a high voltage.
 - Report requested, source-advertised, and usable current plus the limiting
   reason and confidence.
+- Query live PPS voltage/current/temperature and CV/CL regulator mode, decode
+  general Source Status, and follow Source Alert changes without disturbing
+  the active contract.
 - Handle SinkTxOK/SinkTxNG, Soft Reset, Hard Reset, detach, bounded retries,
   source-owned AMS traffic, and tested real-source compatibility cases.
 - Expose a compact product-facing USB control protocol, an optional development
@@ -88,6 +91,8 @@ The interactive example always negotiates 5 V first. Its main commands include:
 caps
 plans
 status
+source-status
+pps-status
 enter-epr
 request 19400 max pps
 request 19400 2300 epr-avs

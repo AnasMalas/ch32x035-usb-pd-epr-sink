@@ -16,6 +16,8 @@ pub mod source_capabilities;
 
 pub mod source_info;
 
+pub mod alert;
+
 pub mod sink_capabilities;
 
 pub mod epr_mode;
@@ -59,6 +61,8 @@ pub enum Data {
     EprMode(epr_mode::EprModeDataObject),
     /// Present and guaranteed source power information.
     SourceInfo(source_info::SourceInfo),
+    /// Status-change notification from the Port Partner.
+    Alert(alert::AlertDataObject),
     /// Vendor defined messages (VDM).
     ///
     /// Currently parsed from the wire but not forwarded to user applications.
@@ -137,6 +141,10 @@ impl Data {
                     None => Data::Unknown,
                 }
             }
+            DataMessageType::Alert => match alert::AlertDataObject::from_bytes(payload) {
+                Some(alert) => Data::Alert(alert),
+                None => Data::Unknown,
+            },
             // This sink product has no VDM or Alternate Mode behavior. Keep
             // partner-controlled reserved VDM fields out of typed conversion;
             // policy will answer the message with Not_Supported.
@@ -184,6 +192,7 @@ impl Data {
                 PDO_SIZE
             }
             Self::SourceInfo(source_info) => source_info.to_bytes(payload),
+            Self::Alert(alert) => alert.to_bytes(payload),
             Self::VendorDefined(_) => unimplemented!(),
         }
     }

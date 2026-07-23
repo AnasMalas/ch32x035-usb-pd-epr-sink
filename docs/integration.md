@@ -13,7 +13,8 @@ The library owns:
 - source, cable, board, current, voltage, and power limits;
 - contract invalidation and safe request transitions;
 - stack request conversion, Source_Info handling, reset handling, EPR entry,
-  EPR exit, and the bounded automatic-entry budget;
+  EPR exit, the bounded automatic-entry budget, Source Alert handling, and
+  general/PPS status queries;
 - CH32X035 PHY receive/transmit cancellation on VBUS loss when the optional
   `ch32x035` feature is enabled.
 
@@ -43,9 +44,9 @@ dependency arrangements and APIs are stable.
 
 ## Application adapters
 
-Implement `SinkRuntime` for a small application type. It provides five
-services: set the firmware load request, clear stale commands, wait for a new
-command, delay after Hard Reset, and report typed observations. A single
+Implement `SinkRuntime` for a small application type. Its core services set the
+firmware load request, clear stale commands, wait for a new command, delay
+after Hard Reset, and report typed observations. A single
 `observe(SinkEvent)` implementation is enough. Flash-constrained firmware can
 override the typed `on_*` callbacks directly so unused event formatting is
 removed by the linker.
@@ -58,6 +59,39 @@ load request, and optionally reports `PhyEvent` diagnostics.
 The reference implementation uses Embassy signals populated by an EXTI GPIO
 task. Another application can use different pins or a different
 3.3 V-safe power-good circuit without modifying the library.
+
+## PPS current-limit indicator
+
+The library reports state and deliberately does not own an LED GPIO. An
+application can route both PPS_Status and Alert-triggered general Status to one
+indicator:
+
+```rust
+fn observe(&mut self, event: SinkEvent) {
+    match event {
+        SinkEvent::PpsStatus(status) => {
+            self.set_cl_led(status.is_current_limited());
+        }
+        SinkEvent::SourceStatus(status) => {
+            if let Some(mode) = status.pps_operating_mode() {
+                self.set_cl_led(mode.is_current_limited());
+            }
+        }
+        SinkEvent::Detached
+        | SinkEvent::HardReset { .. }
+        | SinkEvent::ProtocolLost { .. } => {
+            self.set_cl_led(false);
+        }
+        _ => {}
+    }
+}
+```
+
+A compliant PPS Source sends `Alert` when it changes between CV and CL. The
+reusable policy manager follows a non-battery Alert with `Get_Status`, so that
+path does not need polling. `RequestPpsStatus` remains useful for live
+source-reported voltage/current and as optional periodic compatibility polling
+for Sources that omit the Alert.
 
 ## Configuration
 

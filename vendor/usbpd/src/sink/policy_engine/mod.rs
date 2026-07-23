@@ -5,12 +5,14 @@ use embassy_futures::select::{Either, Either3, select, select3};
 use uom::si::power::watt;
 use usbpd_traits::Driver;
 
-use super::device_policy_manager::{DevicePolicyManager, HardResetOrigin, RequestRejection};
+use super::device_policy_manager::{
+    DevicePolicyManager, HardResetOrigin, RequestRejection, StatusQueryFailure, StatusQueryKind,
+};
 use crate::counters::Counter;
 use crate::protocol_layer::message::data::epr_mode::{self, Action};
 use crate::protocol_layer::message::data::request::PowerSource;
 use crate::protocol_layer::message::data::source_capabilities::SourceCapabilities;
-use crate::protocol_layer::message::data::{Data, request};
+use crate::protocol_layer::message::data::{Data, alert, request};
 use crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType;
 use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
@@ -65,6 +67,9 @@ enum State {
     GiveSinkCapExtended(request::PowerSource),
     GetSourceCap(Mode, request::PowerSource),
     GetSourceInfo(request::PowerSource),
+    GetStatus(request::PowerSource),
+    GetPpsStatus(request::PowerSource),
+    SourceAlert(alert::AlertDataObject, request::PowerSource),
 
     // EPR states
     EprModeEntry(request::PowerSource, units::Power),
@@ -81,6 +86,8 @@ enum State {
 enum SinkInitiatedAms {
     GetSourceCap(Mode),
     GetSourceInfo,
+    GetStatus,
+    GetPpsStatus,
     EnterEprMode(units::Power),
     ExitEprMode,
     RequestPower(request::PowerSource),
@@ -358,6 +365,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             Event::RequestSprSourceCapabilities => Some(SinkInitiatedAms::GetSourceCap(Mode::Spr)),
             Event::RequestEprSourceCapabilities => Some(SinkInitiatedAms::GetSourceCap(Mode::Epr)),
             Event::RequestSourceInfo => Some(SinkInitiatedAms::GetSourceInfo),
+            Event::RequestStatus => Some(SinkInitiatedAms::GetStatus),
+            Event::RequestPpsStatus => Some(SinkInitiatedAms::GetPpsStatus),
             Event::EnterEprMode(pdp) => Some(SinkInitiatedAms::EnterEprMode(pdp)),
             Event::ExitEprMode => Some(SinkInitiatedAms::ExitEprMode),
             Event::RequestPower(power_source) => Some(SinkInitiatedAms::RequestPower(power_source)),
@@ -368,6 +377,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         match ams {
             SinkInitiatedAms::GetSourceCap(mode) => State::GetSourceCap(mode, power_source),
             SinkInitiatedAms::GetSourceInfo => State::GetSourceInfo(power_source),
+            SinkInitiatedAms::GetStatus => State::GetStatus(power_source),
+            SinkInitiatedAms::GetPpsStatus => State::GetPpsStatus(power_source),
             SinkInitiatedAms::EnterEprMode(pdp) => State::EprModeEntry(power_source, pdp),
             SinkInitiatedAms::ExitEprMode => match power_source {
                 PowerSource::EprRequest(epr) if epr.object_position() <= 7 => State::EprSendExit,
@@ -444,6 +455,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     _ => State::SendSoftReset,
                 }
             }
+            MessageType::Data(DataMessageType::Alert) => match message.payload {
+                Some(Payload::Data(Data::Alert(alert))) => State::SourceAlert(alert, power_source),
+                _ => State::SendSoftReset,
+            },
             MessageType::Control(ControlMessageType::GetSinkCap) => State::GiveSinkCap(Mode::Spr, power_source),
             MessageType::Control(ControlMessageType::GetSinkCapExtended) => State::GiveSinkCapExtended(power_source),
             MessageType::Extended(ExtendedMessageType::ExtendedControl) => {
@@ -903,6 +918,102 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     // Source_Info refines product reporting but is not needed
                     // to preserve an existing explicit contract.
                     Err(_) => {}
+                }
+
+                State::Ready(*power_source)
+            }
+            State::SourceAlert(alert, power_source) => {
+                self.device_policy_manager.inform_alert(alert).await;
+                State::Ready(*power_source)
+            }
+            State::GetStatus(power_source) => {
+                self.protocol_layer.transmit_control_message(ControlMessageType::GetStatus).await?;
+
+                let response = self
+                    .protocol_layer
+                    .receive_message_type(
+                        &[
+                            MessageType::Extended(ExtendedMessageType::Status),
+                            MessageType::Control(ControlMessageType::NotSupported),
+                            MessageType::Control(ControlMessageType::Reject),
+                            MessageType::Control(ControlMessageType::Wait),
+                        ],
+                        TimerType::SenderResponse,
+                    )
+                    .await;
+
+                match response {
+                    Ok(message) => match message.payload {
+                        Some(Payload::Extended(extended::Extended::Status(status))) => {
+                            self.device_policy_manager.inform_status(&status).await;
+                        }
+                        None => {
+                            let failure = match message.header.message_type() {
+                                MessageType::Control(ControlMessageType::NotSupported) => {
+                                    Some(StatusQueryFailure::NotSupported)
+                                }
+                                MessageType::Control(ControlMessageType::Reject) => Some(StatusQueryFailure::Rejected),
+                                MessageType::Control(ControlMessageType::Wait) => Some(StatusQueryFailure::Deferred),
+                                _ => None,
+                            };
+                            if let Some(failure) = failure {
+                                self.device_policy_manager.status_query_failed(StatusQueryKind::General, failure).await;
+                            }
+                        }
+                        _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
+                    },
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        self.device_policy_manager
+                            .status_query_failed(StatusQueryKind::General, StatusQueryFailure::Timeout)
+                            .await;
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+
+                State::Ready(*power_source)
+            }
+            State::GetPpsStatus(power_source) => {
+                self.protocol_layer.transmit_control_message(ControlMessageType::GetPpsStatus).await?;
+
+                let response = self
+                    .protocol_layer
+                    .receive_message_type(
+                        &[
+                            MessageType::Extended(ExtendedMessageType::PpsStatus),
+                            MessageType::Control(ControlMessageType::NotSupported),
+                            MessageType::Control(ControlMessageType::Reject),
+                            MessageType::Control(ControlMessageType::Wait),
+                        ],
+                        TimerType::SenderResponse,
+                    )
+                    .await;
+
+                match response {
+                    Ok(message) => match message.payload {
+                        Some(Payload::Extended(extended::Extended::PpsStatus(status))) => {
+                            self.device_policy_manager.inform_pps_status(&status).await;
+                        }
+                        None => {
+                            let failure = match message.header.message_type() {
+                                MessageType::Control(ControlMessageType::NotSupported) => {
+                                    Some(StatusQueryFailure::NotSupported)
+                                }
+                                MessageType::Control(ControlMessageType::Reject) => Some(StatusQueryFailure::Rejected),
+                                MessageType::Control(ControlMessageType::Wait) => Some(StatusQueryFailure::Deferred),
+                                _ => None,
+                            };
+                            if let Some(failure) = failure {
+                                self.device_policy_manager.status_query_failed(StatusQueryKind::Pps, failure).await;
+                            }
+                        }
+                        _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
+                    },
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        self.device_policy_manager
+                            .status_query_failed(StatusQueryKind::Pps, StatusQueryFailure::Timeout)
+                            .await;
+                    }
+                    Err(error) => return Err(error.into()),
                 }
 
                 State::Ready(*power_source)

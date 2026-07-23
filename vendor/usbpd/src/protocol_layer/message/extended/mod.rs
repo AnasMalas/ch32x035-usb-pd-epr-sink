@@ -4,7 +4,9 @@
 
 pub mod chunked;
 pub mod extended_control;
+pub mod pps_status;
 pub mod sink_capabilities_extended;
+pub mod status;
 use byteorder::{ByteOrder, LittleEndian};
 use heapless::Vec;
 use proc_bitfield::bitfield;
@@ -23,6 +25,10 @@ use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
 pub enum Extended {
     /// Extended source capabilities.
     SourceCapabilitiesExtended,
+    /// General Port Partner status.
+    Status(status::Status),
+    /// Programmable Power Supply status.
+    PpsStatus(pps_status::PpsStatus),
     /// Extended control message payload.
     ExtendedControl(extended_control::ExtendedControl),
     /// EPR source capabilities list.
@@ -40,6 +46,8 @@ impl Extended {
     pub fn data_size(&self) -> u16 {
         match self {
             Self::SourceCapabilitiesExtended => 0,
+            Self::Status(_) => status::Status::DATA_SIZE as u16,
+            Self::PpsStatus(_) => pps_status::PpsStatus::DATA_SIZE as u16,
             Self::ExtendedControl(_payload) => 2,
             Self::EprSourceCapabilities(pdos) => (pdos.len() * core::mem::size_of::<u32>()) as u16,
             Self::EprSinkCapabilities(pdos) => (pdos.len() * core::mem::size_of::<u32>()) as u16,
@@ -53,6 +61,8 @@ impl Extended {
         match self {
             Self::Unknown => 0,
             Self::SourceCapabilitiesExtended => unimplemented!(),
+            Self::Status(status) => status.to_bytes(payload),
+            Self::PpsStatus(status) => status.to_bytes(payload),
             Self::ExtendedControl(control) => control.to_bytes(payload),
             Self::EprSourceCapabilities(pdos) => {
                 let mut written = 0;

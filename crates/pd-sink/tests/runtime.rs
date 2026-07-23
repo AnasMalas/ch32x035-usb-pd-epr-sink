@@ -6,8 +6,10 @@ use pd_sink::{
     CapabilitiesKind, Command, ContractState, ControllerConfig, HardResetDirection, Milliamps, Milliwatts,
     RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime,
 };
+use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::request::PowerSource;
 use usbpd::protocol_layer::message::data::source_capabilities::{FixedSupply, PowerDataObject, SourceCapabilities};
+use usbpd::protocol_layer::message::extended::pps_status::PpsStatus as StackPpsStatus;
 use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin};
 
 fn block_on<F: Future>(future: F) -> F::Output {
@@ -159,4 +161,31 @@ fn ready_epr_source_starts_one_bounded_automatic_entry() {
     assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
     assert!(matches!(block_on(device.get_event(&source)), Event::EnterEprMode(_)));
     assert!(device.runtime_mut().events.contains(&SinkEvent::EprDiscoveryStarted { attempt: 1, maximum_attempts: 2 }));
+}
+
+#[test]
+fn alert_and_pps_status_reach_application_led_policy_without_owning_a_gpio() {
+    let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+
+    block_on(device.inform(&source));
+    let request = block_on(device.request(&source));
+    block_on(device.transition_power(&request));
+    assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
+
+    let pps_status = StackPpsStatus::from_bytes(&[0x5c, 0x03, 46, 0b0000_1010]).unwrap();
+    block_on(device.inform_pps_status(&pps_status));
+    assert!(device
+        .runtime_mut()
+        .events
+        .iter()
+        .any(|event| matches!(event, SinkEvent::PpsStatus(status) if status.is_current_limited())));
+
+    block_on(device.inform_alert(&AlertDataObject(1 << 28)));
+    assert!(matches!(block_on(device.get_event(&source)), Event::RequestStatus));
+    assert!(device
+        .runtime_mut()
+        .events
+        .iter()
+        .any(|event| matches!(event, SinkEvent::SourceAlert(alert) if alert.operating_condition_changed())));
 }

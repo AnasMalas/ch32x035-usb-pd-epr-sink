@@ -1,8 +1,8 @@
 use pd_sink::{
     decode_control_command, encode_control_event, encode_control_frame, CapabilitiesKind, Command, CommandStatus,
     ControlCommandKind, ControlEvent, ControlFrameDecoder, ControlFrameError, ControlPlanStage, Demand, DeviceInfo,
-    Milliamps, Millivolts, Milliwatts, Preference, SourceCapabilities, UserRequest, CONTROL_MAX_FRAME_LEN,
-    CONTROL_PROTOCOL_VERSION,
+    Milliamps, Millivolts, Milliwatts, PpsStatus, Preference, SourceAlert, SourceCapabilities, SourceStatus,
+    StatusQuery, StatusQueryFailure, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -151,4 +151,36 @@ fn command_result_keeps_the_request_sequence() {
     let frame = decode_one(&bytes[..len]);
     assert_eq!(frame.sequence, 123);
     assert_eq!(frame.payload(), &[CommandStatus::Queued as u8]);
+}
+
+#[test]
+fn status_commands_and_events_use_compact_stable_payloads() {
+    let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+    let len =
+        encode_control_frame(CONTROL_PROTOCOL_VERSION, ControlCommandKind::SourceStatus as u8, 1, &[], &mut bytes)
+            .unwrap();
+    assert_eq!(decode_control_command(&decode_one(&bytes[..len])).unwrap().command, Command::RequestSourceStatus);
+
+    let len = encode_control_frame(CONTROL_PROTOCOL_VERSION, ControlCommandKind::PpsStatus as u8, 2, &[], &mut bytes)
+        .unwrap();
+    assert_eq!(decode_control_command(&decode_one(&bytes[..len])).unwrap().command, Command::RequestPpsStatus);
+
+    let pps = PpsStatus::from_raw_bytes([0x5c, 0x03, 46, 0x0a]);
+    let len = encode_control_event(ControlEvent::PpsStatus(pps), 3, &mut bytes).unwrap();
+    assert_eq!(decode_one(&bytes[..len]).payload(), &[0x5c, 0x03, 46, 0x0a]);
+
+    let general = SourceStatus::from_raw_bytes([42, 22, 0, 0x10, 2, 0x22, 1], true);
+    let len = encode_control_event(ControlEvent::SourceStatus(general), 4, &mut bytes).unwrap();
+    assert_eq!(decode_one(&bytes[..len]).payload(), &[1, 42, 22, 0, 0x10, 2, 0x22, 1]);
+
+    let len = encode_control_event(ControlEvent::SourceAlert(SourceAlert::from_raw(1 << 28)), 5, &mut bytes).unwrap();
+    assert_eq!(decode_one(&bytes[..len]).payload(), &(1u32 << 28).to_le_bytes());
+
+    let len = encode_control_event(
+        ControlEvent::StatusQueryFailed { query: StatusQuery::Pps, failure: StatusQueryFailure::Timeout },
+        6,
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(decode_one(&bytes[..len]).payload(), &[1, 3]);
 }

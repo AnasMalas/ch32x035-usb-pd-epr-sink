@@ -7,6 +7,7 @@
 
 use core::future::Future;
 
+use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::epr_mode::DataEnterFailed;
 use usbpd::protocol_layer::message::data::request::PowerSource;
 use usbpd::protocol_layer::message::data::sink_capabilities::SinkCapabilities;
@@ -15,12 +16,17 @@ use usbpd::protocol_layer::message::data::source_info::SourceInfo;
 use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
     SinkCapabilitiesExtended, SINK_MODE_AVS_SUPPORTED, SINK_MODE_PPS_SUPPORTED, SINK_MODE_VBUS_POWERED,
 };
-use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin, RequestRejection};
+use usbpd::protocol_layer::message::extended::{pps_status as stack_pps_status, status as stack_status};
+use usbpd::sink::device_policy_manager::{
+    DevicePolicyManager, Event, HardResetOrigin, RequestRejection, StatusQueryFailure as StackStatusQueryFailure,
+    StatusQueryKind as StackStatusQueryKind,
+};
 
 use crate::{
     capabilities_from_stack, request_to_stack, CapabilityListError, Command, ContractState, ContractTracker,
     ControllerAction, ControllerConfig, ControllerError, Demand, EprState, Milliamps, Milliwatts, PdoValidity,
-    RequestPlan, SinkController, StackConversionError, UserRequest,
+    PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus, StackConversionError, StatusQuery,
+    StatusQueryFailure, SupplyKind, UserRequest,
 };
 
 /// Static power and identity data advertised by the sink.
@@ -144,6 +150,10 @@ pub enum SinkEvent {
     StackCapabilitiesRejected(CapabilityListError),
     StackRequestRejected(StackConversionError),
     SourceInfo { present_watts: u8, maximum_watts: u8, reported_watts: u8 },
+    SourceAlert(SourceAlert),
+    SourceStatus(SourceStatus),
+    PpsStatus(PpsStatus),
+    StatusQueryFailed { query: StatusQuery, failure: StatusQueryFailure },
     RequestResult(RequestResult),
     HardReset { direction: HardResetDirection, recovery_ms: u64 },
     HardResetRecoveryComplete,
@@ -198,6 +208,23 @@ pub trait SinkRuntime {
     fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
         self.observe(SinkEvent::SourceInfo { present_watts, maximum_watts, reported_watts });
     }
+    /// Alert is asynchronous; an operating-condition change can indicate a
+    /// PPS CV/CL transition. The reusable DPM follows it with `Get_Status`.
+    fn on_source_alert(&mut self, alert: SourceAlert) {
+        self.observe(SinkEvent::SourceAlert(alert));
+    }
+    /// General Source status. `pps_operating_mode()` is suitable for an
+    /// application-owned CL indicator LED when it returns `Some`.
+    fn on_source_status(&mut self, status: SourceStatus) {
+        self.observe(SinkEvent::SourceStatus(status));
+    }
+    /// Live PPS voltage/current/temperature and CV/CL mode.
+    fn on_pps_status(&mut self, status: PpsStatus) {
+        self.observe(SinkEvent::PpsStatus(status));
+    }
+    fn on_status_query_failed(&mut self, query: StatusQuery, failure: StatusQueryFailure) {
+        self.observe(SinkEvent::StatusQueryFailed { query, failure });
+    }
     fn on_request_result(&mut self, result: RequestResult) {
         self.observe(SinkEvent::RequestResult(result));
     }
@@ -248,6 +275,7 @@ pub struct SinkDevice<R: SinkRuntime> {
     controller: SinkController,
     contract: ContractTracker,
     source_info_requested: bool,
+    source_status_pending: bool,
     epr_discovery_attempts: u8,
     epr_exhaustion_reported: bool,
 }
@@ -261,6 +289,7 @@ impl<R: SinkRuntime> SinkDevice<R> {
             runtime,
             contract: ContractTracker::new(),
             source_info_requested: false,
+            source_status_pending: false,
             epr_discovery_attempts: 0,
             epr_exhaustion_reported: false,
         })
@@ -424,12 +453,43 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         );
     }
 
+    async fn inform_alert(&mut self, alert: &AlertDataObject) {
+        self.runtime.on_source_alert(SourceAlert::from_raw(alert.0));
+        if alert.has_non_battery_status_change() {
+            self.source_status_pending = true;
+        }
+    }
+
+    async fn inform_status(&mut self, status: &stack_status::Status) {
+        let pps_mode_valid = matches!(self.contract.active_plan().map(|plan| plan.supply), Some(SupplyKind::Pps));
+        self.runtime.on_source_status(SourceStatus::from_raw_bytes(status.raw_bytes(), pps_mode_valid));
+    }
+
+    async fn inform_pps_status(&mut self, status: &stack_pps_status::PpsStatus) {
+        self.runtime.on_pps_status(PpsStatus::from_raw_bytes(status.raw_bytes()));
+    }
+
+    async fn status_query_failed(&mut self, query: StackStatusQueryKind, failure: StackStatusQueryFailure) {
+        let query = match query {
+            StackStatusQueryKind::General => StatusQuery::General,
+            StackStatusQueryKind::Pps => StatusQuery::Pps,
+        };
+        let failure = match failure {
+            StackStatusQueryFailure::NotSupported => StatusQueryFailure::NotSupported,
+            StackStatusQueryFailure::Rejected => StatusQueryFailure::Rejected,
+            StackStatusQueryFailure::Deferred => StatusQueryFailure::Deferred,
+            StackStatusQueryFailure::Timeout => StatusQueryFailure::Timeout,
+        };
+        self.runtime.on_status_query_failed(query, failure);
+    }
+
     async fn hard_reset(&mut self, origin: HardResetOrigin) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.controller.reset_port();
         self.source_info_requested = false;
+        self.source_status_pending = false;
         let direction = match origin {
             HardResetOrigin::Source => HardResetDirection::Received,
             HardResetOrigin::Sink => HardResetDirection::Sent,
@@ -445,6 +505,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.contract.on_detach();
         self.controller.reset_port();
         self.source_info_requested = false;
+        self.source_status_pending = false;
         self.epr_discovery_attempts = 0;
         self.epr_exhaustion_reported = false;
         self.runtime.on_detached();
@@ -456,12 +517,14 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.contract.on_protocol_loss();
         self.controller.reset_port();
         self.source_info_requested = false;
+        self.source_status_pending = false;
         self.runtime.on_protocol_lost(self.epr_discovery_attempts, self.config.max_auto_epr_attempts);
     }
 
     async fn epr_mode_entry_failed(&mut self, reason: DataEnterFailed) {
         self.controller.epr_entry_failed();
         self.source_info_requested = false;
+        self.source_status_pending = false;
         self.epr_discovery_attempts = self.config.max_auto_epr_attempts;
         self.runtime.on_epr_entry_failed(u8::from(reason));
     }
@@ -470,6 +533,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         loop {
             if let Some(action) = self.controller.take_ready_action() {
                 return self.event_for_action(action);
+            }
+
+            if self.source_status_pending {
+                self.source_status_pending = false;
+                return Event::RequestStatus;
             }
 
             if self.contract.load_may_enable() && !self.source_info_requested {
@@ -553,6 +621,8 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                     self.source_info_requested = true;
                     return Event::RequestSourceInfo;
                 }
+                Command::RequestSourceStatus => return Event::RequestStatus,
+                Command::RequestPpsStatus => return Event::RequestPpsStatus,
                 Command::EnterEpr => {
                     let action = self.controller.begin_epr_discovery();
                     if action.is_ok() {

@@ -19,6 +19,7 @@ pub mod request;
 pub mod runtime;
 pub mod safety;
 pub mod stack;
+pub mod status;
 pub mod units;
 
 pub use capabilities::{
@@ -50,6 +51,10 @@ pub use runtime::{
 };
 pub use safety::{PortInputs, PortState, PortSupervisor, SafetyDecision, SafetyTimings};
 pub use stack::{capabilities_from_stack, request_to_stack, StackConversionError};
+pub use status::{
+    ExternalPowerInput, InternalTemperature, PowerIndicator, PowerState, PpsOperatingMode, PpsStatus, SourceAlert,
+    SourceStatus, StatusQuery, StatusQueryFailure, TemperatureStatus,
+};
 pub use units::{Milliamps, Millivolts, Milliwatts};
 
 #[cfg(test)]

@@ -138,6 +138,17 @@ impl Message {
         payload: &[u8],
     ) -> Result<extended::Extended, ParseError> {
         match message_type {
+            header::ExtendedMessageType::Status => {
+                extended::status::Status::from_bytes(payload).map(extended::Extended::Status).ok_or(
+                    ParseError::InvalidLength { expected: extended::status::Status::DATA_SIZE, found: payload.len() },
+                )
+            }
+            header::ExtendedMessageType::PpsStatus => extended::pps_status::PpsStatus::from_bytes(payload)
+                .map(extended::Extended::PpsStatus)
+                .ok_or(ParseError::InvalidLength {
+                    expected: extended::pps_status::PpsStatus::DATA_SIZE,
+                    found: payload.len(),
+                }),
             header::ExtendedMessageType::ExtendedControl => {
                 if payload.len() != 2 {
                     return Err(ParseError::InvalidLength { expected: 2, found: payload.len() });

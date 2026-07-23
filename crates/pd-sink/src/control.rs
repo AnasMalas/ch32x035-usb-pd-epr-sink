@@ -12,6 +12,7 @@ use crate::request::{
     RequestPlan,
 };
 use crate::runtime::{HardResetDirection, RequestResult};
+use crate::status::{PpsStatus, SourceAlert, SourceStatus, StatusQuery, StatusQueryFailure};
 use crate::units::{Milliamps, Millivolts, Milliwatts};
 
 pub const CONTROL_PROTOCOL_VERSION: u8 = 1;
@@ -33,6 +34,8 @@ pub enum CommandKind {
     ExitEpr = 0x07,
     Status = 0x08,
     Help = 0x09,
+    SourceStatus = 0x0a,
+    PpsStatus = 0x0b,
     RequestVoltage = 0x10,
     RequestPdo = 0x11,
 }
@@ -54,6 +57,10 @@ pub enum EventKind {
     CapabilityPlanUnavailable = 0x8b,
     IntegrationError = 0x8c,
     Help = 0x8d,
+    SourceAlert = 0x8e,
+    SourceStatus = 0x8f,
+    PpsStatus = 0x90,
+    StatusQueryFailed = 0x91,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -134,6 +141,10 @@ pub enum ControlEvent {
     Plan { stage: PlanStage, plan: Option<RequestPlan> },
     ControllerError(ControllerError),
     SourceInfo { present_watts: u8, maximum_watts: u8, reported_watts: u8 },
+    SourceAlert(SourceAlert),
+    SourceStatus(SourceStatus),
+    PpsStatus(PpsStatus),
+    StatusQueryFailed { query: StatusQuery, failure: StatusQueryFailure },
     RequestResult(RequestResult),
     HardReset { direction: HardResetDirection, recovery_ms: u32 },
     Epr { event: EprEvent, detail: u8, extra: u8 },
@@ -311,6 +322,8 @@ pub fn decode_command(frame: &ControlFrame) -> Result<DecodedCommand, CommandDec
         kind if kind == CommandKind::ExitEpr as u8 => no_payload(payload, Command::ExitEpr)?,
         kind if kind == CommandKind::Status as u8 => no_payload(payload, Command::Status)?,
         kind if kind == CommandKind::Help as u8 => no_payload(payload, Command::Help)?,
+        kind if kind == CommandKind::SourceStatus as u8 => no_payload(payload, Command::RequestSourceStatus)?,
+        kind if kind == CommandKind::PpsStatus as u8 => no_payload(payload, Command::RequestPpsStatus)?,
         kind if kind == CommandKind::RequestVoltage as u8 => decode_voltage_request(payload)?,
         kind if kind == CommandKind::RequestPdo as u8 => decode_pdo_request(payload)?,
         _ => return Err(CommandDecodeError::UnknownCommand),
@@ -369,6 +382,32 @@ pub fn encode_event(event: ControlEvent, sequence: u8, output: &mut [u8]) -> Res
             writer.u8(maximum_watts)?;
             writer.u8(reported_watts)?;
             EventKind::SourceInfo
+        }
+        ControlEvent::SourceAlert(alert) => {
+            writer.u32(alert.raw())?;
+            EventKind::SourceAlert
+        }
+        ControlEvent::SourceStatus(status) => {
+            writer.u8(u8::from(status.pps_mode_valid()))?;
+            writer.bytes(&status.raw_bytes())?;
+            EventKind::SourceStatus
+        }
+        ControlEvent::PpsStatus(status) => {
+            writer.bytes(&status.raw_bytes())?;
+            EventKind::PpsStatus
+        }
+        ControlEvent::StatusQueryFailed { query, failure } => {
+            writer.u8(match query {
+                StatusQuery::General => 0,
+                StatusQuery::Pps => 1,
+            })?;
+            writer.u8(match failure {
+                StatusQueryFailure::NotSupported => 0,
+                StatusQueryFailure::Rejected => 1,
+                StatusQueryFailure::Deferred => 2,
+                StatusQueryFailure::Timeout => 3,
+            })?;
+            EventKind::StatusQueryFailed
         }
         ControlEvent::RequestResult(result) => {
             writer.u8(match result {

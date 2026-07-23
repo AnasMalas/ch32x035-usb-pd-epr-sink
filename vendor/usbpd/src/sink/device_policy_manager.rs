@@ -4,8 +4,12 @@
 //! or renegotiate the power contract.
 use core::future::Future;
 
-use crate::protocol_layer::message::data::{epr_mode, request, sink_capabilities, source_capabilities, source_info};
-use crate::protocol_layer::message::extended::sink_capabilities_extended::SinkCapabilitiesExtended;
+use crate::protocol_layer::message::data::{
+    alert, epr_mode, request, sink_capabilities, source_capabilities, source_info,
+};
+use crate::protocol_layer::message::extended::{
+    pps_status, sink_capabilities_extended::SinkCapabilitiesExtended, status,
+};
 use crate::units::Power;
 
 /// Events that the device policy manager can send to the policy engine.
@@ -22,6 +26,10 @@ pub enum Event {
     RequestEprSourceCapabilities,
     /// Request the Source's present and guaranteed power information.
     RequestSourceInfo,
+    /// Request the Port Partner's general Status Data Block.
+    RequestStatus,
+    /// Request live Programmable Power Supply status.
+    RequestPpsStatus,
     /// Enter EPR mode with the specified operational PDP.
     ///
     /// Initiates EPR mode entry sequence (EPR_Mode Enter -> EnterAcknowledged -> EnterSucceeded).
@@ -58,6 +66,30 @@ pub enum RequestRejection {
     Reject,
     /// The source asked the sink to retry later.
     Wait,
+}
+
+/// Optional status inquiry that did not return its expected Data Block.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StatusQueryKind {
+    /// `Get_Status` / Status.
+    General,
+    /// `Get_PPS_Status` / PPS_Status.
+    Pps,
+}
+
+/// Non-fatal outcome of an optional status inquiry.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum StatusQueryFailure {
+    /// Port Partner returned `Not_Supported`.
+    NotSupported,
+    /// Port Partner returned the legacy `Reject` response.
+    Rejected,
+    /// Port Partner asked the Sink to retry later.
+    Deferred,
+    /// SenderResponseTimer expired.
+    Timeout,
 }
 
 /// Which port initiated the Hard Reset that moved the Sink to its default
@@ -112,6 +144,30 @@ pub trait DevicePolicyManager {
 
     /// Inform the product about a Source_Info response.
     fn inform_source_info(&mut self, _source_info: &source_info::SourceInfo) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    /// Inform the product about an Alert from the Port Partner.
+    fn inform_alert(&mut self, _alert: &alert::AlertDataObject) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    /// Inform the product about a general Status response.
+    fn inform_status(&mut self, _status: &status::Status) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    /// Inform the product about a PPS_Status response.
+    fn inform_pps_status(&mut self, _status: &pps_status::PpsStatus) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    /// Report a refused, deferred, or timed-out optional status inquiry.
+    fn status_query_failed(
+        &mut self,
+        _query: StatusQueryKind,
+        _failure: StatusQueryFailure,
+    ) -> impl Future<Output = ()> {
         async {}
     }
 
