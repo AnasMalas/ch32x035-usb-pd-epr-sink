@@ -140,11 +140,13 @@ procedure: confirm the listing and analyzer decode, but do not request the APDO.
 Ranges below 3.3 V, above 21 V, inverted, or advertising zero current must be
 reported as malformed rather than requestable.
 
-A bounded EPR AVS offer with a non-standard lower bound, such as AOHI's
-5-28 V/140 W `0xd230328c`, is likewise reported as `compatible`. Normal EPR AVS
-selection exposes only its 15-28 V standards-valid portion. The full advertised
-range requires `epr-avs-nonstandard` or an advanced direct-PDO adjustment and
-must only be exercised on an isolated source-side fixture during bring-up.
+A bounded EPR AVS offer outside 15-48 V, such as AOHI's 5-28 V/140 W
+`0xd230328c` or a nominal 15-50 V offer, is likewise reported as `compatible`.
+Normal EPR AVS selection exposes only its standards-valid intersection. The
+full advertised range requires `epr-avs-nonstandard` or an advanced direct-PDO
+adjustment and must only be exercised on an isolated source-side fixture during
+bring-up. Above 48 V also requires the explicit `usb-epr-50v` firmware profile;
+a normal `usb-epr` build must reject it at its sink limit.
 
 ## 5. Exercise PD 3.x SinkTx collision avoidance
 
@@ -205,6 +207,12 @@ fixture above where source VBUS has no electrical path to the board or a load:
 .\scripts\build.ps1 -Profile usb-epr
 .\scripts\flash.ps1 -Profile usb-epr
 ```
+
+Use `usb-epr-50v` instead only for a deliberate compatibility test on a path
+rated with margin above nominal 50 V. A measured value near 50 V after a source
+advertised 48 V may simply be the standard 48 V output at positive tolerance;
+the firmware only permits a nominal 50 V request when the raw APDO advertises
+it.
 
 With an EPR source and cable, expect the initial 5 V SPR contract, a
 `Source_Info` attempt, then:

@@ -59,15 +59,19 @@ Useful interactive builds are:
 .\scripts\build.ps1 -Profile usb-safe-5v
 .\scripts\build.ps1 -Profile usb-pps
 .\scripts\build.ps1 -Profile usb-epr
+.\scripts\build.ps1 -Profile usb-epr-50v
 .\scripts\build.ps1 -Profile usb-epr-text
 .\scripts\build.ps1 -Profile usb-epr-dual-log
 ```
 
-`usb-epr` is the normal compact binary control image. It uses 54,864 of 63,488
-flash bytes (8,624 free) and reserves 4,584 of 20,480 static RAM bytes. The
-development ASCII `usb-epr-text` image uses 61,920 flash bytes (1,568 free) and
-7,656 static RAM bytes. `usb-epr-dual-log` sends human-readable logs over both
-CDC and SDI and remains a bring-up diagnostic rather than a primary user image.
+`usb-epr` is the normal compact binary control image. It uses 54,920 of 63,488
+flash bytes (8,568 free) and reserves 4,584 of 20,480 static RAM bytes. The
+opt-in `usb-epr-50v` compatibility image uses 54,928 flash bytes (8,560 free)
+and the same static RAM. It raises only the configured sink ceiling; normal AVS
+selection remains within 15-48 V. The development ASCII `usb-epr-text` image
+uses 62,136 flash bytes (1,352 free) and 7,656 static RAM bytes.
+`usb-epr-dual-log` sends human-readable logs over both CDC and SDI and remains
+a bring-up diagnostic rather than a primary user image.
 
 ## USB ISP and runtime CDC
 
@@ -83,6 +87,10 @@ Build and flash an explicit profile:
 .\scripts\build.ps1 -Profile usb-epr
 .\scripts\flash.ps1 -Profile usb-epr
 ```
+
+For an explicitly qualified 50 V compatibility path, substitute
+`usb-epr-50v` in both commands. The normal profile is deliberately capped at
+48 V.
 
 `flash.ps1` selects an already-built artifact and never rebuilds it. To build
 and immediately program the same explicit profile in one command, use:
@@ -132,7 +140,8 @@ Treat either as a deliberate source change:
 1. change the exact version/revision or dated toolchain;
 2. update `Cargo.lock` if needed;
 3. run `scripts/check.ps1`;
-4. compare flash use for `usb-epr`, `usb-epr-text`, and `usb-epr-dual-log`;
+4. compare flash use for `usb-epr`, `usb-epr-50v`, `usb-epr-text`, and
+   `usb-epr-dual-log`;
 5. commit the lockfile/toolchain change with the code that required it.
 
 Do not point the project at moving Git branches or an unpinned nightly.

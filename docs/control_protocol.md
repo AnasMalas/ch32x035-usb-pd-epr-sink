@@ -56,5 +56,6 @@ USB PD Control waits for device output before sending a command. A valid
 console command as a typed command frame and translates all returned events.
 For development text, it sends and parses the existing ASCII directly.
 
-The production `usb-safe-5v`, `usb-pps`, and `usb-epr` profiles use
-`usb-control`. Use `usb-epr-text` for a conventional serial terminal.
+The production `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
+`usb-epr-50v` profiles use `usb-control`. Use `usb-epr-text` for a
+conventional serial terminal.

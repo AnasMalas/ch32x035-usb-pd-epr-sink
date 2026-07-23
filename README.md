@@ -14,7 +14,10 @@ compliance.
 
 - Decode and validate all eleven SPR/EPR Source PDO positions.
 - Plan fixed, PPS, SPR AVS, and EPR AVS requests.
-- Encode exact 20 mV PPS and 100 mV AVS requests through 48 V.
+- Encode exact 20 mV PPS requests from an advertised 3.3 V endpoint and exact
+  100 mV AVS requests through the standard 48 V limit.
+- Preserve explicitly selected, source-advertised EPR AVS compatibility ranges
+  from 5 V through 50 V without exposing them to normal automatic selection.
 - Enter and exit EPR mode, retrieve chunked EPR capabilities, and send EPR
   keepalives.
 - Begin every attachment at fixed 5 V and discover capabilities without
@@ -31,9 +34,11 @@ not requestable because they are outside this project's sink use case.
 
 ## Safety boundary
 
-Firmware negotiation does not make a board safe for 28-48 V. The complete
+Firmware negotiation does not make a board safe for 28-50 V. The complete
 connector, switch, FETs, discharge path, protection, spacing, measurement
 network, and load must be rated for the selected voltage and fault energy.
+The normal EPR profile remains capped at nominal 48 V; 50 V is a deliberate
+non-standard compatibility profile, not a new standards-valid EPR level.
 
 The reference integration assumes a 3.3 V-safe `VBUS_PRESENT` input and a
 firmware `LOAD_ENABLE` output. The effective hardware gate must remain:
@@ -101,6 +106,12 @@ The normal `usb-safe-5v`, `usb-pps`, and `usb-epr` profiles use compact binary
 diagnostic stream. Use `usb-epr-text` only when a direct ASCII serial console
 is useful during development. The legacy `usb-console` Cargo feature remains a
 compatibility alias for `dev-text-console`.
+
+`usb-epr-50v` is an opt-in compatibility profile for hardware explicitly
+rated beyond a non-standard nominal 50 V source request. It does not change
+normal AVS selection, which stays inside the source's 15-48 V standard
+intersection; use the compatibility preference or a direct PDO adjustment to
+reach a genuinely advertised value above 48 V.
 
 For application integration, enable the crate's `ch32x035` feature, provide
 the small `SinkRuntime` and `Ch32x035Port` adapters, and keep the GPIO choices

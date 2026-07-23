@@ -36,8 +36,8 @@ communicates directly with the MCU.
 The application exposes the stable firmware command surface:
 
 - automatic, fixed, PPS, SPR AVS, and standards-valid EPR AVS voltage requests;
-- an explicit non-standard EPR AVS preference for a bounded lower range that a
-  source actually advertised;
+- an explicit EPR AVS compatibility preference for a source-advertised range
+  outside 15-48 V, bounded to 5-50 V;
 - an optional requested current and the confirmed usable-current report;
 - direct PDO maximum, current, and adjustable requests;
 - complete capability and dry-run plan queries;
@@ -50,10 +50,11 @@ The firmware reports the CH32X035's programmed 8-byte factory UID, matching the
 identifier exposed by WCH's USB bootloader. The nominal third ESIG word is
 unprogrammed (`0xffffffff`) on observed X035 silicon and is deliberately not
 used as the short board label or cache key. The browser keeps a local 5 V,
-28 V, or 48 V GUI request ceiling for each valid UID; an unknown board always
-begins at 5 V. This is an accidental-command guard, not a substitute for
-firmware limits or correctly rated hardware. The identity and setting remain
-local to this browser profile.
+28 V, 48 V, or 50 V compatibility GUI request ceiling for each valid UID; an
+unknown board always begins at 5 V. The 50 V choice remains disabled unless
+compact firmware reports a 50 V device limit. This is an accidental-command
+guard, not a substitute for firmware limits or correctly rated hardware. The
+identity and setting remain local to this browser profile.
 
 The main controls do not require the diagnostics terminal to be open. The
 terminal is collapsed by default, but every line is still retained for support
