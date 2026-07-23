@@ -20,10 +20,11 @@ used for unsolicited events; command responses copy the command sequence.
 
 Commands are typed forms of the stable command surface: identity,
 capabilities, plans, Source_Info, EPR entry/capability retrieval/exit, status,
-help, voltage requests, and direct-PDO requests. Events cover command status,
-device limits and UID, lifecycle and reset state, raw Source PDO words, request
-plans and contracts, controller errors, Source_Info, request disposition, EPR
-state, and integration errors.
+general Source Status, PPS_Status, help, voltage requests, and direct-PDO
+requests. Events cover command status, device limits and UID, lifecycle and
+reset state, raw Source PDO words, request plans and contracts, controller
+errors, Source_Info, Source Alert, general/PPS status and optional-query
+failure, request disposition, EPR state, and integration errors.
 
 The firmware does not format those values as text. In particular, a complete
 11-object EPR capability list is one event containing eleven raw 32-bit PDOs.
@@ -43,6 +44,8 @@ so an application can carry the same protocol over another packet transport.
 bring-up. It is convenient with an ordinary serial terminal and includes the
 human-readable format strings and a larger log queue in firmware. The old
 `usb-console` feature is a compatibility alias for this feature.
+The flash-heavy `plans` preview is available in the normal compact-control
+image, not in text-console profiles.
 
 Select only one application protocol in a firmware image. `usb-epr-dual-log`
 combines the development text console with SDI logging and is intended for
@@ -55,6 +58,9 @@ USB PD Control waits for device output before sending a command. A valid
 `dev-text-console`. For compact control, the browser encodes every UI or raw
 console command as a typed command frame and translates all returned events.
 For development text, it sends and parses the existing ASCII directly.
+The text firmware emits raw PDO and Status words where that saves target flash;
+the browser applies the same decoder used for compact binary events, so both
+transports present the same table and telemetry.
 
 The production `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
 `usb-epr-50v` profiles use `usb-control`. Use `usb-epr-text` for a

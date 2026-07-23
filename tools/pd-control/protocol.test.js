@@ -41,6 +41,16 @@ function eventLines(kind, payload, sequence = 0) {
 }
 
 {
+  const decoder = new protocol.FrameDecoder();
+  const sourceStatus = decoder.push(protocol.encodeCommand("pd-status", 7)).frames[0];
+  const ppsStatus = decoder.push(protocol.encodeCommand("pps-status", 8)).frames[0];
+  assert.equal(sourceStatus.kind, 0x0a);
+  assert.equal(ppsStatus.kind, 0x0b);
+  assert.equal(sourceStatus.payload.length, 0);
+  assert.equal(ppsStatus.payload.length, 0);
+}
+
+{
   const raws = [
     0x0a91912c,
     0x0012d12c,
@@ -121,6 +131,22 @@ assert.match(protocol.pdoLine(1, 8, 0xd3ea968c), /malformed/);
     "Source_Info: present=240 W, maximum=240 W, reported=1 W",
   ]);
 }
+
+assert.deepEqual(eventLines(0x90, [0x5c, 0x03, 0x2e, 0x0a]), [
+  "PPS_Status: voltage=17200mV current=2300mA mode=CL temperature=normal",
+]);
+
+assert.deepEqual(eventLines(0x8f, [1, 42, 22, 0, 0x12, 4, 0x22, 9]), [
+  "Source_Status: mode=CL internal=42C input=AC battery=false non-battery=true temperature=warning events=OCP limits=cable,temperature state=S0 indicator=on",
+]);
+
+assert.deepEqual(eventLines(0x8e, [0, 0, 0, 0x14]), [
+  "PD Alert: events=condition-change,OCP raw=0x14000000",
+]);
+
+assert.deepEqual(eventLines(0x91, [1, 3]), [
+  "PPS_Status query failed: timeout",
+]);
 
 assert.throws(() => protocol.encodeCommand("request 17200 2300 magic", 1), /preference/i);
 assert.throws(() => protocol.encodeCommand("pdo 10 adjust 48000 0", 1), /range/i);

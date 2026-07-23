@@ -19,6 +19,16 @@ const ui = {
   currentConfidence: $("#current-confidence"),
   sourceKind: $("#source-kind"),
   sourceSummary: $("#source-summary"),
+  livePps: $("#live-pps"),
+  ppsModeIndicator: $("#pps-mode-indicator"),
+  ppsMode: $("#pps-mode"),
+  ppsModeDetail: $("#pps-mode-detail"),
+  ppsMeasurement: $("#pps-measurement"),
+  sourceTemperature: $("#source-temperature"),
+  sourceInput: $("#source-input"),
+  sourceEvents: $("#source-events"),
+  sourceLimits: $("#source-limits"),
+  telemetryNote: $("#telemetry-note"),
   voltageForm: $("#voltage-form"),
   voltageInput: $("#voltage-input"),
   currentInput: $("#current-input"),
@@ -29,6 +39,7 @@ const ui = {
   enterEprButton: $("#enter-epr-button"),
   eprCapsButton: $("#epr-caps-button"),
   exitEprButton: $("#exit-epr-button"),
+  plansButton: $("#plans-button"),
   pdoForm: $("#pdo-form"),
   pdoPosition: $("#pdo-position"),
   pdoDemand: $("#pdo-demand"),
@@ -66,6 +77,11 @@ const state = {
   sourceKind: null,
   sourceEprCapable: false,
   inEpr: false,
+  contractPosition: null,
+  contractSupplyType: null,
+  contractEpr: false,
+  ppsRefreshTimer: null,
+  ppsRefreshBusy: false,
   usbId: null,
   deviceUid: null,
   deviceMaxVoltageMillivolts: null,
@@ -134,6 +150,37 @@ function displayBoardId(uid) {
   return uid ? `Board ${uid.slice(-8).toUpperCase()}` : "Board identity pending";
 }
 
+function displayStatusToken(value) {
+  return value.replaceAll("-", " ");
+}
+
+function displayStatusList(value) {
+  return value === "none"
+    ? "None"
+    : value.split(",").map(displayStatusToken).join(", ");
+}
+
+function setPpsMode(mode, detail) {
+  ui.ppsModeIndicator.classList.toggle("is-cv", mode === "CV");
+  ui.ppsModeIndicator.classList.toggle("is-cl", mode === "CL");
+  ui.ppsMode.textContent = mode === "CV"
+    ? "Constant voltage"
+    : mode === "CL"
+      ? "Current limit"
+      : "Unknown";
+  ui.ppsModeDetail.textContent = detail;
+}
+
+function clearSourceTelemetry() {
+  setPpsMode(null, "No PPS status received");
+  ui.ppsMeasurement.textContent = "—";
+  ui.sourceTemperature.textContent = "—";
+  ui.sourceInput.textContent = "No general status received";
+  ui.sourceEvents.textContent = "None reported";
+  ui.sourceLimits.textContent = "No active limits reported";
+  ui.telemetryNote.textContent = "A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.";
+}
+
 function transportLabel() {
   if (state.transport === "usb-control") return "Compact USB control";
   if (state.transport === "dev-text-console") return "Development text console";
@@ -191,6 +238,34 @@ function applyDeviceIdentity(rawUid) {
   ui.voltageCeilingNote.textContent = `Loaded the saved GUI ceiling for ${board}. This is not a hardware rating.`;
 }
 
+async function pollPpsStatus() {
+  if (
+    state.ppsRefreshBusy
+    || !state.connected
+    || state.transport === null
+    || state.contractSupplyType !== "PPS"
+  ) return;
+
+  state.ppsRefreshBusy = true;
+  try {
+    await sendCommand("pps-status", { echo: false });
+  } catch (error) {
+    if (state.connected) addLog(`Live PPS refresh stopped: ${error.message}`, "system", "error");
+  } finally {
+    state.ppsRefreshBusy = false;
+  }
+}
+
+function configurePpsPolling() {
+  if (state.ppsRefreshTimer !== null) {
+    clearInterval(state.ppsRefreshTimer);
+    state.ppsRefreshTimer = null;
+  }
+  if (!ui.livePps.checked || !state.connected) return;
+  void pollPpsStatus();
+  state.ppsRefreshTimer = setInterval(() => void pollPpsStatus(), 1000);
+}
+
 function updateActionAvailability() {
   const ready = state.connected && state.transport !== null;
   const deviceMaximum = state.deviceMaxVoltageMillivolts ?? 48000;
@@ -206,6 +281,11 @@ function updateActionAvailability() {
   ui.enterEprButton.disabled = !ready || state.inEpr || !state.sourceEprCapable;
   ui.eprCapsButton.disabled = !ready || !state.inEpr;
   ui.exitEprButton.disabled = !ready || !state.inEpr;
+  ui.plansButton.disabled = !ready || state.transport === "dev-text-console";
+  ui.plansButton.title = state.transport === "dev-text-console"
+    ? "The text-console profile omits this flash-heavy preview; flash usb-epr to use it."
+    : "";
+  ui.livePps.disabled = !ready || state.contractSupplyType !== "PPS";
 }
 
 function setConnected(connected) {
@@ -229,6 +309,7 @@ function setConnected(connected) {
     ui.deviceId.removeAttribute("title");
   }
   updateActionAvailability();
+  configurePpsPolling();
 }
 
 function clearDeviceState() {
@@ -237,6 +318,9 @@ function clearDeviceState() {
   state.sourceKind = null;
   state.sourceEprCapable = false;
   state.inEpr = false;
+  state.contractPosition = null;
+  state.contractSupplyType = null;
+  state.contractEpr = false;
   ui.portState.textContent = state.connected ? "Connected" : "Offline";
   ui.portDetail.textContent = state.connected ? "Waiting for attachment" : "No serial connection";
   ui.contractVoltage.textContent = "—";
@@ -245,6 +329,7 @@ function clearDeviceState() {
   ui.currentConfidence.textContent = "Awaiting negotiation";
   ui.sourceKind.textContent = "—";
   ui.sourceSummary.textContent = "Not received";
+  clearSourceTelemetry();
   renderCapabilities();
   updateActionAvailability();
 }
@@ -289,13 +374,57 @@ function addLog(text, direction = "incoming", severity = "normal") {
   }
 }
 
+function littleEndianU32Bytes(value) {
+  const raw = value >>> 0;
+  return Uint8Array.from([
+    raw & 0xff,
+    (raw >>> 8) & 0xff,
+    (raw >>> 16) & 0xff,
+    (raw >>> 24) & 0xff,
+  ]);
+}
+
+function translateDevelopmentLine(line) {
+  let match = line.match(/^PDO(\d+) raw=(0x[0-9a-f]{8})$/i);
+  if (match) {
+    const kind = state.sourceKind === "EPR" ? 1 : 0;
+    return controlProtocol.pdoLine(kind, Number(match[1]), Number.parseInt(match[2], 16));
+  }
+
+  match = line.match(/^PPS_Status: raw=(0x[0-9a-f]{8})$/i);
+  if (match) {
+    return controlProtocol.ppsStatusLine(littleEndianU32Bytes(Number.parseInt(match[1], 16)));
+  }
+
+  match = line.match(/^Status: pps=(true|false) raw=([0-9a-f]{14})$/i);
+  if (match) {
+    const raw = Uint8Array.from(match[2].match(/../g).map((byte) => Number.parseInt(byte, 16)));
+    return controlProtocol.sourceStatusLine(raw, match[1].toLowerCase() === "true");
+  }
+
+  match = line.match(/^Alert: raw=(0x[0-9a-f]{8})$/i);
+  if (match) {
+    return controlProtocol.sourceAlertLine(littleEndianU32Bytes(Number.parseInt(match[1], 16)));
+  }
+
+  match = line.match(/^Status query failed: kind=(\d+) reason=(\d+)$/);
+  if (match) {
+    return controlProtocol.statusQueryFailureLine(Uint8Array.from([
+      Number(match[1]),
+      Number(match[2]),
+    ]));
+  }
+
+  return line;
+}
+
 function appendSerialText(chunk) {
   state.lineBuffer += state.textDecoder.decode(chunk, { stream: true }).replaceAll("\r", "");
   const lines = state.lineBuffer.split("\n");
   state.lineBuffer = lines.pop() ?? "";
   for (const line of lines) {
     if (line.length > 0) {
-      parseDeviceLine(line);
+      parseDeviceLine(translateDevelopmentLine(line));
     }
   }
 }
@@ -321,6 +450,8 @@ async function initializeTransport() {
     await sendCommand("status", { echo: false });
     await new Promise((resolve) => setTimeout(resolve, 80));
     await sendCommand("caps", { echo: false });
+    await new Promise((resolve) => setTimeout(resolve, 80));
+    await sendCommand("source-status", { echo: false });
   } catch (error) {
     if (state.connected) addLog(`Device initialization failed: ${error.message}`, "system", "error");
   }
@@ -505,8 +636,17 @@ function renderCapabilities() {
   }
 }
 
+function refreshContractSupply() {
+  if (state.contractPosition === null) return;
+  const pdoType = state.pdos.get(state.contractPosition)?.type;
+  if (pdoType) state.contractSupplyType = pdoType;
+  const label = state.contractSupplyType ?? "PDO";
+  ui.contractSupply.textContent = `${label} · PDO ${state.contractPosition}${state.contractEpr ? " · EPR" : ""}`;
+  updateActionAvailability();
+}
+
 function parseDeviceLine(line) {
-  const isError = /^(Rejected|Invalid|Busy|PD stopped|Hard reset)/.test(line);
+  const isError = /^(Rejected|Invalid|Busy|PD stopped|Hard reset|.+ query failed:)/.test(line);
   addLog(line, "incoming", isError ? "error" : "normal");
 
   const identity = line.match(/^Device id=([0-9a-f]{16}|[0-9a-f]{24}|unavailable)$/i);
@@ -526,11 +666,19 @@ function parseDeviceLine(line) {
   }
 
   if (/^Attached\b/.test(line)) {
+    state.contractPosition = null;
+    state.contractSupplyType = null;
+    state.contractEpr = false;
+    clearSourceTelemetry();
     ui.portState.textContent = "Attached";
     ui.portDetail.textContent = "PD negotiation active";
   } else if (/^Detached\b/.test(line)) {
     state.inEpr = false;
     state.sourceEprCapable = false;
+    state.contractPosition = null;
+    state.contractSupplyType = null;
+    state.contractEpr = false;
+    clearSourceTelemetry();
     ui.portState.textContent = "Detached";
     ui.portDetail.textContent = "Waiting for source";
     ui.contractVoltage.textContent = "—";
@@ -541,6 +689,10 @@ function parseDeviceLine(line) {
   } else if (/^(Hard reset|Protocol lost|PD stopped)/.test(line)) {
     state.inEpr = false;
     state.sourceEprCapable = false;
+    state.contractPosition = null;
+    state.contractSupplyType = null;
+    state.contractEpr = false;
+    clearSourceTelemetry();
     ui.portState.textContent = "Recovering";
     ui.portDetail.textContent = line;
     ui.contractVoltage.textContent = "—";
@@ -570,6 +722,7 @@ function parseDeviceLine(line) {
   const pdo = parsePdoLine(line);
   if (pdo) {
     state.pdos.set(pdo.position, pdo);
+    if (pdo.position === state.contractPosition) refreshContractSupply();
     renderCapabilities();
     return;
   }
@@ -580,14 +733,16 @@ function parseDeviceLine(line) {
     const detail = contract[2];
     const fixed = detail.match(/fixed=(\d+)mV/);
     const adjustable = detail.match(/encoded=(\d+)mV/);
-    const pdoType = state.pdos.get(position)?.type ?? "PDO";
+    const pdoType = state.pdos.get(position)?.type ?? (fixed ? "Fixed" : "Adjustable");
     const voltage = Number((fixed ?? adjustable)?.[1]);
     state.inEpr = /EPR=1/.test(detail);
+    state.contractPosition = position;
+    state.contractSupplyType = pdoType;
+    state.contractEpr = state.inEpr;
     ui.portState.textContent = "Ready";
     ui.portDetail.textContent = `Explicit contract on PDO ${position}`;
     ui.contractVoltage.textContent = displayMillivolts(voltage);
-    ui.contractSupply.textContent = `${pdoType} · PDO ${position}${/EPR=1/.test(detail) ? " · EPR" : ""}`;
-    updateActionAvailability();
+    refreshContractSupply();
     return;
   }
 
@@ -603,6 +758,64 @@ function parseDeviceLine(line) {
   const sourceInfo = line.match(/^Source_Info: present=(\d+) W, maximum=(\d+) W, reported=(\d+) W$/);
   if (sourceInfo) {
     ui.sourceSummary.textContent = `${state.expectedPdoCount || state.pdos.size} objects · ${sourceInfo[1]} W present PDP`;
+    return;
+  }
+
+  const ppsStatus = line.match(
+    /^PPS_Status: voltage=(unsupported|\d+mV) current=(unsupported|\d+mA) mode=(CV|CL) temperature=([^\s]+)$/,
+  );
+  if (ppsStatus) {
+    const voltage = ppsStatus[1] === "unsupported"
+      ? "Voltage unavailable"
+      : displayMillivolts(Number.parseInt(ppsStatus[1], 10));
+    const current = ppsStatus[2] === "unsupported"
+      ? "current unavailable"
+      : displayMilliamps(Number.parseInt(ppsStatus[2], 10));
+    ui.ppsMeasurement.textContent = `${voltage} · ${current}`;
+    ui.sourceTemperature.textContent = `${displayStatusToken(ppsStatus[4])} · PPS`;
+    setPpsMode(ppsStatus[3], `PPS_Status · temperature ${displayStatusToken(ppsStatus[4])}`);
+    ui.telemetryNote.textContent = "Live values are measured and reported by the source; their specified accuracy is lower than a dedicated power meter.";
+    return;
+  }
+
+  const sourceStatus = line.match(
+    /^Source_Status: mode=(CV|CL|n\/a) internal=([^\s]+) input=([^\s]+) battery=(true|false) non-battery=(true|false) temperature=([^\s]+) events=([^\s]+) limits=([^\s]+) state=([^\s]+) indicator=([^\s]+)$/,
+  );
+  if (sourceStatus) {
+    if (sourceStatus[1] === "CV" || sourceStatus[1] === "CL") {
+      setPpsMode(sourceStatus[1], "General Status · updated after source Alert or manual read");
+    } else if (state.contractSupplyType !== "PPS") {
+      setPpsMode(null, "The active contract is not PPS");
+    }
+    ui.sourceTemperature.textContent = `${displayStatusToken(sourceStatus[2])} · ${displayStatusToken(sourceStatus[6])}`;
+    const inputKinds = [
+      displayStatusToken(sourceStatus[3]),
+      sourceStatus[4] === "true" ? "battery" : null,
+      sourceStatus[5] === "true" ? "non-battery" : null,
+    ].filter(Boolean);
+    ui.sourceInput.textContent = `${inputKinds.join(" · ")} · state ${displayStatusToken(sourceStatus[9])}`;
+    ui.sourceEvents.textContent = sourceStatus[7] === "none"
+      ? "None reported"
+      : displayStatusList(sourceStatus[7]);
+    ui.sourceLimits.textContent = sourceStatus[8] === "none"
+      ? "No active limits reported"
+      : `Power limited by ${displayStatusList(sourceStatus[8]).toLowerCase()}`;
+    ui.telemetryNote.textContent = `General Status received · requested indicator ${displayStatusToken(sourceStatus[10])}. Event flags describe the latest event and may clear after they are read.`;
+    return;
+  }
+
+  const alert = line.match(/^PD Alert: events=([^\s]+) raw=(0x[0-9a-f]{8})$/i);
+  if (alert) {
+    ui.sourceEvents.textContent = alert[1] === "none"
+      ? "Alert with no event bits"
+      : `Alert: ${displayStatusList(alert[1])}`;
+    ui.telemetryNote.textContent = "Source Alert received. The firmware automatically requests general Status for non-battery source changes.";
+    return;
+  }
+
+  const queryFailure = line.match(/^(PPS_Status|Source_Status) query failed: (.+)$/);
+  if (queryFailure) {
+    ui.telemetryNote.textContent = `${queryFailure[1]} was ${queryFailure[2]}; the existing power contract remains active.`;
   }
 }
 
@@ -781,6 +994,7 @@ function updatePdoFields() {
 }
 
 ui.connectButton.addEventListener("click", connectPort);
+ui.livePps.addEventListener("change", configurePpsPolling);
 
 ui.safeFiveButton.addEventListener("click", async () => {
   try {

@@ -233,18 +233,38 @@ transmits no Request, and that its final contract is still fixed 5 V on PDO 1.
 Without an analyzer, the isolated fixture may instead use the source-side meter
 to confirm VBUS remains at 5 V; this is useful functional evidence but does not
 verify packet contents or protocol timing.
-The dual-log image omits this verbose command to preserve protocol flash
-headroom. If EPR entry fails, record the source/cable combination and PD
-analyzer trace. A Hard Reset causes a two-second quiet recovery window and at
-most one automatic EPR retry. A second failure must settle at SPR rather than
-cycling; a manual user request may still retry EPR.
+The development text-console images omit this verbose command to preserve
+protocol flash headroom. If EPR entry fails, record the source/cable
+combination and PD analyzer trace. A Hard Reset causes a two-second quiet
+recovery window and at most one automatic EPR retry. A second failure must
+settle at SPR rather than cycling; a manual user request may still retry EPR.
 
 With a controllable source, also request `EPR_Sink_Capabilities` and
 `Sink_Capabilities_Extended`. Verify the former is a valid one-PDO, 10-byte
 frame and the latter is a 30-byte frame with a 24-byte SKEDB. Byte 22 of that
 SKEDB (EPR Operational PDP) must be 140 W, matching the EPR Enter data byte.
 
-## 8. Evidence to keep
+## 8. Verify source status and PPS mode
+
+Establish a PPS contract and use **Read PPS status** in the browser. With no
+load, a supporting Source should normally report CV plus source-side voltage
+and current; unsupported measurement fields are legal and must be displayed as
+unavailable without disturbing the contract.
+
+With a current-limited electronic load or other controlled load, increase the
+draw through the requested PPS current. If the Source enters current-limit
+operation, verify that the GUI changes to CL. A conforming Source should also
+send Alert and cause the firmware to read general Status automatically. Use
+the optional one-second PPS refresh only to observe live values or to
+accommodate a Source that omits that Alert. A refused, deferred, unsupported,
+or timed-out query must leave the existing contract active.
+
+The reported current has coarse accuracy and CL is charger regulator state,
+not a substitute for board overcurrent protection. Verify that the
+application-owned CL indicator is cleared on detach, Hard Reset, and protocol
+loss.
+
+## 9. Evidence to keep
 
 For each source/cable pair, save:
 
@@ -253,6 +273,8 @@ For each source/cable pair, save:
   Request and unchanged 5 V while it ran;
 - any `compatible` PPS line together with the analyzer's raw APDO decode;
 - Source_Info output or its absence;
+- PPS_Status CV/CL output, the corresponding Alert/general Status sequence,
+  and any source that refuses or times out the optional queries;
 - the 5 V request RDO and EPR 5 V request/PDO copy from an analyzer;
 - EPR Sink Capabilities and Sink Capabilities Extended response frames;
 - the SinkTxNG defer/source-response/SinkTxOK resume analyzer trace;

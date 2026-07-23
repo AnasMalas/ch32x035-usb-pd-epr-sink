@@ -17,6 +17,8 @@
     "exit-epr": 0x07,
     status: 0x08,
     help: 0x09,
+    "source-status": 0x0a,
+    "pps-status": 0x0b,
     request: 0x10,
     pdo: 0x11,
   });
@@ -36,6 +38,10 @@
     capabilityPlanUnavailable: 0x8b,
     integrationError: 0x8c,
     help: 0x8d,
+    sourceAlert: 0x8e,
+    sourceStatus: 0x8f,
+    ppsStatus: 0x90,
+    statusQueryFailed: 0x91,
   });
 
   const PREFERENCE = Object.freeze({
@@ -169,6 +175,7 @@
     const aliases = Object.freeze({
       identity: "device",
       capabilities: "caps",
+      "pd-status": "source-status",
       voltage: "request",
     });
     const name = aliases[words[0]] ?? words[0];
@@ -265,6 +272,72 @@
 
   function hex32(value) {
     return `0x${(value >>> 0).toString(16).padStart(8, "0")}`;
+  }
+
+  function temperatureName(value) {
+    return ["unsupported", "normal", "warning", "over-temperature"][value & 0x03];
+  }
+
+  function ppsStatusLine(payload) {
+    expectLength(payload, 4);
+    const voltageUnits = payload[0] + payload[1] * 0x100;
+    const voltage = voltageUnits === 0xffff ? "unsupported" : `${voltageUnits * 20}mV`;
+    const current = payload[2] === 0xff ? "unsupported" : `${payload[2] * 50}mA`;
+    const mode = payload[3] & 0x08 ? "CL" : "CV";
+    return `PPS_Status: voltage=${voltage} current=${current} mode=${mode} temperature=${temperatureName(payload[3] >> 1)}`;
+  }
+
+  function sourceStatusLine(raw, ppsModeValid = false) {
+    expectLength(raw, 7);
+    const internal = raw[0] === 0 ? "unsupported" : raw[0] === 1 ? "below-2C" : `${raw[0]}C`;
+    const input = ["internal", "DC", "invalid", "AC"][(raw[1] >> 1) & 0x03];
+    const events = [];
+    if (raw[3] & 0x02) events.push("OCP");
+    if (raw[3] & 0x04) events.push("OTP");
+    if (raw[3] & 0x08) events.push("OVP");
+    const limits = [];
+    if (raw[5] & 0x02) limits.push("cable");
+    if (raw[5] & 0x04) limits.push("other-ports");
+    if (raw[5] & 0x08) limits.push("external-power");
+    if (raw[5] & 0x10) limits.push("event");
+    if (raw[5] & 0x20) limits.push("temperature");
+    const states = ["unsupported", "S0", "modern-standby", "S3", "S4", "S5", "G3", "invalid"];
+    const indicators = ["off", "on", "blinking", "breathing", "invalid", "invalid", "invalid", "invalid"];
+    const mode = ppsModeValid ? (raw[3] & 0x10 ? "CL" : "CV") : "n/a";
+    return [
+      "Source_Status:",
+      `mode=${mode}`,
+      `internal=${internal}`,
+      `input=${input}`,
+      `battery=${Boolean(raw[1] & 0x08)}`,
+      `non-battery=${Boolean(raw[1] & 0x10)}`,
+      `temperature=${temperatureName(raw[4] >> 1)}`,
+      `events=${events.join(",") || "none"}`,
+      `limits=${limits.join(",") || "none"}`,
+      `state=${states[raw[6] & 0x07]}`,
+      `indicator=${indicators[(raw[6] >> 3) & 0x07]}`,
+    ].join(" ");
+  }
+
+  function sourceAlertLine(payload) {
+    expectLength(payload, 4);
+    const raw = readU32(payload, 0);
+    const events = [];
+    if ((raw & 0x80000000) !== 0 && (raw & 0x0f) === 5) events.push("reduced-capabilities");
+    if (raw & 0x40000000) events.push("OVP");
+    if (raw & 0x20000000) events.push("input-change");
+    if (raw & 0x10000000) events.push("condition-change");
+    if (raw & 0x08000000) events.push("OTP");
+    if (raw & 0x04000000) events.push("OCP");
+    if (raw & 0x02000000) events.push("battery");
+    return `PD Alert: events=${events.join(",") || "none"} raw=${hex32(raw)}`;
+  }
+
+  function statusQueryFailureLine(payload) {
+    expectLength(payload, 2);
+    const query = ["Source_Status", "PPS_Status"][payload[0]] ?? `status-${payload[0]}`;
+    const reason = ["unsupported", "rejected", "deferred", "timeout"][payload[1]] ?? `reason-${payload[1]}`;
+    return `${query} query failed: ${reason}`;
   }
 
   function validityName(validity) {
@@ -513,17 +586,27 @@
         return [[
           "Source capabilities rejected by integration",
           "Request rejected by integration",
-          "Plans unavailable in dual-log; use usb-epr",
+          "Plans unavailable in text console; use usb-epr",
         ][payload[0]] ?? `Integration error=${payload[0]}`];
       case EVENT.help:
         expectLength(payload, 0);
         return [
           "Commands:",
-          "device caps plans source-info status enter-epr epr-caps exit-epr help",
+          "device caps plans source-info status source-status pps-status",
+          "enter-epr epr-caps exit-epr help",
           "request mV [mA|max] [auto|fixed|pps|spr-avs|epr-avs]",
           "request mV [mA|max] epr-avs-nonstandard (explicit opt-in)",
           "pdo N [max(=maxV APDO)|current mA|adjust mV [mA|max]]",
         ];
+      case EVENT.sourceAlert:
+        return [sourceAlertLine(payload)];
+      case EVENT.sourceStatus:
+        expectLength(payload, 8);
+        return [sourceStatusLine(payload.subarray(1), Boolean(payload[0]))];
+      case EVENT.ppsStatus:
+        return [ppsStatusLine(payload)];
+      case EVENT.statusQueryFailed:
+        return [statusQueryFailureLine(payload)];
       default:
         return [`Unknown USB-control event kind ${frame.kind}`];
     }
@@ -538,6 +621,10 @@
     encodeFrame,
     encodeCommand,
     pdoLine,
+    ppsStatusLine,
+    sourceAlertLine,
+    sourceStatusLine,
+    statusQueryFailureLine,
     translateFrame,
   });
 

@@ -70,6 +70,50 @@
         </article>
       </section>
 
+      <section class="panel telemetry-panel" aria-labelledby="telemetry-heading">
+        <div class="section-heading telemetry-heading">
+          <div>
+            <p class="eyebrow">Live source telemetry</p>
+            <h2 id="telemetry-heading">PPS regulator and source health</h2>
+            <p class="subtle">PPS_Status reports source-side voltage, current, temperature, and whether the regulator is in CV or current-limit mode.</p>
+          </div>
+          <div class="telemetry-actions">
+            <label class="live-toggle">
+              <input id="live-pps" type="checkbox" disabled>
+              Refresh PPS every second
+            </label>
+            <button class="button button-secondary command-button" data-command="pps-status" type="button" disabled>Read PPS status</button>
+            <button class="button button-secondary command-button" data-command="source-status" type="button" disabled>Read source status</button>
+          </div>
+        </div>
+        <div class="telemetry-grid">
+          <article class="telemetry-card telemetry-mode-card">
+            <span id="pps-mode-indicator" class="mode-indicator" aria-hidden="true"></span>
+            <div>
+              <span>PPS regulator</span>
+              <strong id="pps-mode">Unknown</strong>
+              <small id="pps-mode-detail">No PPS status received</small>
+            </div>
+          </article>
+          <article class="telemetry-card">
+            <span>Source measurement</span>
+            <strong id="pps-measurement">—</strong>
+            <small>Source-reported, not a precision power meter</small>
+          </article>
+          <article class="telemetry-card">
+            <span>Temperature and input</span>
+            <strong id="source-temperature">—</strong>
+            <small id="source-input">No general status received</small>
+          </article>
+          <article class="telemetry-card">
+            <span>Latest events and limits</span>
+            <strong id="source-events">None reported</strong>
+            <small id="source-limits">No active limits reported</small>
+          </article>
+        </div>
+        <p id="telemetry-note" class="telemetry-note">A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.</p>
+      </section>
+
       <div class="content-grid">
         <section class="panel request-panel">
           <div class="section-heading">
@@ -137,7 +181,7 @@
           </div>
           <div class="command-grid">
             <button class="button button-secondary command-button" data-command="caps" type="button" disabled>Refresh capabilities</button>
-            <button class="button button-secondary command-button" data-command="plans" type="button" disabled>Preview all plans</button>
+            <button id="plans-button" class="button button-secondary command-button" data-command="plans" type="button" disabled>Preview all plans</button>
             <button class="button button-secondary command-button" data-command="status" type="button" disabled>Refresh contract</button>
             <button class="button button-secondary command-button" data-command="source-info" type="button" disabled>Request Source_Info</button>
             <button id="enter-epr-button" class="button button-secondary command-button" data-command="enter-epr" type="button" disabled>Enter EPR and load list</button>
@@ -258,6 +302,8 @@
                     <tr><td><code>caps</code></td><td>Print the currently advertised source capabilities.</td></tr>
                     <tr><td><code>plans</code></td><td>Preview every requestable PDO without changing the live contract.</td></tr>
                     <tr><td><code>source-info</code></td><td>Ask the source for its present and maximum power information.</td></tr>
+                    <tr><td><code>pps-status</code></td><td>Read PPS source-side voltage, current, temperature, and CV/CL mode.</td></tr>
+                    <tr><td><code>source-status</code></td><td>Read general source temperature, input, event, and power-limit status.</td></tr>
                     <tr><td><code>device</code></td><td>Print the MCU identity used for this browser's saved ceiling.</td></tr>
                     <tr><td><code>enter-epr</code></td><td>Enter EPR mode while holding the existing safe 5 V contract.</td></tr>
                     <tr><td><code>epr-caps</code></td><td>Refresh the EPR capability list after EPR entry.</td></tr>
