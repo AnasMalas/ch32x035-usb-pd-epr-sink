@@ -168,8 +168,16 @@ fn request_load(command: LoadCommand) {
 
 fn board_limits() -> SinkLimits {
     let epr_capable = cfg!(feature = "epr-capable-hardware");
+    let epr_50v_compatible = cfg!(feature = "epr-50v-compatible-hardware");
     let pps_capable = cfg!(feature = "pps-capable-hardware");
-    if epr_capable {
+    if epr_50v_compatible {
+        SinkLimits {
+            max_voltage: Some(Millivolts(50_000)),
+            board_max_current: Some(Milliamps(5_000)),
+            cable_max_current: Some(Milliamps(5_000)),
+            max_power: Some(Milliwatts(140_000)),
+        }
+    } else if epr_capable {
         SinkLimits {
             max_voltage: Some(Millivolts(48_000)),
             board_max_current: Some(Milliamps(5_000)),
@@ -556,18 +564,33 @@ fn log_product_capabilities(capabilities: &ProductSourceCapabilities) {
                 validity,
                 pdo.raw
             ),
-            SourceSupply::EprAvs(avs) => logln!(
-                "PDO{} EPR-AVS {}-{}mV standard={}-{}mV PDP={}mW peak={} {} raw={:#010x}",
-                pdo.position,
-                avs.min_voltage.get(),
-                avs.max_voltage.get(),
-                avs.standard_min_voltage().get(),
-                avs.max_voltage.get(),
-                avs.pdp.get(),
-                avs.peak_current,
-                validity,
-                pdo.raw
-            ),
+            SourceSupply::EprAvs(avs) => {
+                if let Some((standard_minimum, standard_maximum)) = avs.standard_voltage_range() {
+                    logln!(
+                        "PDO{} EPR-AVS {}-{}mV standard={}-{}mV PDP={}mW peak={} {} raw={:#010x}",
+                        pdo.position,
+                        avs.min_voltage.get(),
+                        avs.max_voltage.get(),
+                        standard_minimum.get(),
+                        standard_maximum.get(),
+                        avs.pdp.get(),
+                        avs.peak_current,
+                        validity,
+                        pdo.raw
+                    )
+                } else {
+                    logln!(
+                        "PDO{} EPR-AVS {}-{}mV standard=none PDP={}mW peak={} {} raw={:#010x}",
+                        pdo.position,
+                        avs.min_voltage.get(),
+                        avs.max_voltage.get(),
+                        avs.pdp.get(),
+                        avs.peak_current,
+                        validity,
+                        pdo.raw
+                    )
+                }
+            }
             SourceSupply::ZeroPadding => {
                 logln!("PDO{} padding {} raw={:#010x}", pdo.position, validity, pdo.raw)
             }

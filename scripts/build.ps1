@@ -5,6 +5,7 @@ param(
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
+        'usb-epr-50v',
         'usb-epr-text',
         'usb-epr-dual-log',
         'pps-19v4',
@@ -34,6 +35,7 @@ try {
         'usb-safe-5v' { @('--no-default-features', '--features', 'usb-control') }
         'usb-pps' { @('--no-default-features', '--features', 'usb-control,pps-capable-hardware') }
         'usb-epr' { @('--no-default-features', '--features', 'usb-control,epr-capable-hardware') }
+        'usb-epr-50v' { @('--no-default-features', '--features', 'usb-control,epr-50v-compatible-hardware') }
         'usb-epr-text' { @('--no-default-features', '--features', 'dev-text-console,epr-capable-hardware') }
         'usb-epr-dual-log' { @('--features', 'dev-text-console,epr-capable-hardware') }
         'pps-19v4' { @('--features', 'bench-pps-19v4') }

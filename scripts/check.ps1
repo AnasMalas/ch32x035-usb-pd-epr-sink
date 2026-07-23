@@ -51,6 +51,7 @@ try {
         'usb-control',
         'usb-control,pps-capable-hardware',
         'usb-control,epr-capable-hardware',
+        'usb-control,epr-50v-compatible-hardware',
         'dev-text-console,epr-capable-hardware'
     )) {
         cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --no-default-features --features $feature

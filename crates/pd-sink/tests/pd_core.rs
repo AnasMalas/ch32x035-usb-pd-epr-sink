@@ -1,11 +1,12 @@
 use pd_sink::capabilities::CapabilityListError;
 use pd_sink::request::PlanError;
 use pd_sink::{
-    CapabilitiesKind, ContractState, ContractTracker, CurrentConfidence, Demand, LimitReason, Milliamps, Millivolts,
-    Milliwatts, PdoError, PdoValidity, PlannedOperating, PlannedVoltage, PortInputs, PortMode, PortState,
-    PortSupervisor, Preference, RequestContext, RequestMessage, RequestPlanner, SafetyTimings, SinkLimits,
+    request_to_stack, CapabilitiesKind, ContractState, ContractTracker, CurrentConfidence, Demand, LimitReason,
+    Milliamps, Millivolts, Milliwatts, PdoError, PdoValidity, PlannedOperating, PlannedVoltage, PortInputs, PortMode,
+    PortState, PortSupervisor, Preference, RequestContext, RequestMessage, RequestPlanner, SafetyTimings, SinkLimits,
     SourceCapabilities, SourceSupply, SupplyKind,
 };
+use usbpd::protocol_layer::message::data::request::PowerSource;
 
 fn fixed(voltage_mv: u32, current_ma: u32, epr_capable: bool) -> u32 {
     ((voltage_mv / 50) << 10) | (current_ma / 10) | (u32::from(epr_capable) << 23)
@@ -278,6 +279,14 @@ fn advertised_fifty_volt_epr_avs_is_compatible_and_explicit() {
     );
     assert_eq!((plan.rdo >> 9) & 0xfff, 2_000);
     assert_eq!(plan.rdo & 0x7f, 56, "140 W at 50 V is limited to 2.8 A");
+
+    match request_to_stack(plan).unwrap() {
+        PowerSource::EprRequest(request) => {
+            assert_eq!(request.rdo, plan.rdo);
+            assert_eq!(request.pdo.to_raw(), epr_avs_range(15_000, 50_000, 140_000));
+        }
+        _ => panic!("50 V AVS must remain a two-object EPR Request"),
+    }
 }
 
 #[test]
