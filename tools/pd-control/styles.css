@@ -298,6 +298,12 @@ h2 {
   gap: 10px;
 }
 
+.telemetry-activity {
+  margin: -8px 0 14px;
+  font-size: 0.73rem;
+  color: var(--muted);
+}
+
 .telemetry-card {
   min-width: 0;
   padding: 16px;
@@ -820,6 +826,12 @@ tbody tr:last-child td {
 .terminal-text {
   overflow-wrap: anywhere;
   white-space: pre-wrap;
+}
+
+.terminal-update-count {
+  margin-left: 8px;
+  color: #8aac98;
+  white-space: nowrap;
 }
 
 .raw-command-form {

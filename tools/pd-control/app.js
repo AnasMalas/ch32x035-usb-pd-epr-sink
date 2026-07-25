@@ -29,6 +29,8 @@ const ui = {
   sourceEvents: $("#source-events"),
   sourceLimits: $("#source-limits"),
   telemetryNote: $("#telemetry-note"),
+  telemetryToggle: $("#telemetry-toggle"),
+  ppsMaintenanceState: $("#pps-maintenance-state"),
   voltageForm: $("#voltage-form"),
   voltageInput: $("#voltage-input"),
   currentInput: $("#current-input"),
@@ -51,6 +53,7 @@ const ui = {
   capabilityBody: $("#capability-body"),
   terminal: $("#terminal"),
   autoScroll: $("#auto-scroll"),
+  rawLog: $("#raw-log"),
   copyLog: $("#copy-log"),
   saveLog: $("#save-log"),
   clearLog: $("#clear-log"),
@@ -81,7 +84,10 @@ const state = {
   contractSupplyType: null,
   contractEpr: false,
   ppsRefreshTimer: null,
-  ppsRefreshBusy: false,
+  ppsQueryPending: false,
+  ppsPollingPausedUntil: 0,
+  rawConsole: false,
+  collapsedConsoleRows: new Map(),
   usbId: null,
   deviceUid: null,
   deviceMaxVoltageMillivolts: null,
@@ -164,9 +170,9 @@ function setPpsMode(mode, detail) {
   ui.ppsModeIndicator.classList.toggle("is-cv", mode === "CV");
   ui.ppsModeIndicator.classList.toggle("is-cl", mode === "CL");
   ui.ppsMode.textContent = mode === "CV"
-    ? "Constant voltage"
+    ? "CV reported"
     : mode === "CL"
-      ? "Current limit"
+      ? "Current limit reported"
       : "Unknown";
   ui.ppsModeDetail.textContent = detail;
 }
@@ -178,6 +184,7 @@ function clearSourceTelemetry() {
   ui.sourceInput.textContent = "No general status received";
   ui.sourceEvents.textContent = "None reported";
   ui.sourceLimits.textContent = "No active limits reported";
+  ui.ppsMaintenanceState.textContent = "PPS contract maintenance: waiting for a PPS contract";
   ui.telemetryNote.textContent = "A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.";
 }
 
@@ -240,19 +247,19 @@ function applyDeviceIdentity(rawUid) {
 
 async function pollPpsStatus() {
   if (
-    state.ppsRefreshBusy
+    state.ppsQueryPending
     || !state.connected
     || state.transport === null
     || state.contractSupplyType !== "PPS"
+    || Date.now() < state.ppsPollingPausedUntil
   ) return;
 
-  state.ppsRefreshBusy = true;
+  state.ppsQueryPending = true;
   try {
     await sendCommand("pps-status", { echo: false });
   } catch (error) {
+    state.ppsQueryPending = false;
     if (state.connected) addLog(`Live PPS refresh stopped: ${error.message}`, "system", "error");
-  } finally {
-    state.ppsRefreshBusy = false;
   }
 }
 
@@ -261,7 +268,13 @@ function configurePpsPolling() {
     clearInterval(state.ppsRefreshTimer);
     state.ppsRefreshTimer = null;
   }
-  if (!ui.livePps.checked || !state.connected) return;
+  const running = ui.livePps.checked
+    && state.connected
+    && state.transport !== null
+    && state.contractSupplyType === "PPS";
+  ui.telemetryToggle.textContent = running ? "Stop telemetry" : "Start telemetry";
+  ui.telemetryToggle.setAttribute("aria-pressed", String(running));
+  if (!running) return;
   void pollPpsStatus();
   state.ppsRefreshTimer = setInterval(() => void pollPpsStatus(), 1000);
 }
@@ -286,6 +299,7 @@ function updateActionAvailability() {
     ? "The text-console profile omits this flash-heavy preview; flash usb-epr to use it."
     : "";
   ui.livePps.disabled = !ready || state.contractSupplyType !== "PPS";
+  ui.telemetryToggle.disabled = !ready || state.contractSupplyType !== "PPS";
 }
 
 function setConnected(connected) {
@@ -303,6 +317,7 @@ function setConnected(connected) {
     state.usbId = null;
     state.deviceUid = null;
     state.deviceMaxVoltageMillivolts = null;
+    state.ppsQueryPending = false;
     setVoltageCeiling(5000);
     ui.deviceDescription.textContent = "Connect USB-control or development text-console firmware to begin.";
     ui.deviceId.textContent = "No device selected";
@@ -313,6 +328,8 @@ function setConnected(connected) {
 }
 
 function clearDeviceState() {
+  state.ppsQueryPending = false;
+  state.ppsPollingPausedUntil = 0;
   state.pdos.clear();
   state.expectedPdoCount = 0;
   state.sourceKind = null;
@@ -332,6 +349,7 @@ function clearDeviceState() {
   clearSourceTelemetry();
   renderCapabilities();
   updateActionAvailability();
+  configurePpsPolling();
 }
 
 function formatUsbId(value) {
@@ -342,18 +360,19 @@ function timeStamp(date = new Date()) {
   return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
-function addLog(text, direction = "incoming", severity = "normal") {
-  const entry = { time: new Date(), text, direction, severity };
-  state.log.push(entry);
-  if (state.log.length > MAX_LOG_LINES) {
-    state.log.splice(0, state.log.length - MAX_LOG_LINES);
-    while (ui.terminal.childElementCount > state.log.length) {
-      ui.terminal.firstElementChild?.remove();
-    }
-  }
+function collapsedConsoleKey(entry) {
+  if (entry.direction !== "incoming") return null;
+  if (entry.text === "Queued") return "hidden";
+  if (/^Contract refresh confirmed\b/.test(entry.text)) return "contract-refresh";
+  if (/^PPS_Status:/.test(entry.text)) return "pps-status";
+  if (/^Source_Status:/.test(entry.text)) return "source-status";
+  if (/^PD Alert:/.test(entry.text)) return "source-alert";
+  return null;
+}
 
+function createLogRow(entry, updateCount = 1) {
   const row = document.createElement("div");
-  row.className = `terminal-line ${direction} ${severity}`;
+  row.className = `terminal-line ${entry.direction} ${entry.severity}`;
 
   const time = document.createElement("span");
   time.className = "terminal-time";
@@ -361,14 +380,58 @@ function addLog(text, direction = "incoming", severity = "normal") {
 
   const marker = document.createElement("span");
   marker.className = "terminal-direction";
-  marker.textContent = direction === "outgoing" ? ">" : direction === "system" ? "•" : "<";
+  marker.textContent = entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<";
 
   const content = document.createElement("span");
   content.className = "terminal-text";
-  content.textContent = text;
+  content.textContent = entry.text;
+  if (updateCount > 1) {
+    const count = document.createElement("span");
+    count.className = "terminal-update-count";
+    count.textContent = `×${updateCount}`;
+    content.append(count);
+  }
 
   row.append(time, marker, content);
-  ui.terminal.append(row);
+  return row;
+}
+
+function appendVisibleLog(entry) {
+  if (state.rawConsole) {
+    ui.terminal.append(createLogRow(entry));
+    return;
+  }
+
+  const key = collapsedConsoleKey(entry);
+  if (key === "hidden") return;
+  if (key) {
+    const previous = state.collapsedConsoleRows.get(key);
+    const updateCount = (previous?.updateCount ?? 0) + 1;
+    previous?.row.remove();
+    const row = createLogRow(entry, updateCount);
+    state.collapsedConsoleRows.set(key, { row, updateCount });
+    ui.terminal.append(row);
+    return;
+  }
+  ui.terminal.append(createLogRow(entry));
+}
+
+function renderConsole() {
+  ui.terminal.replaceChildren();
+  state.collapsedConsoleRows.clear();
+  for (const entry of state.log) appendVisibleLog(entry);
+  if (ui.autoScroll.checked) ui.terminal.scrollTop = ui.terminal.scrollHeight;
+}
+
+function addLog(text, direction = "incoming", severity = "normal") {
+  const entry = { time: new Date(), text, direction, severity };
+  state.log.push(entry);
+  if (state.log.length > MAX_LOG_LINES) {
+    state.log.splice(0, state.log.length - MAX_LOG_LINES);
+    renderConsole();
+  } else {
+    appendVisibleLog(entry);
+  }
   if (ui.autoScroll.checked) {
     ui.terminal.scrollTop = ui.terminal.scrollHeight;
   }
@@ -643,11 +706,13 @@ function refreshContractSupply() {
   const label = state.contractSupplyType ?? "PDO";
   ui.contractSupply.textContent = `${label} · PDO ${state.contractPosition}${state.contractEpr ? " · EPR" : ""}`;
   updateActionAvailability();
+  configurePpsPolling();
 }
 
 function parseDeviceLine(line) {
   const isError = /^(Rejected|Invalid|Busy|PD stopped|Hard reset|.+ query failed:)/.test(line);
   addLog(line, "incoming", isError ? "error" : "normal");
+  if (/^Busy\b/.test(line)) state.ppsQueryPending = false;
 
   const identity = line.match(/^Device id=([0-9a-f]{16}|[0-9a-f]{24}|unavailable)$/i);
   if (identity) {
@@ -666,13 +731,16 @@ function parseDeviceLine(line) {
   }
 
   if (/^Attached\b/.test(line)) {
+    state.ppsQueryPending = false;
     state.contractPosition = null;
     state.contractSupplyType = null;
     state.contractEpr = false;
     clearSourceTelemetry();
     ui.portState.textContent = "Attached";
     ui.portDetail.textContent = "PD negotiation active";
+    configurePpsPolling();
   } else if (/^Detached\b/.test(line)) {
+    state.ppsQueryPending = false;
     state.inEpr = false;
     state.sourceEprCapable = false;
     state.contractPosition = null;
@@ -686,7 +754,9 @@ function parseDeviceLine(line) {
     ui.usableCurrent.textContent = "—";
     ui.currentConfidence.textContent = "Contract cleared";
     updateActionAvailability();
+    configurePpsPolling();
   } else if (/^(Hard reset|Protocol lost|PD stopped)/.test(line)) {
+    state.ppsQueryPending = false;
     state.inEpr = false;
     state.sourceEprCapable = false;
     state.contractPosition = null;
@@ -698,7 +768,9 @@ function parseDeviceLine(line) {
     ui.contractVoltage.textContent = "—";
     ui.contractSupply.textContent = "Contract lost";
     updateActionAvailability();
+    configurePpsPolling();
   } else if (/^Requesting\b/.test(line)) {
+    state.ppsPollingPausedUntil = Date.now() + 2000;
     ui.portState.textContent = "Negotiating";
     ui.portDetail.textContent = "Waiting for Accept and PS_RDY";
   } else if (/^Rejected\b/.test(line)) {
@@ -743,6 +815,11 @@ function parseDeviceLine(line) {
     ui.portDetail.textContent = `Explicit contract on PDO ${position}`;
     ui.contractVoltage.textContent = displayMillivolts(voltage);
     refreshContractSupply();
+    state.ppsPollingPausedUntil = Date.now() + 500;
+    ui.ppsMaintenanceState.textContent = state.contractSupplyType === "PPS"
+      ? "PPS contract maintenance: awaiting first refresh"
+      : "PPS contract maintenance: inactive on this contract";
+    configurePpsPolling();
     return;
   }
 
@@ -765,6 +842,7 @@ function parseDeviceLine(line) {
     /^PPS_Status: voltage=(unsupported|\d+mV) current=(unsupported|\d+mA) mode=(CV|CL) temperature=([^\s]+)$/,
   );
   if (ppsStatus) {
+    state.ppsQueryPending = false;
     const voltage = ppsStatus[1] === "unsupported"
       ? "Voltage unavailable"
       : displayMillivolts(Number.parseInt(ppsStatus[1], 10));
@@ -773,8 +851,8 @@ function parseDeviceLine(line) {
       : displayMilliamps(Number.parseInt(ppsStatus[2], 10));
     ui.ppsMeasurement.textContent = `${voltage} · ${current}`;
     ui.sourceTemperature.textContent = `${displayStatusToken(ppsStatus[4])} · PPS`;
-    setPpsMode(ppsStatus[3], `PPS_Status · temperature ${displayStatusToken(ppsStatus[4])}`);
-    ui.telemetryNote.textContent = "Live values are measured and reported by the source; their specified accuracy is lower than a dedicated power meter.";
+    setPpsMode(ppsStatus[3], `Source PPS_Status bit · temperature ${displayStatusToken(ppsStatus[4])}`);
+    ui.telemetryNote.textContent = "These values and CV/CL mode are reported by the source. Some sources omit fields or report an unreliable mode bit; use a meter when the distinction matters.";
     return;
   }
 
@@ -783,7 +861,7 @@ function parseDeviceLine(line) {
   );
   if (sourceStatus) {
     if (sourceStatus[1] === "CV" || sourceStatus[1] === "CL") {
-      setPpsMode(sourceStatus[1], "General Status · updated after source Alert or manual read");
+      setPpsMode(sourceStatus[1], "Source general Status bit · updated after Alert or manual read");
     } else if (state.contractSupplyType !== "PPS") {
       setPpsMode(null, "The active contract is not PPS");
     }
@@ -815,7 +893,24 @@ function parseDeviceLine(line) {
 
   const queryFailure = line.match(/^(PPS_Status|Source_Status) query failed: (.+)$/);
   if (queryFailure) {
+    if (queryFailure[1] === "PPS_Status") {
+      state.ppsQueryPending = false;
+      if (queryFailure[2] === "unsupported") {
+        ui.livePps.checked = false;
+        configurePpsPolling();
+      }
+    }
     ui.telemetryNote.textContent = `${queryFailure[1]} was ${queryFailure[2]}; the existing power contract remains active.`;
+    return;
+  }
+
+  const refresh = line.match(/^Contract refresh confirmed(?: PDO(\d+) (\d+)mV usable=(\d+)mA)?$/);
+  if (refresh) {
+    ui.ppsMaintenanceState.textContent = state.contractSupplyType === "PPS"
+      ? refresh[2]
+        ? `PPS contract maintained at ${timeStamp()} · ${displayMillivolts(Number(refresh[2]))} · ${displayMilliamps(Number(refresh[3]))} usable`
+        : `PPS contract maintained at ${timeStamp()}`
+      : `Contract refreshed at ${timeStamp()}`;
   }
 }
 
@@ -850,12 +945,25 @@ async function sendCommand(command, { echo = true } = {}) {
       `This request exceeds the board's ${displayMillivolts(state.maxVoltageMillivolts)} GUI ceiling.`,
     );
   }
-  if (state.transport === "usb-control") {
-    const sequence = state.nextSequence;
-    state.nextSequence = sequence === 0xff ? 1 : sequence + 1;
-    await state.writer.write(controlProtocol.encodeCommand(trimmed, sequence));
-  } else {
-    await state.writer.write(encoder.encode(`${trimmed}\n`));
+  const isPpsStatus = trimmed.toLowerCase() === "pps-status";
+  if (isPpsStatus) state.ppsQueryPending = true;
+  if (
+    requestedVoltage !== null
+    || /^(?:enter-epr|exit-epr|epr-caps)\b/i.test(trimmed)
+  ) {
+    state.ppsPollingPausedUntil = Date.now() + 2000;
+  }
+  try {
+    if (state.transport === "usb-control") {
+      const sequence = state.nextSequence;
+      state.nextSequence = sequence === 0xff ? 1 : sequence + 1;
+      await state.writer.write(controlProtocol.encodeCommand(trimmed, sequence));
+    } else {
+      await state.writer.write(encoder.encode(`${trimmed}\n`));
+    }
+  } catch (error) {
+    if (isPpsStatus) state.ppsQueryPending = false;
+    throw error;
   }
   if (echo) addLog(trimmed, "outgoing");
 }
@@ -995,6 +1103,19 @@ function updatePdoFields() {
 
 ui.connectButton.addEventListener("click", connectPort);
 ui.livePps.addEventListener("change", configurePpsPolling);
+ui.telemetryToggle.addEventListener("click", () => {
+  ui.livePps.checked = state.ppsRefreshTimer === null;
+  configurePpsPolling();
+  setFeedback(ui.livePps.checked
+    ? "Live PPS telemetry started; only one source query can be in flight."
+    : "Live PPS telemetry stopped. Mandatory PPS contract maintenance remains active.");
+});
+ui.rawLog.addEventListener("click", () => {
+  state.rawConsole = !state.rawConsole;
+  ui.rawLog.setAttribute("aria-pressed", String(state.rawConsole));
+  ui.rawLog.textContent = state.rawConsole ? "Show condensed stream" : "Show raw stream";
+  renderConsole();
+});
 
 ui.safeFiveButton.addEventListener("click", async () => {
   try {
@@ -1075,6 +1196,7 @@ ui.rawCommandForm.addEventListener("submit", async (event) => {
 
 ui.clearLog.addEventListener("click", () => {
   state.log.length = 0;
+  state.collapsedConsoleRows.clear();
   ui.terminal.replaceChildren();
 });
 

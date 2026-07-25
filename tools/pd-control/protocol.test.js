@@ -109,6 +109,11 @@ assert.match(protocol.pdoLine(1, 8, 0xd3ea968c), /malformed/);
     "Contract ready PDO10 fixed=48000mV EPR=1",
     "Contract ready req=max src=5000mA usable=2910mA confidence=advertised limit=sink-power mismatch=false",
   ]);
+
+  payload[0] = 3;
+  assert.deepEqual(eventLines(0x84, payload), [
+    "Contract refresh confirmed PDO10 48000mV usable=2910mA",
+  ]);
 }
 
 {

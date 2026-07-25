@@ -25,6 +25,9 @@ requests. Events cover command status, device limits and UID, lifecycle and
 reset state, raw Source PDO words, request plans and contracts, controller
 errors, Source_Info, Source Alert, general/PPS status and optional-query
 failure, request disposition, EPR state, and integration errors.
+An accepted Request that exactly matches the active contract is emitted as a
+compact contract-refresh plan stage. This lets a host show PPS maintenance
+without repeating the full negotiation transcript.
 
 The firmware does not format those values as text. In particular, a complete
 11-object EPR capability list is one event containing eleven raw 32-bit PDOs.
@@ -65,3 +68,8 @@ transports present the same table and telemetry.
 The production `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
 `usb-epr-50v` profiles use `usb-control`. Use `usb-epr-text` for a
 conventional serial terminal.
+
+The text console reports a successful identical maintenance Request as one
+`Contract refresh confirmed` line. It does not expose a command that disables
+PPS maintenance, because stopping those Requests would allow the Source to
+drop the PPS contract.

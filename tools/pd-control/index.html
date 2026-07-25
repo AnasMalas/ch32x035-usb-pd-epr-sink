@@ -78,6 +78,7 @@
             <p class="subtle">PPS_Status reports source-side voltage, current, temperature, and whether the regulator is in CV or current-limit mode.</p>
           </div>
           <div class="telemetry-actions">
+            <button id="telemetry-toggle" class="button button-primary" type="button" disabled>Start telemetry</button>
             <label class="live-toggle">
               <input id="live-pps" type="checkbox" disabled>
               Refresh PPS every second
@@ -86,6 +87,7 @@
             <button class="button button-secondary command-button" data-command="source-status" type="button" disabled>Read source status</button>
           </div>
         </div>
+        <p id="pps-maintenance-state" class="telemetry-activity">PPS contract maintenance: waiting for a PPS contract</p>
         <div class="telemetry-grid">
           <article class="telemetry-card telemetry-mode-card">
             <span id="pps-mode-indicator" class="mode-indicator" aria-hidden="true"></span>
@@ -264,6 +266,7 @@
             </div>
             <div class="terminal-tools">
               <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> Auto-scroll</label>
+              <button id="raw-log" class="button button-quiet" type="button" aria-pressed="false">Show raw stream</button>
               <button id="copy-log" class="button button-quiet" type="button">Copy</button>
               <button id="save-log" class="button button-quiet" type="button">Save</button>
               <button id="clear-log" class="button button-quiet" type="button">Clear</button>

@@ -146,6 +146,8 @@ pub enum SinkEvent {
     CapabilityPlan(CapabilityPlan),
     Requesting(RequestPlan),
     ContractReady(Option<RequestPlan>),
+    ContractRefreshStarted(RequestPlan),
+    ContractRefreshed(RequestPlan),
     ControllerRejected(ControllerError),
     StackCapabilitiesRejected(CapabilityListError),
     StackRequestRejected(StackConversionError),
@@ -195,6 +197,16 @@ pub trait SinkRuntime {
     }
     fn on_contract_ready(&mut self, plan: Option<RequestPlan>) {
         self.observe(SinkEvent::ContractReady(plan));
+    }
+    /// An identical Request is being sent to maintain an existing contract.
+    /// The power path remains enabled because no wire-encoded parameter is
+    /// changing.
+    fn on_contract_refresh_started(&mut self, plan: RequestPlan) {
+        self.observe(SinkEvent::ContractRefreshStarted(plan));
+    }
+    /// The Source accepted an identical contract-maintenance Request.
+    fn on_contract_refreshed(&mut self, plan: RequestPlan) {
+        self.observe(SinkEvent::ContractRefreshed(plan));
     }
     fn on_controller_rejected(&mut self, error: ControllerError) {
         self.observe(SinkEvent::ControllerRejected(error));
@@ -274,6 +286,7 @@ pub struct SinkDevice<R: SinkRuntime> {
     runtime: R,
     controller: SinkController,
     contract: ContractTracker,
+    pending_contract_refresh: bool,
     source_info_requested: bool,
     source_status_pending: bool,
     epr_discovery_attempts: u8,
@@ -288,6 +301,7 @@ impl<R: SinkRuntime> SinkDevice<R> {
             config,
             runtime,
             contract: ContractTracker::new(),
+            pending_contract_refresh: false,
             source_info_requested: false,
             source_status_pending: false,
             epr_discovery_attempts: 0,
@@ -311,11 +325,14 @@ impl<R: SinkRuntime> SinkDevice<R> {
         &mut self.runtime
     }
 
-    fn begin_request(&mut self, plan: RequestPlan) {
-        if self.contract.request_changes_power(plan) {
+    fn begin_request(&mut self, plan: RequestPlan) -> bool {
+        let is_refresh = !self.contract.request_changes_power(plan);
+        if !is_refresh {
             self.runtime.set_load_enabled(false);
         }
         self.contract.on_request(plan).expect("request must follow advertised capabilities");
+        self.pending_contract_refresh = is_refresh;
+        is_refresh
     }
 
     fn report_contract(&mut self) {
@@ -326,8 +343,11 @@ impl<R: SinkRuntime> SinkDevice<R> {
         match action {
             ControllerAction::Request(plan) => match request_to_stack(plan) {
                 Ok(request) => {
-                    self.begin_request(plan);
-                    self.runtime.on_requesting(plan);
+                    if self.begin_request(plan) {
+                        self.runtime.on_contract_refresh_started(plan);
+                    } else {
+                        self.runtime.on_requesting(plan);
+                    }
                     Event::RequestPower(request)
                 }
                 Err(error) => {
@@ -411,8 +431,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             .request_for_capabilities(capabilities)
             .expect("every accepted source must advertise a valid fixed 5 V PDO");
 
-        self.begin_request(plan);
-        self.runtime.on_requesting(plan);
+        if self.begin_request(plan) {
+            self.runtime.on_contract_refresh_started(plan);
+        } else {
+            self.runtime.on_requesting(plan);
+        }
         request_to_stack(plan).expect("request planner must return a stack-representable plan")
     }
 
@@ -421,11 +444,19 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.contract.on_ps_ready().expect("accepted request must become the active contract");
         self.controller.on_ps_ready();
         self.runtime.set_load_enabled(true);
-        self.report_contract();
+        if self.pending_contract_refresh {
+            self.pending_contract_refresh = false;
+            self.runtime.on_contract_refreshed(
+                self.contract.active_plan().expect("a completed refresh must retain a contract"),
+            );
+        } else {
+            self.report_contract();
+        }
     }
 
     async fn request_not_accepted(&mut self, reason: RequestRejection) {
         self.contract.on_reject_or_wait();
+        self.pending_contract_refresh = false;
         let result = match reason {
             RequestRejection::Reject => {
                 self.controller.request_rejected();
@@ -487,6 +518,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
+        self.pending_contract_refresh = false;
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -503,6 +535,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_detach();
+        self.pending_contract_refresh = false;
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -515,6 +548,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
+        self.pending_contract_refresh = false;
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -523,6 +557,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     async fn epr_mode_entry_failed(&mut self, reason: DataEnterFailed) {
         self.controller.epr_entry_failed();
+        self.pending_contract_refresh = false;
         self.source_info_requested = false;
         self.source_status_pending = false;
         self.epr_discovery_attempts = self.config.max_auto_epr_attempts;

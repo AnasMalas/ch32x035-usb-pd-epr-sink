@@ -98,6 +98,7 @@ pub enum PlanStage {
     Preview = 0,
     Requesting = 1,
     Contract = 2,
+    Refreshed = 3,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

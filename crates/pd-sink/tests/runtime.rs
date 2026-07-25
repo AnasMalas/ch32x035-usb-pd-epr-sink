@@ -107,6 +107,34 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
 }
 
 #[test]
+fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
+    let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+
+    block_on(device.inform(&source));
+    let initial = block_on(device.request(&source));
+    block_on(device.transition_power(&initial));
+
+    block_on(device.inform(&source));
+    let refresh = block_on(device.request(&source));
+    assert!(matches!(refresh, PowerSource::FixedVariableSupply(_)));
+    assert!(device
+        .runtime_mut()
+        .events
+        .iter()
+        .any(|event| matches!(event, SinkEvent::ContractRefreshStarted(plan) if plan.object_position == 1)));
+    assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
+
+    block_on(device.transition_power(&refresh));
+    let runtime = device.runtime_mut();
+    assert_eq!(runtime.load_states, [false, true, true]);
+    assert!(runtime
+        .events
+        .iter()
+        .any(|event| matches!(event, SinkEvent::ContractRefreshed(plan) if plan.object_position == 1)));
+}
+
+#[test]
 fn configuration_rejects_wire_truncation_and_epr_mismatch() {
     let mut config = safe_5v_config();
     config.descriptor.maximum_current = Milliamps(3_005);

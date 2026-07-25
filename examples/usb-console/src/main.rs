@@ -825,6 +825,14 @@ impl SinkRuntime for FirmwareRuntime {
         }
     }
 
+    fn on_contract_refresh_started(&mut self, _plan: RequestPlan) {}
+
+    fn on_contract_refreshed(&mut self, _plan: RequestPlan) {
+        control_event!(ControlEvent::Plan { stage: ControlPlanStage::Refreshed, plan: Some(_plan) });
+        #[cfg(any(feature = "dev-text-console", feature = "sdi-log"))]
+        logln!("Contract refresh confirmed");
+    }
+
     fn on_controller_rejected(&mut self, error: ControllerError) {
         control_event!(ControlEvent::ControllerError(error));
         log_controller_error(error);

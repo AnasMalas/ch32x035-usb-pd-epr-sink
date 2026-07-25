@@ -475,8 +475,9 @@
 
   function translatePlan(payload) {
     if (payload.length < 2) throw new Error("Invalid plan event length.");
+    const stage = payload[0];
     const prefixes = ["Plan", "Requesting", "Contract ready"];
-    const prefix = prefixes[payload[0]] ?? `Plan stage ${payload[0]}`;
+    const prefix = prefixes[stage] ?? `Plan stage ${stage}`;
     if (payload[1] === 0) {
       expectLength(payload, 2);
       return [prefix === "Contract ready" ? "No confirmed contract" : `${prefix} unavailable`];
@@ -496,6 +497,9 @@
     const rdo = readU32(payload, 30);
     const epr = flags & 1 ? 1 : 0;
     const mismatch = Boolean(flags & 2);
+    if (stage === 3) {
+      return [`Contract refresh confirmed PDO${position} ${encodedVoltage}mV usable=${usableCurrent}mA`];
+    }
     const voltageLine = voltageKind === 0
       ? `${prefix} PDO${position} fixed=${encodedVoltage}mV EPR=${epr}`
       : `${prefix} PDO${position} requested=${requestedVoltage}mV encoded=${encodedVoltage}mV step=${step}mV EPR=${epr}`;
