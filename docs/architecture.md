@@ -34,8 +34,9 @@ SinkTxNG, the engine retains the exact pending command or refresh, continues
 servicing source-initiated messages, polls CC, and transmits when SinkTxOK
 appears. PD 1.0/2.0 sessions bypass that PD 3.x mechanism. Source queries for
 ordinary Sink Capabilities, EPR Sink Capabilities, and the 24-byte Sink
-Capabilities Extended block receive padded, object-count-correct frames; its
-140 W EPR Operational PDP matches the EPR Enter message. Receive parsing
+Capabilities Extended block receive padded, object-count-correct frames; the
+reference EPR profile's 140 W Operational PDP matches the EPR Enter message
+while its independent maximum/request ceiling is 240 W. Receive parsing
 requires the exact `2 + 4 * NumDO` wire length, bounds chunk assembly, rejects
 out-of-order or inconsistent chunks, and maps malformed or reserved partner
 traffic to protocol recovery instead of panicking.

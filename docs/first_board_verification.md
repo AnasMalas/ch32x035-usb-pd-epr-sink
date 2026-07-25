@@ -242,7 +242,9 @@ settle at SPR rather than cycling; a manual user request may still retry EPR.
 With a controllable source, also request `EPR_Sink_Capabilities` and
 `Sink_Capabilities_Extended`. Verify the former is a valid one-PDO, 10-byte
 frame and the latter is a 30-byte frame with a 24-byte SKEDB. Byte 22 of that
-SKEDB (EPR Operational PDP) must be 140 W, matching the EPR Enter data byte.
+SKEDB (EPR Operational PDP) must be 140 W for the reference `usb-epr`
+profile, matching the EPR Enter data byte. Its separate maximum PDP and local
+request ceiling are 240 W.
 
 ## 8. Verify source status and PPS mode
 

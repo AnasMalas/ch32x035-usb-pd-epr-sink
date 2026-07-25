@@ -177,14 +177,14 @@ fn board_limits() -> SinkLimits {
             max_voltage: Some(Millivolts(50_000)),
             board_max_current: Some(Milliamps(5_000)),
             cable_max_current: Some(Milliamps(5_000)),
-            max_power: Some(Milliwatts(140_000)),
+            max_power: Some(Milliwatts(240_000)),
         }
     } else if epr_capable {
         SinkLimits {
             max_voltage: Some(Millivolts(48_000)),
             board_max_current: Some(Milliamps(5_000)),
             cable_max_current: None,
-            max_power: Some(Milliwatts(140_000)),
+            max_power: Some(Milliwatts(240_000)),
         }
     } else if pps_capable {
         SinkLimits {
@@ -230,7 +230,7 @@ fn sink_config() -> SinkConfig {
             spr_maximum_pdp_watts: if epr_capable || pps_capable { 100 } else { 15 },
             epr_minimum_pdp_watts: if epr_capable { 5 } else { 0 },
             epr_operational_pdp_watts: if epr_capable { 140 } else { 0 },
-            epr_maximum_pdp_watts: if epr_capable { 140 } else { 0 },
+            epr_maximum_pdp_watts: if epr_capable { 240 } else { 0 },
         },
         max_auto_epr_attempts: if epr_capable { MAX_AUTO_EPR_ATTEMPTS } else { 0 },
         hard_reset_recovery_ms: HARD_RESET_RECOVERY_MS,
