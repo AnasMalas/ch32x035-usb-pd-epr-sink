@@ -448,13 +448,13 @@
       5: "PD stopped",
       6: "PD stopped: detach",
       7: `PD stopped: PHY; retry=${detail}ms`,
-      8: `PD stopped: timeout; retry=${detail}ms`,
+      8: `PD stopped: timeout; passive retry=${detail}ms`,
       9: `PD stopped: protocol; retry=${detail}ms`,
       10: `PD stopped: policy; retry=${detail}ms`,
       11: "PD reset failed",
       12: "Detached; contract lost; load off",
       13: `Protocol lost; load off; EPR=${detail}/${extra}`,
-      14: "Reset wait complete; listen SPR",
+      14: "Reset recovery complete; Source_Capabilities received",
     };
     return [lines[code] ?? `Lifecycle event=${code} detail=${detail} extra=${extra}`];
   }
@@ -576,7 +576,7 @@
         return [payload[0] === 0 ? "Request rejected; old contract active" : payload[0] === 1 ? "Request deferred; retry armed" : `Request result=${payload[0]}`];
       case EVENT.hardReset:
         expectLength(payload, 5);
-        return [`Hard reset ${payload[0] === 0 ? "received" : payload[0] === 1 ? "sent" : `direction-${payload[0]}`}; load off; wait=${readU32(payload, 1)}ms`];
+        return [`Hard reset ${payload[0] === 0 ? "received" : payload[0] === 1 ? "sent" : `direction-${payload[0]}`}; load off; recovery=${readU32(payload, 1)}ms`];
       case EVENT.epr:
         return translateEpr(payload);
       case EVENT.capabilityPlansStarted:

@@ -235,8 +235,8 @@ to confirm VBUS remains at 5 V; this is useful functional evidence but does not
 verify packet contents or protocol timing.
 The development text-console images omit this verbose command to preserve
 protocol flash headroom. If EPR entry fails, record the source/cable
-combination and PD analyzer trace. A Hard Reset causes a two-second quiet
-recovery window and at most one automatic EPR retry. A second failure must
+combination and PD analyzer trace. A Hard Reset causes a two-second active
+receive window and at most one automatic EPR retry. A second failure must
 settle at SPR rather than cycling; a manual user request may still retry EPR.
 
 With a controllable source, also request `EPR_Sink_Capabilities` and

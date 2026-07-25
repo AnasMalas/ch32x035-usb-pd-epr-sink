@@ -78,8 +78,9 @@ SPR capabilities -> request 5 V -> PS_RDY -> Source_Info
                  -> EPR request for fixed 5 V -> PS_RDY -> await user command
 ```
 
-A Hard Reset invalidates the contract and holds the load off for a fixed
-two-second source-recovery window without requiring a PA6 edge. The product
+A Hard Reset invalidates the contract and holds the load off while the PHY
+actively listens through a fixed two-second source-recovery window, without
+requiring a PA6 edge. The product
 permits at most two automatic EPR entry attempts per physical attachment. If
 the retry also fails, it remains usable in SPR and leaves further EPR retries
 to explicit user commands. Software-session restarts preserve this budget and

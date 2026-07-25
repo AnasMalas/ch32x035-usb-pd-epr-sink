@@ -130,6 +130,7 @@ enum LoadCommand {
 const ATTACH_DEBOUNCE_MS: u64 = 100;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const PROTOCOL_RESTART_COOLDOWN_MS: u64 = 2_000;
+const UNRESPONSIVE_RETRY_MS: u64 = 10_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
 
 static VBUS_PRESENT: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
@@ -391,7 +392,6 @@ async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
 
     loop {
         receiver.wait_connection().await;
-        logln!("USB console ready");
         log_device_identity();
 
         loop {
@@ -405,7 +405,7 @@ async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
                     b'\r' => {}
                     b'\n' => {
                         if overflowed {
-                            logln!("Command too long (max {})", CONSOLE_LINE_CAPACITY - 1);
+                            logln!("Invalid");
                         } else if command_len != 0 {
                             match core::str::from_utf8(&command[..command_len])
                                 .ok()
@@ -414,10 +414,10 @@ async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
                                 Some(Command::Help) => log_console_help(),
                                 Some(Command::Identity) => log_device_identity(),
                                 Some(parsed) => match COMMANDS.try_send(parsed) {
-                                    Ok(()) => logln!("Queued"),
-                                    Err(_) => logln!("Busy; retry command"),
+                                    Ok(()) => {}
+                                    Err(_) => logln!("Busy"),
                                 },
-                                None => logln!("Invalid; type help"),
+                                None => logln!("Invalid"),
                             }
                         }
                         command_len = 0;
@@ -733,6 +733,7 @@ impl Ch32x035Port for FirmwarePort {
                     detail: 0,
                     extra: 0,
                 });
+                #[cfg(not(feature = "dev-text-console"))]
                 logln!("SinkTxOK; resume");
             }
             PhyEvent::SinkTxDeferred => {
@@ -741,6 +742,7 @@ impl Ch32x035Port for FirmwarePort {
                     detail: 0,
                     extra: 0,
                 });
+                #[cfg(not(feature = "dev-text-console"))]
                 logln!("SinkTxNG; deferred");
             }
         }
@@ -893,8 +895,8 @@ impl SinkRuntime for FirmwareRuntime {
     fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
         control_event!(ControlEvent::HardReset { direction, recovery_ms: recovery_ms.min(u64::from(u32::MAX)) as u32 });
         match direction {
-            HardResetDirection::Received => logln!("Hard reset received; load off; wait={}ms", recovery_ms),
-            HardResetDirection::Sent => logln!("Hard reset sent; load off; wait={}ms", recovery_ms),
+            HardResetDirection::Received => logln!("Hard reset received; load off; recovery={}ms", recovery_ms),
+            HardResetDirection::Sent => logln!("Hard reset sent; load off; recovery={}ms", recovery_ms),
         }
     }
 
@@ -904,7 +906,8 @@ impl SinkRuntime for FirmwareRuntime {
             detail: 0,
             extra: 0,
         });
-        logln!("Reset wait complete; listen SPR");
+        #[cfg(not(feature = "dev-text-console"))]
+        logln!("Reset recovery complete; Source_Capabilities received");
     }
 
     fn on_detached(&mut self) {
@@ -937,6 +940,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     fn on_epr_discovery_unavailable(&mut self) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::DiscoveryUnavailable, detail: 0, extra: 0 });
+        #[cfg(not(feature = "dev-text-console"))]
         logln!("EPR discovery unavailable; auto off");
     }
 
@@ -986,7 +990,7 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
         logln!("CC detected; waiting for VBUS");
 
         let result = sink.run().await;
-        let restart_delay_ms = match result {
+        let (restart_delay_ms, wait_for_detach) = match result {
             Ok(()) => {
                 control_event!(ControlEvent::Lifecycle {
                     event: ControlLifecycleEvent::PdStopped,
@@ -994,7 +998,7 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                     extra: 0,
                 });
                 logln!("PD stopped");
-                20
+                (20, false)
             }
             Err(usbpd::sink::policy_engine::Error::Detached) => {
                 control_event!(ControlEvent::Lifecycle {
@@ -1003,7 +1007,7 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                     extra: 0,
                 });
                 logln!("PD stopped: detach");
-                20
+                (20, false)
             }
             Err(usbpd::sink::policy_engine::Error::PhyUnstable) => {
                 control_event!(ControlEvent::Lifecycle {
@@ -1012,16 +1016,16 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                     extra: 0,
                 });
                 logln!("PD stopped: PHY; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                PROTOCOL_RESTART_COOLDOWN_MS
+                (PROTOCOL_RESTART_COOLDOWN_MS, false)
             }
             Err(usbpd::sink::policy_engine::Error::PortPartnerUnresponsive) => {
                 control_event!(ControlEvent::Lifecycle {
                     event: ControlLifecycleEvent::PdStoppedTimeout,
-                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
+                    detail: UNRESPONSIVE_RETRY_MS as u32,
                     extra: 0,
                 });
-                logln!("PD stopped: timeout; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                PROTOCOL_RESTART_COOLDOWN_MS
+                logln!("PD stopped: timeout; passive retry={}ms", UNRESPONSIVE_RETRY_MS);
+                (UNRESPONSIVE_RETRY_MS, true)
             }
             Err(usbpd::sink::policy_engine::Error::Protocol(_)) => {
                 control_event!(ControlEvent::Lifecycle {
@@ -1030,7 +1034,7 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                     extra: 0,
                 });
                 logln!("PD stopped: protocol; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                PROTOCOL_RESTART_COOLDOWN_MS
+                (PROTOCOL_RESTART_COOLDOWN_MS, false)
             }
             Err(usbpd::sink::policy_engine::Error::InvalidEprOperationalPdp)
             | Err(usbpd::sink::policy_engine::Error::InvalidRequestForMode) => {
@@ -1040,11 +1044,17 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                     extra: 0,
                 });
                 logln!("PD stopped: policy; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                PROTOCOL_RESTART_COOLDOWN_MS
+                (PROTOCOL_RESTART_COOLDOWN_MS, false)
             }
         };
         discard_pending_commands();
-        Timer::after_millis(restart_delay_ms).await;
+        if wait_for_detach {
+            if vbus_is_present() {
+                let _ = select(VBUS_DETACHED.wait(), Timer::after_millis(restart_delay_ms)).await;
+            }
+        } else {
+            Timer::after_millis(restart_delay_ms).await;
+        }
     }
 }
 

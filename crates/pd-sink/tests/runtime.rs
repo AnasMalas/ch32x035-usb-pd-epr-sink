@@ -92,18 +92,22 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
 
     block_on(device.hard_reset(HardResetOrigin::Source));
     assert_eq!(device.contract().state(), ContractState::Lost);
+    assert_eq!(DevicePolicyManager::hard_reset_recovery_millis(&device), 2_000);
     let runtime = device.runtime_mut();
     assert_eq!(runtime.load_states.last(), Some(&false));
     assert_eq!(runtime.clear_count, 1);
-    assert_eq!(runtime.delays, [2_000]);
+    assert!(runtime.delays.is_empty());
     assert!(runtime
         .events
         .contains(&SinkEvent::HardReset { direction: HardResetDirection::Received, recovery_ms: 2_000 }));
-    assert!(runtime.events.contains(&SinkEvent::HardResetRecoveryComplete));
+    assert!(!runtime.events.contains(&SinkEvent::HardResetRecoveryComplete));
     assert!(runtime.events.iter().any(|event| matches!(
         event,
         SinkEvent::SourceCapabilities(capabilities) if capabilities.kind() == CapabilitiesKind::Spr
     )));
+
+    block_on(DevicePolicyManager::hard_reset_recovered(&mut device));
+    assert!(device.runtime_mut().events.contains(&SinkEvent::HardResetRecoveryComplete));
 }
 
 #[test]

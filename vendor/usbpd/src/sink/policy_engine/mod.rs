@@ -128,6 +128,10 @@ pub struct Sink<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> {
     /// Origin of the Hard Reset currently returning the Sink to default
     /// power. Every path into `TransitionToDefault` sets this first.
     hard_reset_origin: HardResetOrigin,
+    /// Product-selected receive window for the first Source_Capabilities
+    /// after Hard Reset. This survives Startup/Discovery so the PHY listens
+    /// throughout recovery instead of sleeping before SinkWaitCapTimer.
+    hard_reset_recovery_ms: Option<u32>,
 
     _timer: PhantomData<TIMER>,
 }
@@ -187,6 +191,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             pps_refresh_deadline_tick: None,
             epr_keep_alive_deadline_tick: None,
             hard_reset_origin: HardResetOrigin::Source,
+            hard_reset_recovery_ms: None,
             _timer: PhantomData,
         }
     }
@@ -220,6 +225,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.pps_refresh_deadline_tick = None;
         self.epr_keep_alive_deadline_tick = None;
         self.hard_reset_origin = HardResetOrigin::Source;
+        self.hard_reset_recovery_ms = None;
     }
 
     /// Run a single step in the policy engine state machine.
@@ -346,8 +352,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
     /// EPR_Source_Capabilities. Therefore this function must handle both message types.
     async fn wait_for_source_capabilities(
         protocol_layer: &mut SinkProtocolLayer<DRIVER, TIMER>,
+        recovery_ms: Option<u32>,
     ) -> Result<SourceCapabilities, Error> {
-        let message = protocol_layer.wait_for_source_capabilities().await?;
+        let message = protocol_layer.wait_for_source_capabilities(recovery_ms).await?;
         trace!("Source capabilities: {:?}", message);
 
         let capabilities = match message.payload {
@@ -549,9 +556,17 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 State::WaitForCapabilities
             }
             State::WaitForCapabilities => {
-                let capabilities = Self::wait_for_source_capabilities(&mut self.protocol_layer).await?;
+                let recovery_ms = self.hard_reset_recovery_ms.take();
+                let capabilities = Self::wait_for_source_capabilities(&mut self.protocol_layer, recovery_ms).await?;
                 let valid_for_mode = Self::capabilities_valid_for_mode(&capabilities, self.mode);
-                if valid_for_mode { State::EvaluateCapabilities(capabilities) } else { State::HardReset }
+                if valid_for_mode {
+                    if recovery_ms.is_some() {
+                        self.device_policy_manager.hard_reset_recovered().await;
+                    }
+                    State::EvaluateCapabilities(capabilities)
+                } else {
+                    State::HardReset
+                }
             }
             State::EvaluateCapabilities(capabilities) => {
                 self.pending_sink_ams = None;
@@ -813,7 +828,13 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Transition to PE_SNK_Startup when:
                 // - DPM indicates Sink has reached default level
 
-                // Notify DPM about hard reset (DPM should transition to default power level)
+                // Arm the product-selected recovery receive window before
+                // notifying the DPM. The DPM must return promptly so the PHY
+                // is listening while the Source returns to default power.
+                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis();
+                self.hard_reset_recovery_ms = (recovery_ms != 0).then_some(recovery_ms);
+
+                // Notify DPM about hard reset (DPM should transition to default power level).
                 self.device_policy_manager.hard_reset(self.hard_reset_origin).await;
 
                 // Reset protocol layer (per spec 6.8.3: "Protocol Layers shall be reset as for Soft Reset")
@@ -1159,7 +1180,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // After successful EPR mode entry, source automatically sends EPR_Source_Capabilities.
                 // This may be a chunked extended message that requires assembly.
                 // Wait for the capabilities and evaluate them.
-                let message = self.protocol_layer.wait_for_source_capabilities().await?;
+                let message = self.protocol_layer.wait_for_source_capabilities(None).await?;
 
                 match message.payload {
                     Some(Payload::Data(Data::SourceCapabilities(_))) => State::HardReset,

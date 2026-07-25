@@ -85,9 +85,9 @@ those ratings.
 - Every PD receive/transmit operation races against cable removal.
 - A new/changing request disables the load until `Accept` and `PS_RDY`.
 - Hard reset, detach, protocol loss, and unknown state force load-off.
-- Hard Reset recovery observes a fixed two-second quiet window and does not
-  require a PA6 edge; PA6 held high is therefore usable for the isolated
-  protocol fixture.
+- Hard Reset recovery actively receives for a fixed two-second window and
+  does not require a PA6 edge; PA6 held high is therefore usable for the
+  isolated protocol fixture.
 - Reconnect clears capabilities, EPR mode, user intent, queued commands, and
   confirmed current before requesting 5 V.
 - An EPR-capable image may enter EPR to read capabilities, but its automatic

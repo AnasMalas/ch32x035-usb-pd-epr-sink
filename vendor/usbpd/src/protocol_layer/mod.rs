@@ -666,13 +666,37 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         message_types: &[MessageType],
         timer_type: TimerType,
     ) -> Result<Message, ProtocolError> {
+        self.receive_message_type_with_timeout(message_types, timer_type, None).await
+    }
+
+    /// Wait for selected messages using a product recovery interval rather
+    /// than the ordinary specification timer.
+    pub async fn receive_message_type_for(
+        &mut self,
+        message_types: &[MessageType],
+        milliseconds: u32,
+    ) -> Result<Message, ProtocolError> {
+        self.receive_message_type_with_timeout(message_types, TimerType::SinkWaitCap, Some(milliseconds)).await
+    }
+
+    async fn receive_message_type_with_timeout(
+        &mut self,
+        message_types: &[MessageType],
+        timer_type: TimerType,
+        milliseconds: Option<u32>,
+    ) -> Result<Message, ProtocolError> {
         // GoodCrc message reception is handled separately.
         // See `wait_for_good_crc()` instead.
         for message_type in message_types {
             assert_ne!(*message_type, MessageType::Control(ControlMessageType::GoodCRC));
         }
 
-        let timeout_fut = Self::get_timer(timer_type);
+        let timeout_fut = async move {
+            match milliseconds {
+                Some(milliseconds) => TIMER::after_millis(u64::from(milliseconds)).await,
+                None => Self::get_timer(timer_type).await,
+            }
+        };
         let receive_fut = async {
             loop {
                 match self.receive_message_inner().await {
@@ -974,18 +998,18 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Wait for the source to provide its capabilities.
-    pub async fn wait_for_source_capabilities(&mut self) -> Result<Message, ProtocolError> {
+    pub async fn wait_for_source_capabilities(&mut self, recovery_ms: Option<u32>) -> Result<Message, ProtocolError> {
         // Only sinks can await capabilities.
         debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
 
-        self.receive_message_type(
-            &[
-                MessageType::Data(message::header::DataMessageType::SourceCapabilities),
-                MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
-            ],
-            TimerType::SinkWaitCap,
-        )
-        .await
+        let message_types = [
+            MessageType::Data(message::header::DataMessageType::SourceCapabilities),
+            MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
+        ];
+        match recovery_ms {
+            Some(milliseconds) => self.receive_message_type_for(&message_types, milliseconds).await,
+            None => self.receive_message_type(&message_types, TimerType::SinkWaitCap).await,
+        }
     }
 
     /// Request a certain power level from the source.

@@ -54,7 +54,8 @@ pub struct SinkConfig {
     /// Maximum automatic EPR entry attempts during one physical attachment.
     /// Set to zero to require an explicit `enter-epr` command.
     pub max_auto_epr_attempts: u8,
-    /// Conservative source recovery delay after a sent or received Hard Reset.
+    /// Receive window for fresh Source Capabilities after a sent or received
+    /// Hard Reset. The PHY remains armed throughout this interval.
     pub hard_reset_recovery_ms: u64,
 }
 
@@ -527,7 +528,13 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             HardResetOrigin::Sink => HardResetDirection::Sent,
         };
         self.runtime.on_hard_reset(direction, self.config.hard_reset_recovery_ms);
-        self.runtime.delay_millis(self.config.hard_reset_recovery_ms).await;
+    }
+
+    fn hard_reset_recovery_millis(&self) -> u32 {
+        self.config.hard_reset_recovery_ms.min(u64::from(u32::MAX)) as u32
+    }
+
+    async fn hard_reset_recovered(&mut self) {
         self.runtime.on_hard_reset_recovery_complete();
     }
 

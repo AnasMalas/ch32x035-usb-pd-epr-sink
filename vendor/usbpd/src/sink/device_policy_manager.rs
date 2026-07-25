@@ -178,9 +178,22 @@ pub trait DevicePolicyManager {
     /// - Local hardware should be reset
     /// - Port data role should be set to UFP
     ///
-    /// The device should prepare for VBUS going to vSafe0V and then back to vSafe5V.
-    /// This callback should return when the device has reached the default level.
+    /// The device should immediately reset its local power state, prepare for
+    /// VBUS to return to vSafe5V, and return promptly so the Protocol Layer can
+    /// receive during the recovery interval below.
     fn hard_reset(&mut self, _origin: HardResetOrigin) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    /// Maximum interval in which Source_Capabilities may arrive after Hard
+    /// Reset. Returning zero uses the ordinary SinkWaitCapTimer.
+    fn hard_reset_recovery_millis(&self) -> u32 {
+        0
+    }
+
+    /// Notify the product that valid Source_Capabilities ended Hard Reset
+    /// recovery.
+    fn hard_reset_recovered(&mut self) -> impl Future<Output = ()> {
         async {}
     }
 
