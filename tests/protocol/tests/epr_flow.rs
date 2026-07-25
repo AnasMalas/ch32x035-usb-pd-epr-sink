@@ -262,7 +262,7 @@ impl DevicePolicyManager for EprDpm {
                 if self.epr_sink_cap_requested.load(Ordering::SeqCst)
                     && self.sink_cap_ext_requested.load(Ordering::SeqCst) =>
             {
-                Some(Event::RequestPower(epr_avs_request(9, 19_400, 5_000, self.epr_avs_pdo)))
+                Some(Event::RequestPower(epr_avs_request(9, 33_700, 5_000, self.epr_avs_pdo)))
             }
             (2, 3) => Some(Event::RequestPower(epr_fixed_request(1, self.fixed_5v_pdo))),
             (3, 4) => Some(Event::ExitEprMode),
@@ -282,7 +282,7 @@ impl DevicePolicyManager for EprDpm {
 }
 
 #[test]
-fn policy_engine_negotiates_fixed_48v_epr_avs_19v4_and_a_legal_exit() {
+fn policy_engine_negotiates_fixed_48v_arbitrary_epr_avs_and_a_legal_exit() {
     let fixed_5v = fixed_pdo(5_000, 3_000, true);
     let fixed_20v = fixed_pdo(20_000, 5_000, false);
     let fixed_48v = fixed_pdo(48_000, 5_000, false);
@@ -411,7 +411,7 @@ fn policy_engine_negotiates_fixed_48v_epr_avs_19v4_and_a_legal_exit() {
     let avs_rdo = u32::from_le_bytes(transmitted[7][2..6].try_into().unwrap());
     let copied_avs_pdo = u32::from_le_bytes(transmitted[7][6..10].try_into().unwrap());
     assert_eq!(avs_rdo >> 28, 9);
-    assert_eq!((avs_rdo >> 9) & 0xfff, 776);
+    assert_eq!((avs_rdo >> 9) & 0xfff, 1_348);
     assert_eq!(avs_rdo & 0x7f, 100);
     assert_eq!(copied_avs_pdo, epr_avs);
 

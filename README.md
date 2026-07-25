@@ -94,8 +94,8 @@ status
 source-status
 pps-status
 enter-epr
-request 19400 max pps
-request 19400 2300 epr-avs
+request <millivolts> max pps
+request <millivolts> <milliamps> epr-avs
 request 48000 2000 fixed
 exit-epr
 ```

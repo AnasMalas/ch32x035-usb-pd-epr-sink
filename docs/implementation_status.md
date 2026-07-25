@@ -9,9 +9,9 @@ PD frames. It does not replace first-board analyzer evidence.
 | Safe attachment | Complete | Every new session clears intent and first requests fixed 5 V | Scope VBUS/load sequencing |
 | Full source discovery | Complete | SPR list plus chunked EPR list, positions 1–11 retained and printed; invalid mandatory 5 V offers are rejected | Test several sources/cables |
 | Direct PDO selection | Complete | `pdo N max` plans every requestable family across positions 1-11; adjustable PDOs select their advertised maximum; fixed 48 V uses a two-object EPR Request | Analyzer acceptance and real VBUS |
-| PPS | Complete in software | Arbitrary in-range voltage at 20 mV resolution; 19.4 V and 5 s refresh byte-tested; bounded compatibility mode retains real 3.6/4.5 V or >5 A proprietary advertisements while requests remain capped to 5 A | Verify a noncanonical APDO and long-run refresh with an analyzer |
-| SPR AVS | Complete | First-class vendor/product decoding plus a real policy-engine 19.4 V Request at 100 mV resolution | Find/test a PD 3.2 source offering it |
-| EPR AVS | Complete | Standard 15-48 V range, 100 mV resolution, and 5 A/PDP cap; bounded source extensions from 5-50 V are labeled compatible and require explicit opt-in plus a matching sink limit; AOHI `0xd230328c`, 19.4 V, and a nominal 50 V two-object request are byte-tested | Exercise the AOHI standard and compatibility ranges on isolated VBUS |
+| PPS | Complete in software | Arbitrary in-range voltage at 20 mV resolution and 5 s refresh byte-tested; bounded compatibility mode retains real 3.6/4.5 V or >5 A proprietary advertisements while requests remain capped to 5 A | Verify a noncanonical APDO and long-run refresh with an analyzer |
+| SPR AVS | Complete | First-class vendor/product decoding plus a real policy-engine adjustable Request at 100 mV resolution | Find/test a PD 3.2 source offering it |
+| EPR AVS | Complete | Standard 15-48 V range, 100 mV resolution, and 5 A/PDP cap; bounded source extensions from 5-50 V are labeled compatible and require explicit opt-in plus a matching sink limit; AOHI `0xd230328c`, arbitrary in-range points, and a nominal 50 V two-object request are byte-tested | Exercise the AOHI standard and compatibility ranges on isolated VBUS |
 | Battery/variable source PDOs | Deliberately unsupported | Valid offers remain position-preserving and visible in capability reports, but the product planner never creates a battery/variable RDO | None for this product |
 | Available-current report | Complete in policy | Caps by offer, protocol, Source_Info present PDP, board, configured cable, sink power, and user demand; confidence is printed | Configure real board/cable limits; compare with source behavior |
 | EPR lifecycle | Complete in software | Enter/Ack/Success, chunk retrieval, fixed 48 V, AVS, keepalive, SPR pre-exit contract, Exit, reset-origin reporting, a PA6-independent 2 s Hard Reset recovery window, and a two-attempt automatic EPR circuit breaker | Analyzer timing and failure cases |
@@ -46,6 +46,6 @@ PD frames. It does not replace first-board analyzer evidence.
 
 Follow `first_board_verification.md`. The implementation should not be called
 hardware-proven until USB ISP and CDC work, source/EPR capability discovery is
-captured, SinkTxNG deferral is measured, PPS and AVS 19.4 V are verified, fixed
+captured, SinkTxNG deferral is measured, arbitrary PPS and AVS points are verified, fixed
 48 V is verified on a protected setup, and cable removal independently drops
 the physical load gate.

@@ -308,10 +308,10 @@
                     <tr><td><code>enter-epr</code></td><td>Enter EPR mode while holding the existing safe 5 V contract.</td></tr>
                     <tr><td><code>epr-caps</code></td><td>Refresh the EPR capability list after EPR entry.</td></tr>
                     <tr><td><code>exit-epr</code></td><td>Return to SPR mode through a safe SPR contract.</td></tr>
-                    <tr><td><code>request 17200 2300 pps</code></td><td>Request 17.2 V and 2.3 A using PPS.</td></tr>
-                    <tr><td><code>request 19400 max epr-avs</code></td><td>Request 19.4 V using standards-valid EPR AVS and the maximum usable current.</td></tr>
+                    <tr><td><code>request &lt;millivolts&gt; &lt;milliamps|max&gt; pps</code></td><td>Request any in-range PPS voltage and either a specific current or the maximum usable current.</td></tr>
+                    <tr><td><code>request &lt;millivolts&gt; max epr-avs</code></td><td>Request any in-range voltage using standards-valid EPR AVS and the maximum usable current.</td></tr>
                     <tr><td><code>pdo 10 max</code></td><td>Request PDO 10 at its fixed or adjustable maximum.</td></tr>
-                    <tr><td><code>pdo 11 adjust 19400 2300</code></td><td>Request 19.4 V and 2.3 A directly from adjustable PDO 11.</td></tr>
+                    <tr><td><code>pdo 11 adjust &lt;millivolts&gt; &lt;milliamps&gt;</code></td><td>Request a specific voltage and current directly from adjustable PDO 11.</td></tr>
                     <tr><td><code>help</code></td><td>Print the compact command syntax in the console.</td></tr>
                   </tbody>
                 </table>

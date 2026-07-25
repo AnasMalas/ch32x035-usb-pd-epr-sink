@@ -42,7 +42,7 @@ try {
     cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked
     if ($LASTEXITCODE -ne 0) { throw "safe 5 V firmware build failed with exit code $LASTEXITCODE" }
 
-    foreach ($feature in @('bench-pps-19v4', 'bench-epr-avs-19v4', 'bench-epr-fixed-48v')) {
+    foreach ($feature in @('bench-epr-fixed-48v')) {
         cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
     }

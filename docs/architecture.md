@@ -3,7 +3,7 @@
 ## Product objective
 
 The CH32X035F8U6 is a pure USB-C power sink. A user can inspect every source
-offer, select a fixed PDO, or ask for a PPS/AVS voltage such as 19.4 V. The
+offer, select a fixed PDO, or ask for any in-range PPS/AVS voltage. The
 result reports the exact wire-encoded voltage and a conservative usable
 current derived from source and configured product limits.
 
@@ -127,9 +127,9 @@ that fail to send the expected Alert.
   controller behavior, contract lifecycle, safety debounce, reusable DPM
   contract/reset behavior, configuration validation, and automatic EPR entry.
 - `tests/protocol` drives the real vendored policy engine with scripted wire
-  messages, including typed SPR AVS and its ordinary 19.4 V Request,
-  two-chunk EPR capabilities, 48 V fixed, 19.4 V EPR AVS, legal EPR exit,
-  Source_Info, PPS_Status, Alert-triggered general Status, a 19.4 V PPS
+  messages, including typed SPR AVS and an ordinary adjustable Request,
+  two-chunk EPR capabilities, 48 V fixed, an arbitrary EPR AVS point, legal EPR exit,
+  Source_Info, PPS_Status, Alert-triggered general Status, an arbitrary PPS
   refresh, source traffic while a
   sink AMS is held by SinkTxNG, PD 2.0 bypass, detach, and bounded retry
   failure. A `Wait` trace proves the deferred user request is replanned after

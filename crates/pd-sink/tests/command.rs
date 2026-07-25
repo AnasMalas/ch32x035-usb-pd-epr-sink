@@ -3,17 +3,17 @@ use pd_sink::{parse_command, Command, CommandError, Demand, Milliamps, Millivolt
 #[test]
 fn parses_voltage_requests_for_every_adjustable_family() {
     assert_eq!(
-        parse_command("request 19400 3000 pps"),
+        parse_command("request 17220 3000 pps"),
         Ok(Command::Request(UserRequest::Voltage {
-            voltage: Millivolts(19_400),
+            voltage: Millivolts(17_220),
             current: Some(Milliamps(3_000)),
             preference: Preference::Pps,
         }))
     );
     assert_eq!(
-        parse_command("voltage 19400 epr-avs"),
+        parse_command("voltage 33700 epr-avs"),
         Ok(Command::Request(UserRequest::Voltage {
-            voltage: Millivolts(19_400),
+            voltage: Millivolts(33_700),
             current: None,
             preference: Preference::EprAvs,
         }))
@@ -47,10 +47,10 @@ fn parses_direct_pdo_requests_without_guessing_the_rdo_kind() {
         Ok(Command::Request(UserRequest::Pdo { position: 2, demand: Demand::Current(Milliamps(1_750)) }))
     );
     assert_eq!(
-        parse_command("pdo 9 adjust 19400 2500"),
+        parse_command("pdo 9 adjust 33700 2500"),
         Ok(Command::Request(UserRequest::Pdo {
             position: 9,
-            demand: Demand::Adjustable { voltage: Millivolts(19_400), current: Some(Milliamps(2_500)) },
+            demand: Demand::Adjustable { voltage: Millivolts(33_700), current: Some(Milliamps(2_500)) },
         }))
     );
 }
@@ -76,7 +76,7 @@ fn parses_control_and_diagnostic_commands() {
 fn rejects_ambiguous_or_malformed_input() {
     assert_eq!(parse_command(""), Err(CommandError::Empty));
     assert_eq!(parse_command("request nope"), Err(CommandError::InvalidNumber));
-    assert_eq!(parse_command("request 19400 3000 mystery"), Err(CommandError::InvalidPreference));
+    assert_eq!(parse_command("request 17220 3000 mystery"), Err(CommandError::InvalidPreference));
     assert_eq!(parse_command("pdo 2 bananas"), Err(CommandError::InvalidDemand));
     assert_eq!(parse_command("pdo 3 power 30000"), Err(CommandError::InvalidDemand));
     assert_eq!(parse_command("status extra"), Err(CommandError::UnexpectedArgument));

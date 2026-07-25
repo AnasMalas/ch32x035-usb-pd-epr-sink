@@ -42,17 +42,10 @@ use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
 use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
 };
-#[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
+#[cfg(feature = "bench-epr-fixed-48v")]
 use pd_sink::{Preference, UserRequest};
 use usbpd::sink::policy_engine::Sink;
 use usbpd::timers::Timer as SinkTimer;
-
-#[cfg(any(
-    all(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4"),
-    all(feature = "bench-pps-19v4", feature = "bench-epr-fixed-48v"),
-    all(feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"),
-))]
-compile_error!("select at most one bench request feature");
 
 #[cfg(all(feature = "usb-control", feature = "dev-text-console"))]
 compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
@@ -264,16 +257,11 @@ fn device_info() -> DeviceInfo {
     }
 }
 
-#[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
+#[cfg(feature = "bench-epr-fixed-48v")]
 #[embassy_executor::task]
 async fn bench_request_task() {
     Timer::after_millis(2_000).await;
 
-    #[cfg(feature = "bench-pps-19v4")]
-    let request = UserRequest::Voltage { voltage: Millivolts(19_400), current: None, preference: Preference::Pps };
-    #[cfg(feature = "bench-epr-avs-19v4")]
-    let request = UserRequest::Voltage { voltage: Millivolts(19_400), current: None, preference: Preference::EprAvs };
-    #[cfg(feature = "bench-epr-fixed-48v")]
     let request = UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed };
 
     COMMANDS.send(Command::Request(request)).await;
@@ -1059,7 +1047,7 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "sdi-log")]
     hal::debug::SDIPrint::enable();
 
-    #[cfg(any(feature = "bench-pps-19v4", feature = "bench-epr-avs-19v4", feature = "bench-epr-fixed-48v"))]
+    #[cfg(feature = "bench-epr-fixed-48v")]
     _spawner.spawn(bench_request_task().expect("bench command task allocation failed"));
 
     let config = hal::Config { rcc: hal::rcc::Config::SYSCLK_FREQ_48MHZ_HSI, ..Default::default() };

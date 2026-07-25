@@ -8,8 +8,6 @@ param(
         'usb-epr-50v',
         'usb-epr-text',
         'usb-epr-dual-log',
-        'pps-19v4',
-        'epr-avs-19v4',
         'epr-fixed-48v'
     )]
     [string]$Profile = 'safe-5v'

@@ -248,7 +248,7 @@ impl DevicePolicyManager for SprAvsDpm {
 fn pps_contract_is_refreshed_as_a_sinktx_gated_ams() {
     let fixed_5v = fixed_pdo(5_000, 3_000);
     let pps = pps_pdo(5_000, 21_000, 3_000);
-    let request = pps_request(2, 19_400, 3_000);
+    let request = pps_request(2, 17_220, 3_000);
     let receive = VecDeque::from([
         (0, source_capabilities(0, &[fixed_5v, pps])),
         (1, source_control(1, ControlMessageType::Accept)),
@@ -284,7 +284,7 @@ fn pps_contract_is_refreshed_as_a_sinktx_gated_ams() {
     assert_eq!(refresh_header.message_type(), MessageType::Data(DataMessageType::Request));
     assert_eq!(refresh_header.message_id(), (first_header.message_id() + 1) & 0x07);
     let rdo = u32::from_le_bytes(transmitted[0][2..6].try_into().unwrap());
-    assert_eq!((rdo >> 9) & 0x7ff, 970, "19.4 V must be encoded in exact 20 mV units");
+    assert_eq!((rdo >> 9) & 0x7ff, 861, "the requested voltage must be encoded in exact 20 mV units");
     assert_eq!(rdo & 0x7f, 60, "3 A must be encoded in 50 mA units");
 }
 
@@ -292,7 +292,7 @@ fn pps_contract_is_refreshed_as_a_sinktx_gated_ams() {
 fn wait_replans_and_retries_the_deferred_request_after_servicing_source_traffic() {
     let fixed_5v = fixed_pdo(5_000, 3_000);
     let pps = pps_pdo(5_000, 21_000, 3_000);
-    let desired = pps_request(2, 19_400, 3_000);
+    let desired = pps_request(2, 17_220, 3_000);
     let receive = VecDeque::from([
         (0, source_capabilities(0, &[fixed_5v, pps])),
         (1, source_control(1, ControlMessageType::Accept)),
@@ -352,7 +352,7 @@ fn wait_replans_and_retries_the_deferred_request_after_servicing_source_traffic(
 fn spr_avs_is_typed_and_sent_as_an_ordinary_avs_request() {
     let fixed_5v = fixed_pdo(5_000, 3_000);
     let spr_avs = spr_avs_pdo(4_000, 3_000);
-    let request = avs_request(2, 19_400, 3_000);
+    let request = avs_request(2, 33_700, 3_000);
     let receive = VecDeque::from([
         (0, source_capabilities(0, &[fixed_5v, spr_avs])),
         (1, source_control(1, ControlMessageType::Accept)),
@@ -377,6 +377,6 @@ fn spr_avs_is_typed_and_sent_as_an_ordinary_avs_request() {
     assert_eq!(header.message_type(), MessageType::Data(DataMessageType::Request));
     let rdo = u32::from_le_bytes(transmitted[0][2..6].try_into().unwrap());
     assert_eq!(rdo >> 28, 2);
-    assert_eq!((rdo >> 9) & 0xfff, 776, "19.4 V AVS uses 25 mV wire units");
+    assert_eq!((rdo >> 9) & 0xfff, 1_348, "AVS voltage uses 25 mV wire units");
     assert_eq!(rdo & 0x7f, 60, "3 A uses 50 mA wire units");
 }

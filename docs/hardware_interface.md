@@ -110,8 +110,8 @@ those ratings.
    `first_board_verification.md` when a controllable source fixture is
    available.
 8. Repeat detach/reconnect and hard-reset tests before enabling PPS/EPR.
-9. Test PPS 19.4 V, then EPR AVS 19.4 V, and only then fixed 48 V on a
-   current-limited protected bench setup.
+9. Test low, middle, and high points of each advertised PPS/AVS range, then
+   fixed 48 V on a current-limited protected bench setup.
 10. If the product intentionally supports a nominal 50 V compatibility offer,
     repeat the protected test with `usb-epr-50v` only after establishing the
     source's actual maximum and the complete path's voltage margin.
