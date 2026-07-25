@@ -2,6 +2,15 @@
 
 /// The timer trait to implement by the user application.
 pub trait Timer {
+    /// Return a monotonic counter whose ticks are 128 milliseconds.
+    ///
+    /// Policy timers use absolute deadlines so unrelated messages and
+    /// application inquiries cannot restart mandatory periodic work. The
+    /// default keeps simple scripted implementations source-compatible.
+    fn now_128ms_ticks() -> u32 {
+        0
+    }
+
     /// Expire after the specified number of milliseconds.
     fn after_millis(milliseconds: u64) -> impl Future<Output = ()>;
 }

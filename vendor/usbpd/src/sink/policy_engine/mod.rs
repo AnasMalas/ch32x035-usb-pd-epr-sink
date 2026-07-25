@@ -118,9 +118,13 @@ pub struct Sink<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> {
     /// is pending.
     pending_sink_ams: Option<SinkInitiatedAms>,
     /// A power request received `Wait` and must be replanned by the DPM after
-    /// SinkRequestTimer. Keeping this outside `State::Ready` preserves the
-    /// retry while source-initiated AMS traffic is serviced.
+    /// SinkRequestTimer.
     wait_retry_pending: bool,
+    /// Absolute PPS Request-maintenance deadline. A relative timer recreated
+    /// on every Ready entry can be starved by telemetry or Source traffic.
+    pps_refresh_deadline_tick: Option<u32>,
+    /// Absolute EPR keep-alive deadline, independent from unrelated AMSs.
+    epr_keep_alive_deadline_tick: Option<u32>,
     /// Origin of the Hard Reset currently returning the Sink to default
     /// power. Every path into `TransitionToDefault` sets this first.
     hard_reset_origin: HardResetOrigin,
@@ -180,6 +184,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             get_source_cap_pending: false,
             pending_sink_ams: None,
             wait_retry_pending: false,
+            pps_refresh_deadline_tick: None,
+            epr_keep_alive_deadline_tick: None,
             hard_reset_origin: HardResetOrigin::Source,
             _timer: PhantomData,
         }
@@ -211,6 +217,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.get_source_cap_pending = false;
         self.pending_sink_ams = None;
         self.wait_retry_pending = false;
+        self.pps_refresh_deadline_tick = None;
+        self.epr_keep_alive_deadline_tick = None;
         self.hard_reset_origin = HardResetOrigin::Source;
     }
 
@@ -401,6 +409,50 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
+    fn is_pps(power_source: request::PowerSource) -> bool {
+        match power_source {
+            PowerSource::Pps(_) => true,
+            PowerSource::EprRequest(epr) => {
+                let raw = epr.pdo.to_raw();
+                (raw >> 30) & 0x3 == 0x3 && (raw >> 28) & 0x3 == 0
+            }
+            _ => false,
+        }
+    }
+
+    fn deadline_after(ticks: u32) -> u32 {
+        TIMER::now_128ms_ticks().wrapping_add(ticks)
+    }
+
+    fn ensure_periodic_deadlines(&mut self, power_source: request::PowerSource) {
+        if Self::is_pps(power_source) {
+            if self.pps_refresh_deadline_tick.is_none() {
+                self.pps_refresh_deadline_tick = Some(Self::deadline_after(39));
+            }
+        } else {
+            self.pps_refresh_deadline_tick = None;
+        }
+
+        if self.mode == Mode::Epr {
+            if self.epr_keep_alive_deadline_tick.is_none() {
+                self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
+            }
+        } else {
+            self.epr_keep_alive_deadline_tick = None;
+        }
+    }
+
+    async fn wait_until(deadline_tick: Option<u32>) {
+        match deadline_tick {
+            Some(deadline_tick) => {
+                let remaining = deadline_tick.wrapping_sub(TIMER::now_128ms_ticks());
+                let remaining = if remaining > i32::MAX as u32 { 0 } else { remaining };
+                TIMER::after_millis(u64::from(remaining) * 128).await;
+            }
+            None => core::future::pending().await,
+        }
+    }
+
     fn handle_ready_message(
         &mut self,
         message: crate::protocol_layer::message::Message,
@@ -483,6 +535,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.active_power_source = None;
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
                 self.protocol_layer.reset();
                 self.mode = Mode::Spr;
 
@@ -573,6 +627,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 }
             }
             State::TransitionSink(power_source) => {
+                let accepted_power_source = *power_source;
                 self.protocol_layer
                     .receive_message_type(
                         &[MessageType::Control(ControlMessageType::PsRdy)],
@@ -584,12 +639,19 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     .await?;
 
                 self.contract = Contract::TransitionToExplicit;
-                self.device_policy_manager.transition_power(power_source).await;
-                self.active_power_source = Some(*power_source);
-                State::Ready(*power_source)
+                self.device_policy_manager.transition_power(&accepted_power_source).await;
+                self.active_power_source = Some(accepted_power_source);
+                if Self::is_pps(accepted_power_source) {
+                    self.pps_refresh_deadline_tick = Some(Self::deadline_after(39));
+                } else {
+                    self.pps_refresh_deadline_tick = None;
+                }
+                self.ensure_periodic_deadlines(accepted_power_source);
+                State::Ready(accepted_power_source)
             }
             State::Ready(power_source) => {
                 let active_power_source = *power_source;
+                self.ensure_periodic_deadlines(active_power_source);
                 // TODO: Entry: Init. and run DiscoverIdentityTimer(4)
                 // TODO: Entry: Send GetSinkCap message if sink supports fast role swap
                 // Sink-initiated AMSs are held below until Rp is SinkTxOK.
@@ -617,26 +679,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 } else {
                     let receive_fut = self.protocol_layer.receive_message();
                     let event_fut = self.device_policy_manager.get_event(self.source_capabilities.as_ref().unwrap());
-                    let pps_periodic_fut = async {
-                        let is_epr_pps = match active_power_source {
-                            PowerSource::EprRequest(epr) => {
-                                let raw = epr.pdo.to_raw();
-                                (raw >> 30) & 0x3 == 0x3 && (raw >> 28) & 0x3 == 0
-                            }
-                            _ => false,
-                        };
-                        if matches!(active_power_source, PowerSource::Pps(_)) || is_epr_pps {
-                            TimerType::get_timer::<TIMER>(TimerType::SinkPPSPeriodic).await
-                        } else {
-                            core::future::pending().await
-                        }
-                    };
-                    let epr_keep_alive_fut = async {
-                        match self.mode {
-                            Mode::Epr => TimerType::get_timer::<TIMER>(TimerType::SinkEPRKeepAlive).await,
-                            Mode::Spr => core::future::pending().await,
-                        }
-                    };
+                    let pps_periodic_fut = Self::wait_until(self.pps_refresh_deadline_tick);
+                    let epr_keep_alive_fut = Self::wait_until(self.epr_keep_alive_deadline_tick);
                     // Per spec 8.3.3.3.7: SinkRequestTimer runs concurrently when re-entering
                     // Ready after a Wait response. On timeout, transition to SelectCapability.
                     // Per spec 6.6.4.1: Ensures minimum tSinkRequest (100ms) delay before re-request.
@@ -657,9 +701,18 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             None => State::Ready(active_power_source),
                         },
                         Either3::Third(timeout_source) => {
+                            let pps_timeout = matches!(&timeout_source, Either3::First(_));
                             let ams = match timeout_source {
-                                Either3::Second(_) => SinkInitiatedAms::EprKeepAlive,
+                                Either3::Second(_) => {
+                                    self.epr_keep_alive_deadline_tick = None;
+                                    SinkInitiatedAms::EprKeepAlive
+                                }
                                 Either3::First(_) | Either3::Third(_) => {
+                                    if pps_timeout {
+                                        self.pps_refresh_deadline_tick = None;
+                                    } else {
+                                        self.wait_retry_pending = false;
+                                    }
                                     // PPS refreshes and Wait retries must both
                                     // pass through product policy. Besides
                                     // re-planning against the latest retained
@@ -715,6 +768,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             State::HardReset => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
                 // Per USB PD Spec R3.2 Section 8.3.3.3.8 (PE_SNK_Hard_Reset):
                 // Entry conditions:
                 // - PSTransitionTimer timeout (when HardResetCounter <= nHardResetCount)
@@ -743,6 +798,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             State::TransitionToDefault => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
                 // Per USB PD Spec R3.2 Section 8.3.3.3.9 (PE_SNK_Transition_to_default):
                 // This state is entered when:
                 // - Hard Reset Signaling is detected (received or transmitted)
@@ -1135,6 +1192,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // In EPR mode, requests use EprRequest which contains the RDO with object position.
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
                 self.mode = Mode::Spr;
 
                 let is_epr_pdo_contract = match power_source {
@@ -1172,6 +1231,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                                 == crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAliveAck
                             {
                                 self.mode = Mode::Epr;
+                                self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
                                 State::Ready(*power_source)
                             } else {
                                 State::SendNotSupported(*power_source)

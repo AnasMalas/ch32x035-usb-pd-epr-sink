@@ -25,7 +25,7 @@ use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
-use embassy_time::Timer;
+use embassy_time::{Instant, Timer};
 use panic_halt as _;
 #[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 use pd_sink::PlanError;
@@ -380,14 +380,7 @@ fn log_device_identity() {
 }
 
 #[cfg(feature = "dev-text-console")]
-fn log_console_help() {
-    logln!("Commands:");
-    logln!("device caps plans source-info source-status pps-status status");
-    logln!("enter-epr epr-caps exit-epr help");
-    logln!("request mV [mA|max] [auto|fixed|pps|spr-avs|epr-avs]");
-    logln!("request mV [mA|max] epr-avs-nonstandard (explicit opt-in)");
-    logln!("pdo N [max(=maxV APDO)|current mA|adjust mV [mA|max]]");
-}
+fn log_console_help() {}
 
 #[cfg(feature = "dev-text-console")]
 async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
@@ -398,7 +391,7 @@ async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
 
     loop {
         receiver.wait_connection().await;
-        logln!("USB console ready; type help");
+        logln!("USB console ready");
         log_device_identity();
 
         loop {
@@ -688,6 +681,10 @@ fn log_request_plan(prefix: &str, plan: RequestPlan) {
 struct EmbassySinkTimer;
 
 impl SinkTimer for EmbassySinkTimer {
+    fn now_128ms_ticks() -> u32 {
+        (Instant::now().as_ticks() >> 17) as u32
+    }
+
     async fn after_millis(milliseconds: u64) {
         Timer::after_millis(milliseconds).await;
     }
@@ -813,6 +810,7 @@ impl SinkRuntime for FirmwareRuntime {
     fn on_requesting(&mut self, plan: RequestPlan) {
         control_event!(ControlEvent::Plan { stage: ControlPlanStage::Requesting, plan: Some(plan) });
         log_request_plan("Requesting", plan);
+        #[cfg(feature = "sdi-log")]
         logln!("RDO={:#010x}", plan.rdo);
     }
 
