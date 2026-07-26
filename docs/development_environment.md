@@ -103,11 +103,16 @@ The lower-level `flash.ps1 -Firmware <path>` form remains available when an
 exact archived or reviewed ELF must be programmed.
 
 After leaving ISP mode and resetting normally, launch the browser GUI. It
-speaks the compact protocol directly and translates device events locally:
+packages one offline HTML file, speaks the compact protocol directly, and
+translates device events locally:
 
 ```powershell
 .\scripts\gui.ps1
 ```
+
+The launcher exits after opening `artifacts\usb-pd-control.html`; it does not
+leave a localhost server running. Use `-NoBrowser` to package only or `-Output`
+to choose a distributable destination.
 
 For direct ASCII terminal work, build and flash `usb-epr-text`, then list and
 open the COM port:

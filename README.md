@@ -66,9 +66,10 @@ adapting the reference firmware.
   interactive command surface.
 - `tests/protocol/` - host-scripted protocol, reset, PPS, EPR, and malformed
   frame tests.
-- `tools/pd-control/` - optional browser GUI using Web Serial.
+- `tools/pd-control/` - optional offline browser GUI using desktop Web Serial
+  or Android WebUSB CDC.
 - `scripts/` - reproducible checks, profile builds, USB ISP flashing, serial
-  console, and GUI launcher.
+  console, and standalone-GUI packaging.
 - `docs/` - publishable architecture, hardware contract, interoperability, and
   validation material. USB-IF specifications and third-party datasheet files
   are intentionally not redistributed.
@@ -105,6 +106,14 @@ Launch the optional browser interface with:
 ```powershell
 .\scripts\gui.ps1
 ```
+
+This packages and opens `artifacts\usb-pd-control.html`, then exits; there is
+no local server to keep running. The single file can be copied to another
+desktop or Android device and does not require internet access. Desktop
+Chrome/Edge prefer the standard CDC COM port through Web Serial. Android
+Chrome falls back to WebUSB while preserving the same CDC-ACM firmware, so
+ordinary serial software can still use the device when the browser releases
+it.
 
 The normal `usb-safe-5v`, `usb-pps`, and `usb-epr` profiles use compact binary
 `usb-control`; the browser translates it into the readable interface and

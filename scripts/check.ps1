@@ -61,6 +61,36 @@ try {
     cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features 'dev-text-console,epr-capable-hardware'
     if ($LASTEXITCODE -ne 0) { throw "dual-log USB EPR firmware build failed with exit code $LASTEXITCODE" }
 
+    $guiCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) "usb-pd-control-$([guid]::NewGuid().ToString('N')).html"
+    try {
+        $packagedGui = & (Join-Path $PSScriptRoot 'package-gui.ps1') -Output $guiCheckPath
+        $gui = [System.IO.File]::ReadAllText($packagedGui)
+        foreach ($required in @(
+            'Condense stream: On',
+            'Raw stream: Off',
+            'navigator.serial.requestPort',
+            'navigator.usb.requestDevice'
+        )) {
+            if (-not $gui.Contains($required)) {
+                throw "standalone GUI is missing '$required'"
+            }
+        }
+        foreach ($external in @(
+            'href="styles.css"',
+            'src="protocol.js"',
+            'src="app.js"'
+        )) {
+            if ($gui.Contains($external)) {
+                throw "standalone GUI still references '$external'"
+            }
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $guiCheckPath) {
+            Remove-Item -LiteralPath $guiCheckPath -Force
+        }
+    }
+
     if (Get-Command node -ErrorAction SilentlyContinue) {
         node tools/pd-control/protocol.test.js
         if ($LASTEXITCODE -ne 0) { throw "browser protocol tests failed with exit code $LASTEXITCODE" }

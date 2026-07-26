@@ -56,6 +56,13 @@ diagnosis only.
 
 ## Browser selection
 
+The browser keeps USB CDC as the physical interface. Desktop Chromium uses the
+operating system's serial port through Web Serial. Android Chromium, which has
+no Web Serial API, claims the same CDC-ACM interfaces through WebUSB and uses
+their bulk endpoints directly. This is a host-side transport choice; it does
+not require a second firmware protocol or prevent other serial software from
+using the device after the browser disconnects.
+
 USB PD Control waits for device output before sending a command. A valid
 `PD`, version-1 frame selects `usb-control`; a complete printable line selects
 `dev-text-console`. For compact control, the browser encodes every UI or raw

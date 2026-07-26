@@ -515,6 +515,12 @@ select:focus {
   border-color: var(--line);
 }
 
+.button-quiet[aria-pressed="true"] {
+  color: #204e36;
+  background: #dff3e6;
+  border-color: #9fcdb0;
+}
+
 .request-submit {
   min-width: 132px;
 }
@@ -821,6 +827,11 @@ tbody tr:last-child td {
 
 .terminal-line.error .terminal-text {
   color: #ffb3ab;
+}
+
+.terminal-line.raw-transport .terminal-text,
+.terminal-line.raw-transport .terminal-direction {
+  color: #b7c8ff;
 }
 
 .terminal-text {

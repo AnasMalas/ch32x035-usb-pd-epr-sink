@@ -33,7 +33,7 @@
         <div class="notice notice-error">JavaScript is required to communicate with the USB PD controller.</div>
       </noscript>
       <div id="browser-notice" class="notice notice-error hidden" role="alert">
-        Web Serial is unavailable. Open this page in a current desktop version of Chrome or Edge over localhost.
+        This browser cannot access USB serial devices. Use current Chrome or Edge on desktop, or Chrome with USB host support on Android.
       </div>
 
       <section class="hero panel">
@@ -51,7 +51,7 @@
         <article class="metric-card">
           <span>Port state</span>
           <strong id="port-state">Offline</strong>
-          <small id="port-detail">No serial connection</small>
+          <small id="port-detail">No USB connection</small>
         </article>
         <article class="metric-card metric-accent">
           <span>Contract voltage</span>
@@ -254,7 +254,7 @@
         <summary class="terminal-summary">
           <span>
             <strong>Diagnostics console</strong>
-            <small>Translated compact events or raw development text, plus advanced command entry</small>
+            <small>Decoded events, optional exact USB traffic, and advanced command entry</small>
           </span>
           <span class="pill">Show terminal</span>
         </summary>
@@ -266,7 +266,8 @@
             </div>
             <div class="terminal-tools">
               <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> Auto-scroll</label>
-              <button id="raw-log" class="button button-quiet" type="button" aria-pressed="false">Show raw stream</button>
+              <button id="condense-log" class="button button-quiet" type="button" aria-pressed="true">Condense stream: On</button>
+              <button id="raw-log" class="button button-quiet" type="button" aria-pressed="false">Raw stream: Off</button>
               <button id="copy-log" class="button button-quiet" type="button">Copy</button>
               <button id="save-log" class="button button-quiet" type="button">Save</button>
               <button id="clear-log" class="button button-quiet" type="button">Clear</button>
@@ -294,6 +295,7 @@
                 <span><code>&lt;</code> message from the device</span>
                 <span><code>&gt;</code> command sent to the device</span>
                 <span><code>•</code> local browser event</span>
+                <span><code>RAW</code> exact transport bytes when enabled</span>
               </div>
               <div class="table-scroll command-table-scroll">
                 <table class="command-table">
@@ -326,7 +328,7 @@
     </main>
 
     <footer>
-      <span>Runs locally in your browser. Serial data never leaves this computer.</span>
+      <span>Runs offline in your browser. USB data never leaves this device.</span>
       <span id="device-id">No device selected</span>
     </footer>
   </body>

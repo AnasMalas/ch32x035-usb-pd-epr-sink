@@ -53,6 +53,7 @@ const ui = {
   capabilityBody: $("#capability-body"),
   terminal: $("#terminal"),
   autoScroll: $("#auto-scroll"),
+  condenseLog: $("#condense-log"),
   rawLog: $("#raw-log"),
   copyLog: $("#copy-log"),
   saveLog: $("#save-log"),
@@ -68,6 +69,11 @@ const state = {
   readTask: null,
   keepReading: false,
   connected: false,
+  connectionApi: null,
+  usbClaimedInterfaces: [],
+  usbInEndpoint: null,
+  usbOutEndpoint: null,
+  usbPacketSize: 64,
   transport: null,
   detectionBuffer: [],
   controlDecoder: new controlProtocol.FrameDecoder(),
@@ -86,7 +92,8 @@ const state = {
   ppsRefreshTimer: null,
   ppsQueryPending: false,
   ppsPollingPausedUntil: 0,
-  rawConsole: false,
+  condenseConsole: true,
+  rawStream: false,
   collapsedConsoleRows: new Map(),
   usbId: null,
   deviceUid: null,
@@ -98,6 +105,9 @@ const encoder = new TextEncoder();
 const MAX_LOG_LINES = 1500;
 const BOARD_SETTING_PREFIX = "usb-pd-control.board.";
 const ALLOWED_VOLTAGE_CEILINGS = new Set(controlProtocol.VOLTAGE_CEILINGS);
+const DEVELOPMENT_USB_FILTERS = Object.freeze([
+  Object.freeze({ vendorId: 0x1a86, productId: 0xfe0c }),
+]);
 
 function setFeedback(message, isError = false) {
   ui.requestFeedback.textContent = message;
@@ -194,10 +204,17 @@ function transportLabel() {
   return "USB CDC detecting protocol";
 }
 
+function connectionApiLabel() {
+  if (state.connectionApi === "web-serial") return "Web Serial";
+  if (state.connectionApi === "webusb-cdc") return "WebUSB CDC";
+  return null;
+}
+
 function refreshDeviceDescription() {
   const board = state.deviceUid ? displayBoardId(state.deviceUid) : null;
   const id = [board, state.usbId].filter(Boolean).join(" · ") || "device identity pending";
-  ui.deviceDescription.textContent = `${transportLabel()} · ${id}`;
+  const connection = connectionApiLabel();
+  ui.deviceDescription.textContent = `${transportLabel()}${connection ? ` over ${connection}` : ""} · ${id}`;
   ui.deviceId.textContent = id;
 }
 
@@ -309,6 +326,11 @@ function setConnected(connected) {
   ui.connectButton.textContent = connected ? "Disconnect" : "Connect device";
 
   if (!connected) {
+    state.connectionApi = null;
+    state.usbClaimedInterfaces.length = 0;
+    state.usbInEndpoint = null;
+    state.usbOutEndpoint = null;
+    state.usbPacketSize = 64;
     state.transport = null;
     state.detectionBuffer.length = 0;
     state.controlDecoder.reset();
@@ -339,7 +361,7 @@ function clearDeviceState() {
   state.contractSupplyType = null;
   state.contractEpr = false;
   ui.portState.textContent = state.connected ? "Connected" : "Offline";
-  ui.portDetail.textContent = state.connected ? "Waiting for attachment" : "No serial connection";
+  ui.portDetail.textContent = state.connected ? "Waiting for attachment" : "No USB connection";
   ui.contractVoltage.textContent = "—";
   ui.contractSupply.textContent = "No confirmed contract";
   ui.usableCurrent.textContent = "—";
@@ -372,7 +394,7 @@ function collapsedConsoleKey(entry) {
 
 function createLogRow(entry, updateCount = 1) {
   const row = document.createElement("div");
-  row.className = `terminal-line ${entry.direction} ${entry.severity}`;
+  row.className = `terminal-line ${entry.direction} ${entry.severity}${entry.rawTransport ? " raw-transport" : ""}`;
 
   const time = document.createElement("span");
   time.className = "terminal-time";
@@ -397,7 +419,8 @@ function createLogRow(entry, updateCount = 1) {
 }
 
 function appendVisibleLog(entry) {
-  if (state.rawConsole) {
+  if (entry.rawTransport && !state.rawStream) return;
+  if (!state.condenseConsole || entry.rawTransport) {
     ui.terminal.append(createLogRow(entry));
     return;
   }
@@ -423,8 +446,8 @@ function renderConsole() {
   if (ui.autoScroll.checked) ui.terminal.scrollTop = ui.terminal.scrollHeight;
 }
 
-function addLog(text, direction = "incoming", severity = "normal") {
-  const entry = { time: new Date(), text, direction, severity };
+function addLog(text, direction = "incoming", severity = "normal", { rawTransport = false } = {}) {
+  const entry = { time: new Date(), text, direction, severity, rawTransport };
   state.log.push(entry);
   if (state.log.length > MAX_LOG_LINES) {
     state.log.splice(0, state.log.length - MAX_LOG_LINES);
@@ -435,6 +458,13 @@ function addLog(text, direction = "incoming", severity = "normal") {
   if (ui.autoScroll.checked) {
     ui.terminal.scrollTop = ui.terminal.scrollHeight;
   }
+}
+
+function addRawTransportLog(bytes, direction) {
+  if (!state.rawStream || bytes.length === 0) return;
+  const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
+  const api = state.connectionApi === "webusb-cdc" ? "WebUSB" : "Serial";
+  addLog(`RAW ${api} ${bytes.length} B · ${hex}`, direction, "normal", { rawTransport: true });
 }
 
 function littleEndianU32Bytes(value) {
@@ -536,6 +566,7 @@ function selectTransport(transport) {
 }
 
 function appendSerialData(chunk) {
+  addRawTransportLog(chunk, "incoming");
   if (state.transport === "usb-control") {
     appendControlData(chunk);
     return;
@@ -928,9 +959,27 @@ function commandRequestedVoltage(command) {
   return Number.isFinite(pdo?.maxMillivolts) ? pdo.maxMillivolts : "unknown-pdo";
 }
 
+async function writeTransport(bytes) {
+  if (state.connectionApi === "web-serial") {
+    if (!state.writer) throw new Error("The serial writer is unavailable.");
+    await state.writer.write(bytes);
+  } else if (state.connectionApi === "webusb-cdc") {
+    if (!state.port?.opened || state.usbOutEndpoint === null) {
+      throw new Error("The WebUSB CDC output endpoint is unavailable.");
+    }
+    const result = await state.port.transferOut(state.usbOutEndpoint, bytes);
+    if (result.status !== "ok" || result.bytesWritten !== bytes.length) {
+      throw new Error(`WebUSB write failed with status ${result.status}.`);
+    }
+  } else {
+    throw new Error("The USB transport is unavailable.");
+  }
+  addRawTransportLog(bytes, "outgoing");
+}
+
 async function sendCommand(command, { echo = true } = {}) {
   const trimmed = command.trim();
-  if (!state.connected || !state.writer) {
+  if (!state.connected || !state.connectionApi) {
     throw new Error("Connect the device first.");
   }
   if (!state.transport) {
@@ -954,13 +1003,15 @@ async function sendCommand(command, { echo = true } = {}) {
     state.ppsPollingPausedUntil = Date.now() + 2000;
   }
   try {
+    let bytes;
     if (state.transport === "usb-control") {
       const sequence = state.nextSequence;
       state.nextSequence = sequence === 0xff ? 1 : sequence + 1;
-      await state.writer.write(controlProtocol.encodeCommand(trimmed, sequence));
+      bytes = controlProtocol.encodeCommand(trimmed, sequence);
     } else {
-      await state.writer.write(encoder.encode(`${trimmed}\n`));
+      bytes = encoder.encode(`${trimmed}\n`);
     }
+    await writeTransport(bytes);
   } catch (error) {
     if (isPpsStatus) state.ppsQueryPending = false;
     throw error;
@@ -968,7 +1019,42 @@ async function sendCommand(command, { echo = true } = {}) {
   if (echo) addLog(trimmed, "outgoing");
 }
 
-async function readSerial() {
+function initializeConnectedTransport(api, id) {
+  state.connectionApi = api;
+  state.keepReading = true;
+  state.transport = null;
+  state.detectionBuffer.length = 0;
+  state.controlDecoder.reset();
+  state.textDecoder = new TextDecoder();
+  state.nextSequence = 1;
+  state.lineBuffer = "";
+  state.deviceUid = null;
+  state.deviceMaxVoltageMillivolts = null;
+  state.usbId = id;
+  setConnected(true);
+  clearDeviceState();
+  refreshDeviceDescription();
+  ui.portState.textContent = "Connected";
+  ui.portDetail.textContent = "Detecting compact control or text console";
+  addLog(`Connected through ${connectionApiLabel()} to ${id}`, "system");
+}
+
+function markTransportLost(message) {
+  if (message) addLog(message, "system", "error");
+  state.keepReading = false;
+  try {
+    state.writer?.releaseLock();
+  } catch (_) {
+    // A removed serial device may already have invalidated the writer.
+  }
+  state.writer = null;
+  state.port = null;
+  state.readTask = null;
+  setConnected(false);
+  clearDeviceState();
+}
+
+async function readWebSerial() {
   try {
     while (state.keepReading && state.port?.readable) {
       state.reader = state.port.readable.getReader();
@@ -984,19 +1070,153 @@ async function readSerial() {
       }
     }
   } catch (error) {
-    if (state.keepReading) {
-      addLog(`Serial connection lost: ${error.message}`, "system", "error");
+    if (state.keepReading) markTransportLost(`Web Serial connection lost: ${error.message}`);
+  }
+}
+
+async function readWebUsb() {
+  try {
+    while (state.keepReading && state.port?.opened && state.usbInEndpoint !== null) {
+      const result = await state.port.transferIn(state.usbInEndpoint, state.usbPacketSize);
+      if (result.status === "stall") {
+        await state.port.clearHalt("in", state.usbInEndpoint);
+        continue;
+      }
+      if (result.status !== "ok") throw new Error(`USB read status ${result.status}`);
+      if (result.data?.byteLength) {
+        const bytes = new Uint8Array(
+          result.data.buffer,
+          result.data.byteOffset,
+          result.data.byteLength,
+        );
+        appendSerialData(Uint8Array.from(bytes));
+      }
     }
-  } finally {
-    if (state.keepReading) {
-      state.keepReading = false;
-      state.writer?.releaseLock();
-      state.writer = null;
-      state.port = null;
-      setConnected(false);
-      clearDeviceState();
+  } catch (error) {
+    if (state.keepReading) markTransportLost(`WebUSB connection lost: ${error.message}`);
+  }
+}
+
+function findUsbInterface(configuration, classCode, subclassCode = null) {
+  for (const deviceInterface of configuration.interfaces) {
+    for (const alternate of deviceInterface.alternates) {
+      if (
+        alternate.interfaceClass === classCode
+        && (subclassCode === null || alternate.interfaceSubclass === subclassCode)
+      ) {
+        return { deviceInterface, alternate };
+      }
     }
   }
+  return null;
+}
+
+async function connectWebSerial() {
+  const port = await navigator.serial.requestPort();
+  state.port = port;
+  await port.open({ baudRate: 115200, bufferSize: 512 });
+  state.writer = port.writable.getWriter();
+  const info = port.getInfo();
+  const id = `VID ${formatUsbId(info.usbVendorId)} · PID ${formatUsbId(info.usbProductId)}`;
+  initializeConnectedTransport("web-serial", id);
+  state.readTask = readWebSerial();
+}
+
+async function connectWebUsb() {
+  const device = await navigator.usb.requestDevice({ filters: DEVELOPMENT_USB_FILTERS });
+  state.port = device;
+  await device.open();
+  if (!device.configuration) await device.selectConfiguration(1);
+
+  const communication = findUsbInterface(device.configuration, 0x02, 0x02);
+  const data = findUsbInterface(device.configuration, 0x0a);
+  if (!communication || !data) throw new Error("The selected device is not a CDC-ACM serial device.");
+
+  const interfaceNumbers = [
+    communication.deviceInterface.interfaceNumber,
+    data.deviceInterface.interfaceNumber,
+  ];
+  for (const interfaceNumber of interfaceNumbers) {
+    if (state.usbClaimedInterfaces.includes(interfaceNumber)) continue;
+    await device.claimInterface(interfaceNumber);
+    state.usbClaimedInterfaces.push(interfaceNumber);
+  }
+
+  if (data.alternate.alternateSetting !== data.deviceInterface.alternate.alternateSetting) {
+    await device.selectAlternateInterface(
+      data.deviceInterface.interfaceNumber,
+      data.alternate.alternateSetting,
+    );
+  }
+
+  const input = data.alternate.endpoints.find(
+    (endpoint) => endpoint.type === "bulk" && endpoint.direction === "in",
+  );
+  const output = data.alternate.endpoints.find(
+    (endpoint) => endpoint.type === "bulk" && endpoint.direction === "out",
+  );
+  if (!input || !output) throw new Error("The CDC data interface has no bulk input/output endpoint pair.");
+
+  const communicationNumber = communication.deviceInterface.interfaceNumber;
+  const lineCoding = Uint8Array.from([0x00, 0xc2, 0x01, 0x00, 0x00, 0x00, 0x08]);
+  const lineResult = await device.controlTransferOut({
+    requestType: "class",
+    recipient: "interface",
+    request: 0x20,
+    value: 0,
+    index: communicationNumber,
+  }, lineCoding);
+  if (lineResult.status !== "ok") throw new Error(`CDC line-coding request failed: ${lineResult.status}.`);
+
+  const readyResult = await device.controlTransferOut({
+    requestType: "class",
+    recipient: "interface",
+    request: 0x22,
+    value: 1,
+    index: communicationNumber,
+  });
+  if (readyResult.status !== "ok") throw new Error(`CDC ready request failed: ${readyResult.status}.`);
+
+  state.usbInEndpoint = input.endpointNumber;
+  state.usbOutEndpoint = output.endpointNumber;
+  state.usbPacketSize = input.packetSize || 64;
+  const id = `VID ${formatUsbId(device.vendorId)} · PID ${formatUsbId(device.productId)}`;
+  initializeConnectedTransport("webusb-cdc", id);
+  state.readTask = readWebUsb();
+}
+
+async function closeTransport() {
+  const api = state.connectionApi;
+  const port = state.port;
+  state.keepReading = false;
+
+  if (api === "web-serial") {
+    try {
+      await state.reader?.cancel();
+    } catch (_) {
+      // A disconnected USB device can reject cancellation.
+    }
+    try {
+      await state.readTask;
+    } catch (_) {
+      // The read loop reports its own serial errors.
+    }
+    try {
+      state.writer?.releaseLock();
+    } catch (_) {
+      // The browser may already have invalidated the stream.
+    }
+    state.writer = null;
+  }
+
+  try {
+    await port?.close();
+  } catch (_) {
+    // Physical removal can close the device before this path runs.
+  }
+
+  state.port = null;
+  state.readTask = null;
 }
 
 async function connectPort() {
@@ -1006,81 +1226,26 @@ async function connectPort() {
   }
 
   try {
-    const port = await navigator.serial.requestPort();
-    await port.open({ baudRate: 115200, bufferSize: 512 });
-    state.port = port;
-    state.writer = port.writable.getWriter();
-    state.keepReading = true;
-    state.transport = null;
-    state.detectionBuffer.length = 0;
-    state.controlDecoder.reset();
-    state.textDecoder = new TextDecoder();
-    state.nextSequence = 1;
-    state.lineBuffer = "";
-    state.deviceUid = null;
-    state.deviceMaxVoltageMillivolts = null;
-    setConnected(true);
-    clearDeviceState();
-
-    const info = port.getInfo();
-    const id = `VID ${formatUsbId(info.usbVendorId)} · PID ${formatUsbId(info.usbProductId)}`;
-    state.usbId = id;
-    refreshDeviceDescription();
-    ui.portState.textContent = "Connected";
-    ui.portDetail.textContent = "Detecting compact control or text console";
-    addLog(`Connected to ${id}`, "system");
-    state.readTask = readSerial();
+    if ("serial" in navigator) {
+      await connectWebSerial();
+    } else if ("usb" in navigator) {
+      await connectWebUsb();
+    } else {
+      throw new Error("This browser exposes neither Web Serial nor WebUSB.");
+    }
   } catch (error) {
     if (error.name !== "NotFoundError") {
       addLog(`Connection failed: ${error.message}`, "system", "error");
       setFeedback(error.message, true);
     }
-    state.keepReading = false;
-    try {
-      await state.reader?.cancel();
-    } catch (_) {
-      // A failed or removed USB device can reject cancellation.
-    }
-    try {
-      await state.readTask;
-    } catch (_) {
-      // The read loop reports its own serial errors.
-    }
-    state.writer?.releaseLock();
-    state.writer = null;
-    try {
-      await state.port?.close();
-    } catch (_) {
-      // The browser may already have closed a failed port.
-    }
-    state.port = null;
-    state.readTask = null;
+    await closeTransport();
     setConnected(false);
     clearDeviceState();
   }
 }
 
 async function disconnectPort() {
-  state.keepReading = false;
-  try {
-    await state.reader?.cancel();
-  } catch (_) {
-    // A disconnected USB device can reject cancellation.
-  }
-  try {
-    await state.readTask;
-  } catch (_) {
-    // The read loop reports its own serial errors.
-  }
-  state.writer?.releaseLock();
-  state.writer = null;
-  try {
-    await state.port?.close();
-  } catch (_) {
-    // Physical removal can close the port before this path runs.
-  }
-  state.port = null;
-  state.readTask = null;
+  await closeTransport();
   addLog("Disconnected", "system");
   setConnected(false);
   clearDeviceState();
@@ -1110,10 +1275,16 @@ ui.telemetryToggle.addEventListener("click", () => {
     ? "Live PPS telemetry started; only one source query can be in flight."
     : "Live PPS telemetry stopped. Mandatory PPS contract maintenance remains active.");
 });
+ui.condenseLog.addEventListener("click", () => {
+  state.condenseConsole = !state.condenseConsole;
+  ui.condenseLog.setAttribute("aria-pressed", String(state.condenseConsole));
+  ui.condenseLog.textContent = `Condense stream: ${state.condenseConsole ? "On" : "Off"}`;
+  renderConsole();
+});
 ui.rawLog.addEventListener("click", () => {
-  state.rawConsole = !state.rawConsole;
-  ui.rawLog.setAttribute("aria-pressed", String(state.rawConsole));
-  ui.rawLog.textContent = state.rawConsole ? "Show condensed stream" : "Show raw stream";
+  state.rawStream = !state.rawStream;
+  ui.rawLog.setAttribute("aria-pressed", String(state.rawStream));
+  ui.rawLog.textContent = `Raw stream: ${state.rawStream ? "On" : "Off"}`;
   renderConsole();
 });
 
@@ -1200,8 +1371,12 @@ ui.clearLog.addEventListener("click", () => {
   ui.terminal.replaceChildren();
 });
 
+function exportLogEntries() {
+  return state.log.filter((entry) => state.rawStream || !entry.rawTransport);
+}
+
 ui.copyLog.addEventListener("click", async () => {
-  const text = state.log.map((entry) => `${timeStamp(entry.time)} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
+  const text = exportLogEntries().map((entry) => `${timeStamp(entry.time)} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
   try {
     await navigator.clipboard.writeText(text);
     setFeedback("Console copied to the clipboard.");
@@ -1211,7 +1386,7 @@ ui.copyLog.addEventListener("click", async () => {
 });
 
 ui.saveLog.addEventListener("click", () => {
-  const text = state.log.map((entry) => `${entry.time.toISOString()} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
+  const text = exportLogEntries().map((entry) => `${entry.time.toISOString()} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
   const blob = new Blob([`${text}\n`], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
@@ -1220,19 +1395,33 @@ ui.saveLog.addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
 });
 
-if (!("serial" in navigator)) {
+if (!("serial" in navigator) && !("usb" in navigator)) {
   ui.browserNotice.classList.remove("hidden");
   ui.connectButton.disabled = true;
-} else {
+}
+
+if ("serial" in navigator) {
   navigator.serial.addEventListener("disconnect", (event) => {
-    if (event.target === state.port && state.connected) {
-      state.keepReading = false;
-      state.writer?.releaseLock();
-      state.writer = null;
-      state.port = null;
-      setConnected(false);
-      clearDeviceState();
-      addLog("USB device removed", "system", "error");
+    if (
+      state.connectionApi === "web-serial"
+      && event.target === state.port
+      && state.connected
+      && state.keepReading
+    ) {
+      markTransportLost("USB serial device removed");
+    }
+  });
+}
+
+if ("usb" in navigator) {
+  navigator.usb.addEventListener("disconnect", (event) => {
+    if (
+      state.connectionApi === "webusb-cdc"
+      && event.device === state.port
+      && state.connected
+      && state.keepReading
+    ) {
+      markTransportLost("WebUSB device removed");
     }
   });
 }
@@ -1241,4 +1430,4 @@ setConnected(false);
 clearDeviceState();
 updatePdoFields();
 updateActionAvailability();
-addLog("USB PD Control is ready. Connect a USB-control or development text-console device to begin.", "system");
+addLog("USB PD Control is ready. Connect a USB-control or development text-console device through Web Serial or WebUSB.", "system");
