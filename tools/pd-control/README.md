@@ -38,8 +38,9 @@ applications cannot own the device simultaneously.
 
 The deployment workflow is `.github/workflows/pages.yml`. GitHub Pages must
 use **GitHub Actions** as its publishing source; pushes that change this
-application on `main` or `codex/usb-control-protocol` then publish
-`tools/pd-control/` as the site artifact.
+application on `main` package the same HTML, CSS, and JavaScript into one
+hosted `index.html`. Keeping the hosted application to one request avoids
+repeated origin round trips on proxied custom domains.
 
 ## Interface
 
@@ -98,11 +99,13 @@ Node.js is not used to launch or operate the GUI.
 
 Current desktop Chrome/Edge expose Web Serial on Windows, macOS, Linux, and
 ChromeOS. Android Chrome does not expose Web Serial, so the page falls back to
-WebUSB and speaks CDC-ACM directly when the page is served over HTTPS. Android
-can normally claim CDC devices because the operating system does not include
-a general CDC-ACM API. Desktop Windows deliberately prefers Web Serial because
-its CDC driver already owns the interface; replacing that driver with WinUSB
-would make ordinary COM-port software less convenient.
+WebUSB and speaks CDC-ACM directly when the page is served over HTTPS. The
+Android path explicitly prefers WebUSB even if a browser exposes a partial or
+polyfilled `navigator.serial`. Android can normally claim CDC devices because
+the operating system does not include a general CDC-ACM API. Desktop Windows
+deliberately prefers Web Serial because its CDC driver already owns the
+interface; replacing that driver with WinUSB would make ordinary COM-port
+software less convenient.
 
 The current WebUSB selector matches the development VID `1A86` and PID `FE0C`.
 Replace those identifiers together with the firmware descriptors before a

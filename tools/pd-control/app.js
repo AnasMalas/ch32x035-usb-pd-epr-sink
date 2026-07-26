@@ -111,6 +111,7 @@ const ALLOWED_VOLTAGE_CEILINGS = new Set(controlProtocol.VOLTAGE_CEILINGS);
 const DEVELOPMENT_USB_FILTERS = Object.freeze([
   Object.freeze({ vendorId: 0x1a86, productId: 0xfe0c }),
 ]);
+const IS_ANDROID = /Android/i.test(navigator.userAgent);
 
 function setFeedback(message, isError = false) {
   ui.requestFeedback.textContent = message;
@@ -1253,7 +1254,12 @@ async function connectPort() {
   }
 
   try {
-    if ("serial" in navigator) {
+    if (IS_ANDROID) {
+      if (!("usb" in navigator)) {
+        throw new Error("This Android browser does not expose WebUSB. Use current Google Chrome.");
+      }
+      await connectWebUsb();
+    } else if ("serial" in navigator) {
       await connectWebSerial();
     } else if ("usb" in navigator) {
       await connectWebUsb();
@@ -1261,7 +1267,12 @@ async function connectPort() {
       throw new Error("This browser exposes neither Web Serial nor WebUSB.");
     }
   } catch (error) {
-    if (error.name !== "NotFoundError") {
+    if (error.name === "NotFoundError" && IS_ANDROID) {
+      const message =
+        "No matching WebUSB device was selected. Dismiss other Android USB-app prompts, reconnect the board through OTG, and try again.";
+      addLog(`Connection failed: ${message}`, "system", "error");
+      setFeedback(message, true);
+    } else if (error.name !== "NotFoundError") {
       addLog(`Connection failed: ${error.message}`, "system", "error");
       setFeedback(error.message, true);
     }
@@ -1441,10 +1452,14 @@ ui.terminal.addEventListener("copy", (event) => {
   event.preventDefault();
 });
 
-const androidRequiresHttps = /Android/i.test(navigator.userAgent) && location.protocol !== "https:";
+const androidRequiresHttps = IS_ANDROID && location.protocol !== "https:";
 if (androidRequiresHttps) {
   ui.browserNotice.textContent =
     "Android WebUSB requires this page to be served over HTTPS. The standalone local file supports desktop Chrome or Edge through Web Serial.";
+  ui.browserNotice.classList.remove("hidden");
+  ui.connectButton.disabled = true;
+} else if (IS_ANDROID && !("usb" in navigator)) {
+  ui.browserNotice.textContent = "This Android browser does not expose WebUSB. Use current Google Chrome.";
   ui.browserNotice.classList.remove("hidden");
   ui.connectButton.disabled = true;
 } else if (!("serial" in navigator) && !("usb" in navigator)) {
@@ -1483,6 +1498,8 @@ clearDeviceState();
 updatePdoFields();
 updateActionAvailability();
 addLog(
-  "USB PD Control is ready. Desktop standalone uses Web Serial; Android WebUSB requires an HTTPS-hosted page.",
+  IS_ANDROID
+    ? "USB PD Control is ready. Android transport is WebUSB CDC."
+    : "USB PD Control is ready. Desktop standalone prefers Web Serial.",
   "system",
 );

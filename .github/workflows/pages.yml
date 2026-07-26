@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/pages.yml"
+      - "scripts/package-gui.ps1"
       - "tools/pd-control/**"
   workflow_dispatch:
 
@@ -31,10 +32,16 @@ jobs:
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
+      - name: Package single-file control page
+        shell: pwsh
+        run: |
+          ./scripts/package-gui.ps1 -Output artifacts/pages/index.html
+          Copy-Item tools/pd-control/robots.txt artifacts/pages/robots.txt
+
       - name: Upload control page
         uses: actions/upload-pages-artifact@v4
         with:
-          path: tools/pd-control
+          path: artifacts/pages
 
       - name: Deploy
         id: deployment

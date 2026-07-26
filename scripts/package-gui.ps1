@@ -5,10 +5,10 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
-$source = Join-Path $workspace 'tools\pd-control'
+$source = Join-Path (Join-Path $workspace 'tools') 'pd-control'
 
 if ([string]::IsNullOrWhiteSpace($Output)) {
-    $Output = Join-Path $workspace 'artifacts\usb-pd-control.html'
+    $Output = Join-Path (Join-Path $workspace 'artifacts') 'usb-pd-control.html'
 }
 
 $index = [System.IO.File]::ReadAllText((Join-Path $source 'index.html'))
