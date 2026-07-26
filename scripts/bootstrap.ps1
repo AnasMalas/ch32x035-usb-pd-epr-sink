@@ -34,9 +34,9 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
     $artifactDirectory = Join-Path $workspace 'artifacts'
-    $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-example'
+    $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-reference'
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-    Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-example.elf') -Force
+    Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-reference.elf') -Force
 
     if ($InstallWchisp) {
         Write-Host 'Installing wchisp 0.3.0...'

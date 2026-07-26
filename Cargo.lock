@@ -104,7 +104,15 @@ dependencies = [
 ]
 
 [[package]]
-name = "ch32x035-usb-pd-epr-sink-example"
+name = "ch32x035-usb-pd-epr-sink-protocol-tests"
+version = "0.1.0"
+dependencies = [
+ "usbpd",
+ "usbpd-traits",
+]
+
+[[package]]
+name = "ch32x035-usb-pd-epr-sink-reference"
 version = "0.1.0"
 dependencies = [
  "ch32-hal",
@@ -116,14 +124,6 @@ dependencies = [
  "panic-halt",
  "qingke",
  "qingke-rt",
- "usbpd",
- "usbpd-traits",
-]
-
-[[package]]
-name = "ch32x035-usb-pd-epr-sink-protocol-tests"
-version = "0.1.0"
-dependencies = [
  "usbpd",
  "usbpd-traits",
 ]

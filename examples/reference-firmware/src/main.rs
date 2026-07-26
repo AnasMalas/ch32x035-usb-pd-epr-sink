@@ -1,5 +1,6 @@
 #![no_std]
 #![no_main]
+#![forbid(unsafe_code)]
 
 use core::cell::Cell;
 #[cfg(feature = "dev-text-console")]
@@ -27,7 +28,6 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use panic_halt as _;
-#[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 use pd_sink::PlanError;
 use pd_sink::{
     CapabilitiesKind, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError, CurrentConfidence,
@@ -43,13 +43,13 @@ use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
     HardResetCause,
 };
-#[cfg(feature = "bench-epr-fixed-48v")]
-use pd_sink::{Preference, UserRequest};
 use usbpd::sink::policy_engine::Sink;
 use usbpd::timers::Timer as SinkTimer;
 
 #[cfg(all(feature = "usb-control", feature = "dev-text-console"))]
 compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
+#[cfg(all(feature = "sdi-log", feature = "dev-text-console"))]
+compile_error!("sdi-log and dev-text-console are separate diagnostic outputs; select only one");
 
 static COMMANDS: Channel<CriticalSectionRawMutex, Command, 4> = Channel::new();
 
@@ -100,25 +100,11 @@ impl fmt::Write for ConsoleLine {
 #[cfg(feature = "dev-text-console")]
 static CONSOLE_LINES: Channel<CriticalSectionRawMutex, ConsoleLine, CONSOLE_QUEUE_DEPTH> = Channel::new();
 
-#[cfg(all(feature = "dev-text-console", not(feature = "sdi-log")))]
+#[cfg(feature = "dev-text-console")]
 fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
     let mut line = ConsoleLine::new();
     let _ = line.write_fmt(arguments);
     line.finish();
-    let _ = CONSOLE_LINES.try_send(line);
-}
-
-#[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
-fn enqueue_dual_log(arguments: fmt::Arguments<'_>) {
-    let mut line = ConsoleLine::new();
-    let _ = line.write_fmt(arguments);
-    line.finish();
-
-    // ConsoleLine is assembled only from fmt::Write UTF-8 strings plus CRLF,
-    // so this conversion cannot create invalid text. Formatting once avoids
-    // duplicating every formatter in the flash-constrained dual-log image.
-    let text = unsafe { core::str::from_utf8_unchecked(line.as_bytes()) };
-    let _ = hal::debug::SDIPrint.write_str(text);
     let _ = CONSOLE_LINES.try_send(line);
 }
 
@@ -260,24 +246,12 @@ fn device_info() -> DeviceInfo {
     }
 }
 
-#[cfg(feature = "bench-epr-fixed-48v")]
-#[embassy_executor::task]
-async fn bench_request_task() {
-    Timer::after_millis(2_000).await;
-
-    let request = UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed };
-
-    COMMANDS.send(Command::Request(request)).await;
-}
-
 macro_rules! logln {
     ($($arg:tt)*) => {{
-        #[cfg(all(feature = "sdi-log", not(feature = "dev-text-console")))]
+        #[cfg(feature = "sdi-log")]
         hal::println!($($arg)*);
-        #[cfg(all(feature = "dev-text-console", not(feature = "sdi-log")))]
+        #[cfg(feature = "dev-text-console")]
         enqueue_console_log(core::format_args!($($arg)*));
-        #[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
-        enqueue_dual_log(core::format_args!($($arg)*));
         #[cfg(not(any(feature = "sdi-log", feature = "dev-text-console")))]
         let _ = core::format_args!($($arg)*);
     }};
@@ -473,7 +447,6 @@ fn validity_name(validity: PdoValidity) -> &'static str {
     }
 }
 
-#[cfg(not(all(feature = "dev-text-console", feature = "sdi-log")))]
 fn log_controller_error(error: ControllerError) {
     let (reason, detail, extra) = match error {
         ControllerError::NoCapabilities(kind) => ("no-caps", kind as u32, 0),
@@ -500,11 +473,6 @@ fn log_controller_error(error: ControllerError) {
         },
     };
     logln!("Rejected {} detail={} extra={}", reason, detail, extra);
-}
-
-#[cfg(all(feature = "dev-text-console", feature = "sdi-log"))]
-fn log_controller_error(_error: ControllerError) {
-    logln!("Command rejected");
 }
 
 #[cfg(feature = "dev-text-console")]
@@ -1077,9 +1045,6 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
 async fn main(_spawner: Spawner) {
     #[cfg(feature = "sdi-log")]
     hal::debug::SDIPrint::enable();
-
-    #[cfg(feature = "bench-epr-fixed-48v")]
-    _spawner.spawn(bench_request_task().expect("bench command task allocation failed"));
 
     let config = hal::Config { rcc: hal::rcc::Config::SYSCLK_FREQ_48MHZ_HSI, ..Default::default() };
     let peripherals = hal::init(config);

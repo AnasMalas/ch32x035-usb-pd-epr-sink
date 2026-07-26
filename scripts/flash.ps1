@@ -7,9 +7,7 @@ param(
         'usb-pps',
         'usb-epr',
         'usb-epr-50v',
-        'usb-epr-text',
-        'usb-epr-dual-log',
-        'epr-fixed-48v'
+        'usb-epr-text'
     )]
     [string]$Profile = 'safe-5v',
 
@@ -30,7 +28,7 @@ if (-not (Get-Command wchisp -ErrorAction SilentlyContinue)) {
 }
 
 $firmwarePath = if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Join-Path $workspace "artifacts\ch32x035-usb-pd-epr-sink-example-$Profile.elf"
+    Join-Path $workspace "artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
 }
 else {
     Join-Path $workspace $Firmware

@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Firmware = 'artifacts\ch32x035-usb-pd-epr-sink-example.elf',
+    [string]$Firmware = 'artifacts\ch32x035-usb-pd-epr-sink-reference.elf',
     [ValidateRange(1, 1024)]
     [int]$FlashKiB = 62,
     [ValidateRange(1, 1024)]

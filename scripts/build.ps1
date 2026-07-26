@@ -6,9 +6,7 @@ param(
         'usb-pps',
         'usb-epr',
         'usb-epr-50v',
-        'usb-epr-text',
-        'usb-epr-dual-log',
-        'epr-fixed-48v'
+        'usb-epr-text'
     )]
     [string]$Profile = 'safe-5v'
 )
@@ -35,26 +33,24 @@ try {
         'usb-epr' { @('--no-default-features', '--features', 'usb-control,epr-capable-hardware') }
         'usb-epr-50v' { @('--no-default-features', '--features', 'usb-control,epr-50v-compatible-hardware') }
         'usb-epr-text' { @('--no-default-features', '--features', 'dev-text-console,epr-capable-hardware') }
-        'usb-epr-dual-log' { @('--features', 'dev-text-console,epr-capable-hardware') }
-        'epr-fixed-48v' { @('--features', 'bench-epr-fixed-48v') }
     }
 
-    $arguments = @('build', '-p', 'ch32x035-usb-pd-epr-sink-example', '--release', '--locked')
+    $arguments = @('build', '-p', 'ch32x035-usb-pd-epr-sink-reference', '--release', '--locked')
     $arguments += $profileArguments
 
     cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
     $artifactDirectory = Join-Path $workspace 'artifacts'
-    $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-example'
+    $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-reference'
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-example-$Profile.elf"
+    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
     Copy-Item -LiteralPath $builtFirmware -Destination $profileArtifact -Force
     & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact
     Write-Host "Built profile '$Profile': $profileArtifact"
     Write-Host "Flash it with: .\scripts\flash.ps1 -Profile $Profile"
     if ($Profile -eq 'safe-5v') {
-        Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-example.elf') -Force
+        Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-reference.elf') -Force
     }
 }
 finally {

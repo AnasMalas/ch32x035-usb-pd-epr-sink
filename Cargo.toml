@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/pd-sink", "examples/usb-console", "tests/protocol"]
+members = ["crates/pd-sink", "examples/reference-firmware", "tests/protocol"]
 exclude = ["vendor/ch32-hal", "vendor/usbpd", "vendor/usbpd-traits"]
 resolver = "2"
 
