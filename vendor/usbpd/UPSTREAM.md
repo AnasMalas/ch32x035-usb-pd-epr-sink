@@ -31,5 +31,7 @@ Local change groups:
    reasons, distinguish sent versus received Hard Reset, and provide bounded
    compatibility behavior for observed noncanonical source offers.
 
-Small generally applicable protocol corrections are candidates for later
-upstream submissions. Project-specific sink policy remains maintained here.
+The fork keeps generally applicable protocol corrections separable from
+project-specific sink policy so reusable fixes can be proposed upstream
+independently. Sink behavior documented by this repository remains maintained
+here.

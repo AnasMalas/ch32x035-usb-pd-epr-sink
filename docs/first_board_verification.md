@@ -84,8 +84,8 @@ a CDC COM port rather than the ROM bootloader. Find it with:
 ```
 
 If Windows does not enumerate it, capture the Device Manager error and a USB
-trace before changing PD code. The CDC layer currently uses development
-VID/PID `1A86:FE0C`.
+trace before changing PD code. The CDC layer uses development VID/PID
+`1A86:FE0C`.
 
 ## 4. Establish and inspect the safe contract
 
@@ -266,7 +266,7 @@ not a substitute for board overcurrent protection. Verify that the
 application-owned CL indicator is cleared on detach, Hard Reset, and protocol
 loss.
 
-## 9. Evidence to keep
+## 9. Reporting validation results
 
 For each source/cable pair, save:
 
@@ -285,6 +285,8 @@ For each source/cable pair, save:
 - USB enumeration identifiers and COM-port behavior;
 - firmware Git commit and build profile.
 
-Any reproducible failure should become a scripted host regression when it can
-be represented as PD messages. Register- or timing-specific failures belong in
-the CH32 HAL with a minimal analyzer/scope reproduction.
+A useful issue report includes the smallest complete trace, the source and
+cable identity, the firmware commit/profile, and the first point where observed
+behavior diverges from this procedure. Message-level reproductions can become
+scripted host regressions; register- or timing-specific failures need a minimal
+analyzer or scope reproduction for the CH32 HAL.

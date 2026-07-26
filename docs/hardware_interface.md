@@ -116,5 +116,5 @@ those ratings.
     repeat the protected test with `usb-epr-50v` only after establishing the
     source's actual maximum and the complete path's voltage margin.
 
-The detailed checklist and expected console transcript are in
+The detailed checklist and expected diagnostic transcript are in
 `first_board_verification.md`.

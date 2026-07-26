@@ -29,18 +29,33 @@ The application owns:
 
 ## Dependency
 
-During private review, consume the repository directly and enable the hardware
-adapter:
+Until a crates.io release is available, consume a reviewed checkout by path:
 
 ```toml
-[dependencies]
-pd-sink = { package = "ch32x035-usb-pd-epr-sink", git = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink", features = ["ch32x035"] }
+[dependencies.pd-sink]
+package = "ch32x035-usb-pd-epr-sink"
+path = "../ch32x035-usb-pd-epr-sink/crates/pd-sink"
+default-features = false
+features = ["ch32x035"]
 ```
 
-The repository currently carries maintained descendants of `usbpd`,
-`usbpd-traits`, and `ch32-hal`; no second copies should be added to an
-application. A crates.io release is intentionally deferred until those
-dependency arrangements and APIs are stable.
+Remote builds should pin a reviewed commit rather than follow a moving branch:
+
+```toml
+[dependencies.pd-sink]
+package = "ch32x035-usb-pd-epr-sink"
+git = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink"
+rev = "<reviewed commit SHA>"
+default-features = false
+features = ["ch32x035"]
+```
+
+This repository carries maintained descendants of `usbpd`, `usbpd-traits`,
+and `ch32-hal`. Applications that use those crates directly should align on
+the same versions: duplicate protocol or HAL crates increase firmware size and
+can bypass the fixes documented in each `vendor/*/UPSTREAM.md`. A crates.io
+release is deferred until the dependency arrangement and public APIs are
+stable.
 
 ## Application adapters
 

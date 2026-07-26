@@ -28,7 +28,7 @@ F8U6's linker map exposes a 62 KiB application region. Local repairs include a
 detach cancellation, and active-CC sampling at the 1.23 V comparator threshold
 for PD 3.x SinkTxOK.
 
-The product-specific USBFS module is intentionally compact: fixed endpoint 0
+The reference-firmware USBFS module is intentionally compact: fixed endpoint 0
 control, endpoint 1 notification, endpoint 2 bulk OUT, and endpoint 3 bulk IN.
 Control requests execute in the USB interrupt; application tasks exchange one
 64-byte packet at a time through reset-safe async wrappers.
@@ -91,8 +91,8 @@ SPR capabilities -> request 5 V -> PS_RDY -> Source_Info
 
 A Hard Reset invalidates the contract and holds the load off while the PHY
 actively listens through a fixed two-second source-recovery window, without
-requiring a PA6 edge. The product
-permits at most two automatic EPR entry attempts per physical attachment. If
+requiring a PA6 edge. The reference configuration permits at most two
+automatic EPR entry attempts per physical attachment. If
 the retry also fails, it remains usable in SPR and leaves further EPR retries
 to explicit user commands. Software-session restarts preserve this budget and
 use a bounded cooldown instead of creating a reset storm.
@@ -150,8 +150,8 @@ that fail to send the expected Alert.
   traces cover truncated and oversized frames, malformed chunks, and reserved
   EPR values through the real sink policy engine.
 - `scripts/check.ps1` builds every supported reference profile.
-- `docs/first_board_verification.md` turns first hardware observations into a
-  repeatable evidence checklist and future regression tests.
+- `docs/first_board_verification.md` defines reproducible hardware evidence and
+  regression criteria.
 
 Desktop tests prove decisions and bytes, not CH32 register behavior or analog
 timing. Those remain explicit first-board gates.

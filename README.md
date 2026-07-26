@@ -126,7 +126,7 @@ Both transports use the same CDC-ACM firmware.
 - [Interoperability](docs/charger_interoperability.md) — measured source
   behavior and the conservative policy used in response.
 
-## Evidence and remaining work
+## Validation status and scope
 
 Host tests cover request encoding, real policy-engine flows, malformed
 messages, PPS refresh, EPR keepalive, reset origin, and lifecycle recovery.
@@ -134,9 +134,10 @@ Physical CH32X035 testing has completed SPR, PPS, fixed 28/36/48 V, EPR AVS,
 long-running PPS refresh with telemetry, independent MCU restart recovery,
 desktop Web Serial, and Android WebUSB.
 
-The final product still needs a verified hardware load gate with real
-source-VBUS sensing, protected loaded EPR tests, replacement USB identifiers,
-and broader analyzer-backed interoperability testing.
+These results do not qualify a downstream product. Before deployment, an
+integrator must verify its hardware load gate and real source-VBUS sensing,
+perform protected loaded EPR tests, assign appropriate USB identifiers, and
+repeat interoperability testing against its supported sources and cables.
 
 ## Origins and licensing
 

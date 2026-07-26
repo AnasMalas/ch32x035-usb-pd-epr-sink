@@ -27,7 +27,7 @@ Local changes relevant to this project:
 7. gate unrelated USB driver modules by the peripheral selected for the target
    chip and make small warning-cleanup changes needed by the pinned toolchain.
 
-The product-independent RX/TX safety fixes and generally useful USB support are
-candidates for later upstream submissions. The public API of this descendant
-is supported only to the extent exercised by the CH32X035 sink and reference
-firmware in this repository.
+The fork keeps broadly reusable RX/TX and USB changes separable from
+sink-specific policy so they can be proposed upstream independently. The local
+public API is supported only to the extent exercised by the CH32X035 sink and
+reference firmware in this repository.

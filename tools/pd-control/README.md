@@ -1,6 +1,6 @@
 # USB PD Control
 
-USB PD Control is the product-facing browser interface for the sink firmware.
+USB PD Control is the reference browser interface for the sink firmware.
 It connects directly to the firmware's USB CDC interface. Desktop Chrome/Edge
 use Web Serial from the standalone file; Android Chrome uses a small WebUSB
 CDC-ACM transport from an HTTPS-hosted copy. There is no native bridge or Node
@@ -107,6 +107,6 @@ deliberately prefers Web Serial because its CDC driver already owns the
 interface; replacing that driver with WinUSB would make ordinary COM-port
 software less convenient.
 
-The current WebUSB selector matches the development VID `1A86` and PID `FE0C`.
-Replace those identifiers together with the firmware descriptors before a
-product release. No USB data leaves the browser.
+The bundled WebUSB selector matches the development VID `1A86` and PID
+`FE0C`. A downstream device using different USB descriptors must update the
+selector at the same time. No USB data leaves the browser.
