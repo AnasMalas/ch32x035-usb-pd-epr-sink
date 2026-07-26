@@ -16,7 +16,9 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = Split-Path -Parent $PSScriptRoot
+$example = Split-Path -Parent $PSScriptRoot
+$examples = Split-Path -Parent $example
+$workspace = Split-Path -Parent $examples
 $cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 
 if (-not (Get-Command wchisp -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $cargoBin 'wchisp.exe'))) {
@@ -24,11 +26,11 @@ if (-not (Get-Command wchisp -ErrorAction SilentlyContinue) -and (Test-Path -Lit
 }
 
 if (-not (Get-Command wchisp -ErrorAction SilentlyContinue)) {
-    throw 'wchisp is not installed. Run .\scripts\bootstrap.ps1 -InstallWchisp or install a prebuilt wchisp release.'
+    throw 'wchisp is not installed. Run .\examples\reference-firmware\scripts\install-wchisp.ps1 or install a prebuilt wchisp release.'
 }
 
 $firmwarePath = if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Join-Path $workspace "artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
+    Join-Path $examples "artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
 }
 else {
     Join-Path $workspace $Firmware
@@ -36,9 +38,9 @@ else {
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
     if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-        throw "Firmware profile '$Profile' not found at $firmwarePath. Run .\scripts\build.ps1 -Profile $Profile first."
+        throw "Firmware profile '$Profile' not found at $firmwarePath. Run .\examples\reference-firmware\scripts\build.ps1 -Profile $Profile first."
     }
-    throw "Firmware not found at $firmwarePath. Run .\scripts\build.ps1 first."
+    throw "Firmware not found at $firmwarePath. Run the reference firmware build script first."
 }
 
 $firmwareItem = Get-Item -LiteralPath $firmwarePath

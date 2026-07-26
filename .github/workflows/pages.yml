@@ -6,8 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/pages.yml"
-      - "scripts/package-gui.ps1"
-      - "tools/pd-control/**"
+      - "examples/pd-control/**"
   workflow_dispatch:
 
 permissions:
@@ -35,13 +34,13 @@ jobs:
       - name: Package single-file control page
         shell: pwsh
         run: |
-          ./scripts/package-gui.ps1 -Output artifacts/pages/index.html
-          Copy-Item tools/pd-control/robots.txt artifacts/pages/robots.txt
+          ./examples/pd-control/scripts/package.ps1 -Output examples/artifacts/pages/index.html
+          Copy-Item examples/pd-control/robots.txt examples/artifacts/pages/robots.txt
 
       - name: Upload control page
         uses: actions/upload-pages-artifact@v4
         with:
-          path: artifacts/pages
+          path: examples/artifacts/pages
 
       - name: Deploy
         id: deployment

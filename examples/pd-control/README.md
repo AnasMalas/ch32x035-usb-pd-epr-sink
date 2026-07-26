@@ -19,13 +19,14 @@ Flash `usb-epr` (preferred compact control) or `usb-epr-text` (development
 ASCII console), then run from the repository root:
 
 ```powershell
-.\scripts\gui.ps1
+.\examples\pd-control\scripts\launch.ps1
 ```
 
-The launcher builds `artifacts\usb-pd-control.html`, opens that local file,
-and exits immediately. Pass `-NoBrowser` to package the file without opening
-it, or `-Output <path>` to choose the destination. The generated page embeds
-all HTML, CSS, and JavaScript and needs no internet connection on desktop.
+The launcher builds `examples\artifacts\usb-pd-control.html`, opens that local
+file, and exits immediately. Pass `-NoBrowser` to package the file without
+opening it, or `-Output <path>` to choose the destination. The generated page
+embeds all HTML, CSS, and JavaScript and needs no internet connection on
+desktop.
 
 On desktop, select the CH32 CDC COM port in the Web Serial prompt. Android
 WebUSB requires a secure context, so copying and opening the local `file:` page
@@ -90,10 +91,37 @@ The pure browser protocol tests can optionally be run by contributors who have
 Node.js installed:
 
 ```powershell
-node .\tools\pd-control\protocol.test.js
+node .\examples\pd-control\protocol.test.js
 ```
 
 Node.js is not used to launch or operate the GUI.
+
+## Transport selection
+
+The page waits for device output before sending a command. A valid `PD`,
+version-1 frame selects compact `usb-control`; a complete printable line
+selects `dev-text-console`. For compact control, the browser encodes commands
+as typed frames and translates returned events. For development text, it sends
+and parses MCU ASCII directly, applying the same PDO and Status decoder where
+the firmware emits raw words.
+
+The standard reference `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
+`usb-epr-50v` profiles use compact control. `usb-epr-text` exists for ordinary
+serial terminals.
+
+## Reading diagnostic values
+
+- `RDO=0x...` is the exact 32-bit USB PD Request Data Object transmitted over
+  CC. It is not a console command.
+- `raw=0x...` on a PDO line is the exact 32-bit source advertisement before
+  decoding.
+- `RAW Serial` or `RAW WebUSB` is exact USB CDC host-transport data. It is not
+  a PD packet capture, and browser read chunks need not match USB packet
+  boundaries. The page retains the latest 1,000 chunks while Raw stream is off
+  and reveals them when it is enabled.
+- `Contract refresh confirmed` is a completed PPS maintenance Request. EPR
+  keepalive exchanges are more frequent and intentionally remain silent; a
+  failed exchange is visible as a Hard Reset with its cause.
 
 ## Browser support
 

@@ -148,4 +148,5 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 VBUS removal must turn the load path off without relying on the executor, the
-PD stack, or a functioning MCU. See [`hardware_interface.md`](hardware_interface.md).
+PD stack, or a functioning MCU. The reference implementation is documented in
+[`examples/reference-firmware/docs/hardware_interface.md`](../examples/reference-firmware/docs/hardware_interface.md).

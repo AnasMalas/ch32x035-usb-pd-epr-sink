@@ -5,7 +5,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$packageScript = Join-Path $PSScriptRoot 'package-gui.ps1'
+$packageScript = Join-Path $PSScriptRoot 'package.ps1'
 $page = & $packageScript -Output $Output
 
 Write-Host "USB PD Control was packaged as a standalone offline page:"

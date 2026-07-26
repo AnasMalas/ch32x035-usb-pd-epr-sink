@@ -47,8 +47,8 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 `VBUS_PRESENT` and `HARDWARE_OK` must disable the power path without working
-firmware. Read [the hardware interface](docs/hardware_interface.md) before
-adapting the reference firmware.
+firmware. Read [the reference hardware interface](examples/reference-firmware/docs/hardware_interface.md)
+before adapting the example.
 
 ## Project boundaries
 
@@ -58,9 +58,10 @@ adapting the reference firmware.
 | `vendor/usbpd*` | Maintained core dependency | PD protocol, policy engine, messages, counters, and timers |
 | `vendor/ch32-hal/` | Maintained hardware dependency | CH32 clocks, interrupts, USB-PD PHY, and USBFS CDC primitives |
 | `tests/protocol/` | Core verification | Scripted wire-level policy-engine tests |
-| `examples/reference-firmware/` | Reference application | Executor, PA6/PB12 policy, USB CDC ownership, SDI/text formatting, board profiles, and restart loop |
-| `tools/pd-control/` | Reference host tool | Desktop Web Serial and Android WebUSB interface |
-| `scripts/` | Project tooling | Checks, builds, flashing, size reporting, console, and GUI packaging |
+| `examples/reference-firmware/` | Reference device application | Executor, PA6/PB12 policy, USB CDC ownership, SDI/text formatting, board profiles, flashing, and board verification |
+| `examples/pd-control/` | Reference host application | Desktop Web Serial and Android WebUSB client for the compact control protocol |
+| `examples/artifacts/` | Generated example output | Ignored local ELF, HTML, map, and capture staging; only its README is tracked |
+| `scripts/` | Repository tooling | Workspace bootstrap, checks, and documentation-link validation |
 
 The core emits typed observations and load requests; it does not own a logger,
 USB endpoint, GUI, executor, LED, or board pin. SDI output and the development
@@ -72,14 +73,16 @@ On Windows, install Rust with [rustup](https://rustup.rs/) and Microsoft C++
 Build Tools, then run:
 
 ```powershell
-.\scripts\bootstrap.ps1 -InstallWchisp
+.\scripts\bootstrap.ps1
+.\examples\reference-firmware\scripts\install-wchisp.ps1
 .\scripts\check.ps1
-.\scripts\program.ps1 -Profile usb-epr
-.\scripts\gui.ps1
+.\examples\reference-firmware\scripts\program.ps1 -Profile usb-epr
+.\examples\pd-control\scripts\launch.ps1
 ```
 
-`program.ps1` builds and flashes the same selected profile. `flash.ps1` only
-flashes an existing artifact and prints its timestamp and SHA-256 first.
+The reference `program.ps1` builds and flashes the same selected profile.
+`flash.ps1` only flashes an existing artifact and prints its timestamp and
+SHA-256 first.
 
 The reference profiles are:
 
@@ -102,7 +105,7 @@ lines. `usb-epr-text` is retained for direct serial-terminal bring-up.
 The packaged desktop GUI is a single offline HTML file:
 
 ```powershell
-.\scripts\gui.ps1
+.\examples\pd-control\scripts\launch.ps1
 ```
 
 Desktop Chrome/Edge use Web Serial. Android Chrome uses WebUSB and therefore
@@ -116,13 +119,16 @@ Both transports use the same CDC-ACM firmware.
   crate.
 - [Architecture](docs/architecture.md) — maintainers changing layer
   boundaries or protocol behavior.
-- [Hardware interface](docs/hardware_interface.md) — schematic and safety
-  requirements.
-- [Hardware validation](docs/first_board_verification.md) — repeatable
+- [Reference hardware interface](examples/reference-firmware/docs/hardware_interface.md)
+  — schematic and safety requirements for the example.
+- [Reference hardware validation](examples/reference-firmware/docs/first_board_verification.md)
+  — repeatable
   bring-up and regression procedure.
 - [Control protocol](docs/control_protocol.md) — host and GUI implementers.
-- [Development environment](docs/development_environment.md) — contributors
-  building and flashing the reference firmware.
+- [Reference firmware](examples/reference-firmware/README.md) — contributors
+  building and flashing the device example.
+- [Browser control example](examples/pd-control/README.md) — desktop and
+  Android host-client users.
 - [Interoperability](docs/charger_interoperability.md) — measured source
   behavior and the conservative policy used in response.
 

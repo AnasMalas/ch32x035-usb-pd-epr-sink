@@ -1,6 +1,16 @@
-# Native CH32X035 development environment
+# CH32X035 reference firmware
 
-## Source of truth
+This example binds the reusable sink library to a concrete CH32X035F8U6
+application: PA6 source-VBUS sensing, PB12 load-enable policy, USB CDC or LinkE
+diagnostics, build profiles, and bounded restart behavior. None of those pins
+or transports are requirements of the core crate.
+
+Run the commands below from the repository root. Read the
+[hardware interface](docs/hardware_interface.md) and
+[first-board verification](docs/first_board_verification.md) before enabling
+PPS or EPR on a new board.
+
+## Reproducible build inputs
 
 The repository defines the complete build:
 
@@ -29,17 +39,19 @@ a tested toolchain change rather than by following a moving channel.
 5. Run:
 
 ```powershell
-.\scripts\bootstrap.ps1 -InstallWchisp
+.\scripts\bootstrap.ps1
+.\examples\reference-firmware\scripts\install-wchisp.ps1
 ```
 
-This installs the pinned Rust components, downloads locked dependencies,
-builds the host tests, and optionally installs the USB-ISP flasher.
+The workspace bootstrap activates the pinned Rust components, downloads locked
+dependencies, and builds the workspace. The example-specific installer adds
+the pinned USB-ISP flasher.
 
 ## Daily workflow
 
 ```powershell
 .\scripts\check.ps1
-.\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-safe-5v
 ```
 
 `check.ps1` runs formatting, warning-as-error Clippy for the host policy/test
@@ -51,16 +63,16 @@ caller sets `CARGO_TARGET_DIR`:
 <repository>\target
 ```
 
-Selected ELF files are copied to `artifacts/`.
+Selected ELF files are copied to `examples/artifacts/`.
 
 Useful interactive builds are:
 
 ```powershell
-.\scripts\build.ps1 -Profile usb-safe-5v
-.\scripts\build.ps1 -Profile usb-pps
-.\scripts\build.ps1 -Profile usb-epr
-.\scripts\build.ps1 -Profile usb-epr-50v
-.\scripts\build.ps1 -Profile usb-epr-text
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-pps
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-50v
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
 `usb-epr` is the normal compact binary control image. The opt-in
@@ -81,8 +93,8 @@ exclusive programs:
 Build and flash an explicit profile:
 
 ```powershell
-.\scripts\build.ps1 -Profile usb-epr
-.\scripts\flash.ps1 -Profile usb-epr
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-epr
 ```
 
 For an explicitly qualified 50 V compatibility path, substitute
@@ -93,7 +105,7 @@ For an explicitly qualified 50 V compatibility path, substitute
 and immediately program the same explicit profile in one command, use:
 
 ```powershell
-.\scripts\program.ps1 -Profile usb-epr
+.\examples\reference-firmware\scripts\program.ps1 -Profile usb-epr
 ```
 
 The lower-level `flash.ps1 -Firmware <path>` form remains available when an
@@ -104,27 +116,27 @@ packages one offline HTML file, speaks the compact protocol directly, and
 translates device events locally:
 
 ```powershell
-.\scripts\gui.ps1
+.\examples\pd-control\scripts\launch.ps1
 ```
 
-The launcher exits after opening `artifacts\usb-pd-control.html`; it does not
-leave a localhost server running. Use `-NoBrowser` to package only or `-Output`
-to choose a distributable destination.
+The launcher exits after opening `examples\artifacts\usb-pd-control.html`; it
+does not leave a localhost server running. Use `-NoBrowser` to package only or
+`-Output` to choose a distributable destination.
 
 For direct ASCII terminal work, build and flash `usb-epr-text`, then list and
 open the COM port:
 
 ```powershell
-.\scripts\build.ps1 -Profile usb-epr-text
-.\scripts\flash.ps1 -Profile usb-epr-text
-.\scripts\console.ps1 -List
-.\scripts\console.ps1 -Port COM7
+.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-text
+.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-epr-text
+.\examples\reference-firmware\scripts\console.ps1 -List
+.\examples\reference-firmware\scripts\console.ps1 -Port COM7
 ```
 
 For a scripted smoke test:
 
 ```powershell
-.\scripts\console.ps1 -Port COM7 -Send status,caps -ListenSeconds 5
+.\examples\reference-firmware\scripts\console.ps1 -Port COM7 -Send status,caps -ListenSeconds 5
 ```
 
 The baud-rate argument is conventional metadata for USB CDC; there is no UART
@@ -133,6 +145,16 @@ terminated by LF or CRLF. Type `help` for the complete command grammar.
 `console.ps1` is deliberately an ASCII pass-through terminal: it neither
 decodes nor translates the compact `usb-control` protocol. Use the browser GUI
 with the standard compact-control profiles.
+
+`usb-control` and `dev-text-console` are mutually exclusive USB application
+protocols. The text profile keeps human-readable formatting and a larger queue
+in firmware, so it omits the flash-heavy `plans` preview and the compact Hard
+Reset cause field. LinkE SDI is a separate diagnostic output, not part of
+either USB protocol.
+
+The text console reports a successful identical maintenance Request as one
+`Contract refresh confirmed` line. It cannot disable PPS maintenance because
+stopping those Requests would allow the Source to drop the PPS contract.
 
 USB logging is non-blocking with respect to the PD task. A disconnected or
 slow host may lose diagnostic lines, but it cannot stop negotiation or the

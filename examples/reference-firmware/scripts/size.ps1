@@ -1,6 +1,6 @@
 [CmdletBinding()]
 param(
-    [string]$Firmware = 'artifacts\ch32x035-usb-pd-epr-sink-reference.elf',
+    [string]$Firmware = 'ch32x035-usb-pd-epr-sink-reference.elf',
     [ValidateRange(1, 1024)]
     [int]$FlashKiB = 62,
     [ValidateRange(1, 1024)]
@@ -8,8 +8,10 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$workspace = Split-Path -Parent $PSScriptRoot
-$firmwarePath = if ([IO.Path]::IsPathRooted($Firmware)) { $Firmware } else { Join-Path $workspace $Firmware }
+$example = Split-Path -Parent $PSScriptRoot
+$examples = Split-Path -Parent $example
+$artifactDirectory = Join-Path $examples 'artifacts'
+$firmwarePath = if ([IO.Path]::IsPathRooted($Firmware)) { $Firmware } else { Join-Path $artifactDirectory $Firmware }
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
     throw "Firmware not found at $firmwarePath."
