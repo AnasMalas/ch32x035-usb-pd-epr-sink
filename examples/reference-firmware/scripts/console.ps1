@@ -9,7 +9,7 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
-$ports = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object)
+$ports = @([System.IO.Ports.SerialPort]::GetPortNames() | Sort-Object -Unique)
 
 if ($List) {
     if ($ports.Count -eq 0) {
