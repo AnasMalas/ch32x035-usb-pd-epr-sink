@@ -1,14 +1,21 @@
 # CH32X035 USB PD EPR Sink
 
+> [!CAUTION]
+> **Early development snapshot.** This repository is temporarily public to
+> support browser and Android hardware testing. APIs, USB identifiers,
+> behavior, and hardware assumptions may change without notice. It is not
+> USB-IF certified or ready for production use. USB-PD EPR can expose hardware
+> and loads to 48 V and high fault energy; use appropriately rated hardware,
+> independent protection, and an isolated test setup.
+
 Rust USB Power Delivery sink software for the WCH CH32X035. The project is
 aimed at user-configurable power sinks that need fixed SPR/EPR PDOs, PPS, EPR
 AVS, and an explicit report of the current permitted by the source, cable, and
 configured hardware limits.
 
-The repository is under private review while its application integration is
-being extracted into a stable library API. It is not yet a crates.io release,
-a USB-IF certified implementation, or a claim of complete specification
-compliance.
+The repository remains under engineering review while its application
+integration is extracted into a stable library API. It is not yet a crates.io
+release or a claim of complete specification compliance.
 
 ## Implemented behavior
 
