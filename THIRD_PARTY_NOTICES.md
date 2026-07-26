@@ -43,5 +43,5 @@ The upstream `usbpd` project states that its message parsing inherits code from
 
 The remaining Cargo dependencies are consumed without local source
 modification. `Cargo.lock` records their exact resolved versions for firmware
-and example builds. A generated complete dependency/license report will be
-added before the repository is made public.
+and reference-firmware builds. A generated complete dependency/license report
+remains a release gate before tagged binary distribution.

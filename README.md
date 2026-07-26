@@ -1,166 +1,149 @@
 # CH32X035 USB PD EPR Sink
 
 > [!CAUTION]
-> **Early development snapshot.** This repository is temporarily public to
-> support browser and Android hardware testing. APIs, USB identifiers,
-> behavior, and hardware assumptions may change without notice. It is not
-> USB-IF certified or ready for production use. USB-PD EPR can expose hardware
-> and loads to 48 V and high fault energy; use appropriately rated hardware,
+> **Early development snapshot.** APIs, USB identifiers, behavior, and
+> hardware assumptions may change without notice. This project is not USB-IF
+> certified or ready for production use. USB-PD EPR can expose hardware and
+> loads to 48 V and high fault energy; use appropriately rated hardware,
 > independent protection, and an isolated test setup.
 
-Rust USB Power Delivery sink software for the WCH CH32X035. The project is
-aimed at user-configurable power sinks that need fixed SPR/EPR PDOs, PPS, EPR
-AVS, and an explicit report of the current permitted by the source, cable, and
-configured hardware limits.
+A reusable Rust USB Power Delivery sink for the WCH CH32X035, plus a buildable
+reference firmware and browser control application. It supports fixed SPR/EPR
+PDOs, PPS, SPR AVS, and EPR AVS while reporting the current permitted by the
+source offer and configured board, cable, and power limits.
 
-The repository remains under engineering review while its application
-integration is extracted into a stable library API. It is not yet a crates.io
-release or a claim of complete specification compliance.
+The crate is still under API review and is not published to crates.io.
 
-## Implemented behavior
+## Supported behavior
 
 - Decode and validate all eleven SPR/EPR Source PDO positions.
 - Plan fixed, PPS, SPR AVS, and EPR AVS requests.
-- Encode exact 20 mV PPS requests from an advertised 3.3 V endpoint and exact
-  100 mV AVS requests through the standard 48 V limit.
-- Preserve explicitly selected, source-advertised EPR AVS compatibility ranges
-  from 5 V through 50 V without exposing them to normal automatic selection.
-- Enter and exit EPR mode, retrieve chunked EPR capabilities, and send EPR
-  keepalives.
-- Begin every attachment at fixed 5 V and discover capabilities without
-  automatically selecting a high voltage.
-- Report requested, source-advertised, and usable current plus the limiting
-  reason and confidence.
-- Query live PPS voltage/current/temperature and CV/CL regulator mode, decode
-  general Source Status, and follow Source Alert changes without disturbing
-  the active contract.
-- Handle SinkTxOK/SinkTxNG, Soft Reset, Hard Reset, detach, bounded retries,
-  source-owned AMS traffic, and tested real-source compatibility cases.
-- Expose a compact product-facing USB control protocol, an optional development
-  text console, and a static browser GUI that automatically supports either.
+- Preserve explicitly selected, source-advertised PPS endpoints from 3.3 V and
+  bounded EPR AVS compatibility ranges through nominal 50 V.
+- Enter and exit EPR mode, retrieve chunked EPR capabilities, and maintain PPS
+  and EPR contracts.
+- Start every attachment at fixed 5 V; high voltage requires an explicit
+  application or user request.
+- Report requested, source-advertised, and usable current, including the
+  limiting reason and confidence.
+- Query Source_Info, Source Status, PPS_Status, and follow Source Alerts.
+- Recover from SinkTxNG, Soft Reset, Hard Reset, detach, malformed traffic,
+  source-owned AMS traffic, and bounded retry failures.
 
-Battery and variable PDOs remain visible when advertised but are deliberately
-not requestable because they are outside this project's sink use case.
+Battery and variable source PDOs remain visible when advertised but are not
+requestable because they are outside this project's intended sink use case.
 
 ## Safety boundary
 
-Firmware negotiation does not make a board safe for 28-50 V. The complete
-connector, switch, FETs, discharge path, protection, spacing, measurement
-network, and load must be rated for the selected voltage and fault energy.
-The normal EPR profile remains capped at nominal 48 V; 50 V is a deliberate
-non-standard compatibility profile, not a new standards-valid EPR level.
+Successful negotiation does not make a board safe for EPR. The connector,
+switch, FETs, discharge path, protection, spacing, measurement network, and
+load must all be rated for the selected voltage and fault energy.
 
-The reference integration assumes a 3.3 V-safe `VBUS_PRESENT` input and a
+The reference firmware assumes a 3.3 V-safe `VBUS_PRESENT` input and a
 firmware `LOAD_ENABLE` output. The effective hardware gate must remain:
 
 ```text
 LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
-The VBUS and hardware-health terms must disable the power path without working
-firmware. See [`docs/hardware_interface.md`](docs/hardware_interface.md) before
+`VBUS_PRESENT` and `HARDWARE_OK` must disable the power path without working
+firmware. Read [the hardware interface](docs/hardware_interface.md) before
 adapting the reference firmware.
 
-## Repository layout
+## Project boundaries
 
-- `crates/pd-sink/` - the public `no_std` API: request planning, capability and
-  contract models, the reusable stack policy manager, and an optional
-  pin-agnostic CH32X035 PHY adapter.
-- `vendor/usbpd*` - the maintained protocol and policy-engine descendant.
-- `vendor/ch32-hal/` - the pinned CH32 HAL descendant with PD PHY repairs and
-  the compact USBFS CDC implementation.
-- `examples/usb-console/` - the complete hardware reference firmware and
-  interactive command surface.
-- `tests/protocol/` - host-scripted protocol, reset, PPS, EPR, and malformed
-  frame tests.
-- `tools/pd-control/` - optional browser GUI using standalone desktop Web
-  Serial or HTTPS-hosted Android WebUSB CDC.
-- `scripts/` - reproducible checks, profile builds, USB ISP flashing, serial
-  console, and standalone-GUI packaging.
-- `docs/` - publishable architecture, hardware contract, interoperability, and
-  validation material. USB-IF specifications and third-party datasheet files
-  are intentionally not redistributed.
+| Area | Role | Owns |
+|---|---|---|
+| `crates/pd-sink/` | Reusable core | PDO models, request planning, contracts, sink policy integration, typed commands/events, compact control framing, and optional pin-agnostic CH32 PHY integration |
+| `vendor/usbpd*` | Maintained core dependency | PD protocol, policy engine, messages, counters, and timers |
+| `vendor/ch32-hal/` | Maintained hardware dependency | CH32 clocks, interrupts, USB-PD PHY, and USBFS CDC primitives |
+| `tests/protocol/` | Core verification | Scripted wire-level policy-engine tests |
+| `examples/reference-firmware/` | Reference application | Executor, PA6/PB12 policy, USB CDC ownership, SDI/text formatting, board profiles, and restart loop |
+| `tools/pd-control/` | Reference host tool | Desktop Web Serial and Android WebUSB interface |
+| `scripts/` | Project tooling | Checks, builds, flashing, size reporting, console, and GUI packaging |
 
-## Development
+The core emits typed observations and load requests; it does not own a logger,
+USB endpoint, GUI, executor, LED, or board pin. SDI output and the development
+text console are properties of the reference application.
 
-The repository pins a dated Rust toolchain and all resolved dependencies.
-Docker is not required. On Windows, install Rust through
-[rustup](https://rustup.rs/) and Microsoft C++ Build Tools, then run:
+## Quick start
+
+On Windows, install Rust with [rustup](https://rustup.rs/) and Microsoft C++
+Build Tools, then run:
 
 ```powershell
-.\scripts\bootstrap.ps1
+.\scripts\bootstrap.ps1 -InstallWchisp
 .\scripts\check.ps1
-.\scripts\build.ps1 -Profile usb-epr
+.\scripts\program.ps1 -Profile usb-epr
+.\scripts\gui.ps1
 ```
 
-The interactive example always negotiates 5 V first. Its main commands include:
+`program.ps1` builds and flashes the same selected profile. `flash.ps1` only
+flashes an existing artifact and prints its timestamp and SHA-256 first.
 
-```text
-caps
-plans
-status
-source-status
-pps-status
-enter-epr
-request <millivolts> max pps
-request <millivolts> <milliamps> epr-avs
-request 48000 2000 fixed
-exit-epr
-```
+The reference profiles are:
 
-Launch the optional browser interface with:
+| Profile | Diagnostics/control | Hardware policy |
+|---|---|---|
+| `safe-5v` | LinkE SDI | fixed 5 V |
+| `usb-safe-5v` | compact USB control | fixed 5 V |
+| `usb-pps` | compact USB control | PPS through 21 V |
+| `usb-epr` | compact USB control | standard EPR through 48 V |
+| `usb-epr-50v` | compact USB control | explicit non-standard 50 V compatibility |
+| `usb-epr-text` | ASCII USB console | standard EPR through 48 V |
+
+These are board assertions, not software-only unlocks. Do not select a profile
+whose voltage, current, or power exceeds the complete hardware path.
+
+The normal USB profiles use the compact binary protocol. The browser turns
+typed events into readable capabilities, contracts, telemetry, and diagnostic
+lines. `usb-epr-text` is retained for direct serial-terminal bring-up.
+
+The packaged desktop GUI is a single offline HTML file:
 
 ```powershell
 .\scripts\gui.ps1
 ```
 
-This packages and opens `artifacts\usb-pd-control.html`, then exits; there is
-no local server to keep running. The single file is an offline desktop
-launcher: Chrome/Edge use the standard CDC COM port through Web Serial.
-Android Chrome has no Web Serial and WebUSB requires an HTTPS secure context,
-so use the GitHub Pages copy at
-`https://anasmalas.github.io/ch32x035-usb-pd-epr-sink/` after its first
-deployment. The source is exactly the same static application in
-`tools/pd-control/`; `.github/workflows/pages.yml` publishes it over HTTPS.
-WebUSB preserves the same CDC-ACM firmware, so ordinary serial software can
-still use the device when the browser releases it.
+Desktop Chrome/Edge use Web Serial. Android Chrome uses WebUSB and therefore
+needs the HTTPS copy at
+[anasmalas.com/ch32x035-usb-pd-epr-sink](https://anasmalas.com/ch32x035-usb-pd-epr-sink/).
+Both transports use the same CDC-ACM firmware.
 
-The normal `usb-safe-5v`, `usb-pps`, and `usb-epr` profiles use compact binary
-`usb-control`; the browser translates it into the readable interface and
-diagnostic stream. Use `usb-epr-text` only when a direct ASCII serial console
-is useful during development. The legacy `usb-console` Cargo feature remains a
-compatibility alias for `dev-text-console`.
+## Documentation
 
-`usb-epr-50v` is an opt-in compatibility profile for hardware explicitly
-rated beyond a non-standard nominal 50 V source request. It does not change
-normal AVS selection, which stays inside the source's 15-48 V standard
-intersection; use the compatibility preference or a direct PDO adjustment to
-reach a genuinely advertised value above 48 V.
+- [Integration](docs/integration.md) — application authors consuming the core
+  crate.
+- [Architecture](docs/architecture.md) — maintainers changing layer
+  boundaries or protocol behavior.
+- [Hardware interface](docs/hardware_interface.md) — schematic and safety
+  requirements.
+- [Hardware validation](docs/first_board_verification.md) — repeatable
+  bring-up and regression procedure.
+- [Control protocol](docs/control_protocol.md) — host and GUI implementers.
+- [Development environment](docs/development_environment.md) — contributors
+  building and flashing the reference firmware.
+- [Interoperability](docs/charger_interoperability.md) — measured source
+  behavior and the conservative policy used in response.
 
-For application integration, enable the crate's `ch32x035` feature, provide
-the small `SinkRuntime` and `Ch32x035Port` adapters, and keep the GPIO choices
-in your application. See [`docs/integration.md`](docs/integration.md). The
-reference firmware is a consumer of the same API; PA6 and PB12 are not fixed
-library requirements.
+## Evidence and remaining work
 
-## Current evidence and limitations
+Host tests cover request encoding, real policy-engine flows, malformed
+messages, PPS refresh, EPR keepalive, reset origin, and lifecycle recovery.
+Physical CH32X035 testing has completed SPR, PPS, fixed 28/36/48 V, EPR AVS,
+long-running PPS refresh with telemetry, independent MCU restart recovery,
+desktop Web Serial, and Android WebUSB.
 
-Host tests cover request encoding and the protocol flows represented in this
-repository. Physical CH32X035 hardware has completed SPR, PPS, 28 V EPR, and a
-fixed 48 V EPR contract with real chargers. Those tests established protocol
-interoperability; they did not validate a connected 48 V load path.
-
-Important remaining work includes stabilizing the new reusable runtime API,
-validating the intended hardware gate and detach behavior on the target board,
-replacing the development USB VID/PID before distribution, and expanding
-interoperability testing.
+The final product still needs a verified hardware load gate with real
+source-VBUS sensing, protected loaded EPR tests, replacement USB identifiers,
+and broader analyzer-backed interoperability testing.
 
 ## Origins and licensing
 
 Project-owned code is offered under either the MIT License or Apache License
 2.0. Maintained upstream descendants retain their original licensing and
-provenance. See [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md) and each
-`vendor/*/UPSTREAM.md` file.
+provenance. See [third-party notices](THIRD_PARTY_NOTICES.md) and each
+`vendor/*/UPSTREAM.md`.
 
-USB and USB-C are used descriptively. This project is not endorsed or certified
-by USB-IF and does not distribute USB-IF specification documents.
+USB and USB-C are used descriptively. This project is not endorsed or
+certified by USB-IF and does not redistribute USB-IF specification documents.

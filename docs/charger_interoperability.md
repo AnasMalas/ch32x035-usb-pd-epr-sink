@@ -1,45 +1,67 @@
-# Charger interoperability pass
+# Charger interoperability notes
 
-This is a focused pre-hardware review, not a claim of USB-IF certification or
-proof that an entire charger brand is non-compliant. Public reports often show
-a compatibility symptom without enough CC traffic to assign blame. The useful
-question for this product is whether common source behavior can leave the load
-at an unsafe voltage, hang the UI, or retain a stale current limit.
+These notes record source behavior that materially affects product policy.
+They are not a compliance verdict on a charger model or brand. Raw PDOs and
+analyzer traces take precedence over labels, ratings, and source-reported
+telemetry.
 
-## Documented behavior and our response
+## Policy derived from testing
 
-| Observed source behavior | Evidence | Firmware response | Regression evidence |
-|---|---|---|---|
-| Name-brand and proprietary sources advertise noncanonical PPS APDOs: Anker has shipped 4.5-11 V, AOHi 3.6-21 V, and Baseus 3.6-20 V with fields as high as 6.1 A. USB PD 3.2 Table 6.13 permits source minima of 5 V (or deprecated 3.3 V), maxima of 11/16/21 V, and at most 5 A | [Anker A83B3 analyzer result](https://www.chargerlab.com/teardown-of-anker-prime-14-in-1-docking-station-a83b3-black-myth-wukong-edition/), [AOHi AOC-C013 analyzer result](https://www.chargerlab.com/charging-review-of-aohi-65w-ultra-thin-gan-charger/), [Baseus E0307A analyzer result](https://www.chargerlab.com/teardown-of-baseus-100w-7-in-1-charging-station-e0307a/), and the [local USB-IF snapshot](usb-pd-specs/README.md) | A PPS offer outside the canonical values is labeled `compatible` and remains requestable only when its complete range is within 3.3-21 V and current is nonzero. Every request is still constrained to the advertised voltage range and capped to 5 A plus board, cable, and power limits. Values below 3.3 V, above 21 V, inverted, or zero-current remain malformed | `bounded_noncanonical_pps_offers_remain_requestable_and_are_capped_safely`, `unsafe_pps_ranges_remain_malformed_and_unrequestable`, and `direct_adjustable_requests_cannot_quantize_back_into_an_offer` |
-| An AOHI AOC-C022 280 W station advertised EPR AVS `0xd230328c` on a 140 W port: 5-28 V with 140 W PDP, while captures of its 240 W port show 15-48 V. A separate older bench observation measured about 50 V after requesting that advertised 48 V maximum | Local first-board captures and analyzer reports supplied during bring-up | A meter near 50 V does not by itself prove a nominal 50 V PDO: the standard 48 V level can be as high as 50.4 V at its positive tolerance. Normal EPR AVS and automatic planning use only the raw PDO's intersection with 15-48 V. `epr-avs-nonstandard` or direct PDO adjustment explicitly opts into a bounded advertised extension from 5 V through nominal 50 V; it never invents 50 V from a 48 V PDO. Requests remain bounded by the raw PDO, 5 A, board/cable/power limits, and an explicit sink voltage limit. Values below 5 V or above 50 V are malformed | `aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen_volts`, `advertised_fifty_volt_epr_avs_is_compatible_and_explicit`, `unsafe_epr_avs_extensions_remain_malformed`, and `nonstandard_epr_avs_requires_an_explicit_preference_before_epr_entry` |
-| The AOHI 240 W port advertised fixed 36 V at 3.88 A, fixed 48 V at 2.91 A, and EPR AVS `0xd7c0968c`; every value is approximately or explicitly 140 W even though the port is 240 W capable | Local physical trace supplied on 2026-07-26 | The reference profile was still sending 140 W as EPR Sink Operational PDP while only its Maximum PDP and request ceiling were 240 W. The raw source PDO correctly contains 140 W, so this was not a decoder error. The profile now reports 240 W consistently in EPR Mode Enter and Sink_Capabilities_Extended; physical confirmation that the AOHI then exposes its full list is pending | Configuration validation keeps EPR Enter and descriptor values equal; re-query the AOHI EPR list and verify AVS PDP `240000mW` |
-| The AOHI AOC-C022 240 W port can initially advertise only fixed 5 V with its EPR bit clear and 195 W present PDP, then replace that list with six SPR PDOs, the EPR bit set, and 240 W present PDP. It can also replace an expected EPR entry response with fresh SPR capabilities | Repeated local first-board captures on 2026-07-19 | A temporary non-EPR list does not consume an automatic EPR attempt. Fresh SPR capabilities after an interrupted entry synchronize the product controller back from `Entering` to SPR, where the bounded retry or explicit `enter-epr` command can proceed | `temporary_five_volt_caps_do_not_prevent_later_epr_discovery` and `fresh_spr_caps_rearm_discovery_after_interrupted_epr_entry` |
-| Working EPR negotiation with an Anker 140 W power bank and a UGREEN 500 W charger; the associated capture uses chunked Extended Control messages even for the two-byte EPR keep-alive payload | [`usbpd` EPR PR 39 test report](https://github.com/elagil/usbpd/pull/39#issuecomment-3629542596) and its capture-derived tests | Receive accepts chunked and unchunked short Extended Messages; transmit deliberately uses one chunk with `Chunked=1` | `epr_flow::short_epr_control_messages_use_the_capture_compatible_chunked_form` and the complete EPR flow |
-| Older chargers may ignore optional `Discover Identity`/MIPPS VDM traffic, causing a CH32 tester to remain in its optional discovery state | [0wQ CH32X035 tester issue 3](https://github.com/0wQ/CH32X035-PD-Tester/issues/3) | This product never starts VDM or alternate-mode discovery. Its optional `Get_Source_Info` query accepts `Not_Supported`, `Reject`, and `Wait`, and a timeout also returns to Ready without changing the explicit contract | `source_info_refusal_or_deferral_preserves_the_existing_contract` and `source_info_timeout_preserves_the_existing_contract` |
-| A UGREEN Nexode 2 100 W was measured taking roughly 40-50 ms to change a PPS voltage | [PD-PPS-Controller hardware report](https://github.com/Ueberspannung/PD-PPS-Controller) | A changed request disables the load until `PS_RDY`; an identical PPS maintenance request leaves it stable. `Reject` restores the previous contract, while `Wait` restores it temporarily and replans the deferred request after SinkRequestTimer without blocking source traffic | `contract_is_not_confirmed_until_ps_rdy_and_detach_clears_it`, `wait_replans_and_retries_the_deferred_request_after_servicing_source_traffic`, and PPS/EPR scripted flows |
-| Two local 48 V sources accepted a transition from fixed/AVS 48 V to a low-voltage Request and sent PS_RDY, after which the old trace reported a Sink Hard Reset; otherwise identical transitions from 28/36 V completed normally. Rearming the EPR keepalive from PS_RDY moved the event later, but the first detailed trace still labeled it `epr-keepalive-failed` | Local physical traces supplied on 2026-07-26 | A successful Request/PS_RDY exchange rearms the EPR keepalive deadline from completion. The keepalive response state had also collapsed a source-signaled Hard Reset into a new sink-sent reset; source Hard Reset, Soft Reset, and detach now propagate through the normal origin handling. A genuine missing/invalid keepalive ACK remains `epr-keepalive-failed`, so the next trace can distinguish a charger reset from an ACK failure | `successful_epr_power_transition_rearms_keep_alive_from_ps_rdy` and `source_hard_reset_while_waiting_for_keep_alive_ack_is_not_retransmitted`; physical 48 V down-transition retest pending |
-| A UGREEN Nexode Mini CD294 booted a directly connected appliance only 2 of 5 attempts, while a fixed PPS trigger cable worked | [firsthand R86S power-supply test](https://gist.github.com/hsakoh/d3e1fc2da70bddb2380dba56b90fab78) | Every attachment starts with the load gate low and requests fixed 5 V first. No previous high-voltage intent survives reconnect. This removes load-during-negotiation as a firmware cause, although the specific charger still needs board testing | controller reconnect tests and `first_board_verification.md` sections 4 and 6 |
-| Multi-port Anker and UGREEN chargers dynamically redistribute power; Anker documents that some models briefly interrupt charging when another device is connected or removed | [Anker 140 W allocation guide](https://service.anker.com/article-description/How-Power-is-Distributed-in-Anker-Charger-140W-Four-Port-PD-3-1), [Anker interruption FAQ](https://service.anker.com/article-description/Anker-Zolo-Charger-50W-4-Ports-FAQ), and [UGREEN dynamic-allocation product guide](https://www.ugreen.com/en-ae/products/ae-35540a) | New Source Capabilities invalidate an encoded pending request and are replanned. If the retained user request is no longer offered, it is cleared and the sink requests fixed 5 V. A VBUS interruption is a detach: load off immediately, contract/current information cleared, fresh 5 V startup | `changed_capabilities_clear_an_unavailable_request_and_fall_back_to_five_volts`, `detach_forgets_high_voltage_intent_and_returns_to_five_volts`, and lifecycle tests |
-| Seven local Sources showed materially different PPS current-limit behavior: some regulated continuously, one regulated for roughly 14 seconds before Hard Reset, some omitted voltage/current fields, and one reported CL with no load. Repeated condition-change Alerts were also observed while a Source oscillated around its limit | Local multi-source captures supplied during bring-up on 2026-07-25 | Requested PPS current is presented as a requested source limit, not a promise of indefinite bench-supply CC behavior. PPS_Status and general Status are labeled as source-reported. Hard Reset clears the contract and load request. The GUI can independently condense repeated telemetry/Alert lines and capture exact raw USB traffic | runtime Hard Reset tests, typed Status tests, and GUI protocol decoding |
-| A 240 W Source advertised 5 A and entered EPR with an EPR-marked cable, but advertised only 3 A and rejected EPR entry with an unmarked cable. A USB-C extension caused detach/PHY loss during EPR entry | Local 240 W Source captures supplied during bring-up on 2026-07-25 | Request planning obeys the reduced advertised current. Failed EPR entry is bounded and leaves SPR usable. PHY loss invalidates the contract and load request, then restarts after a cooldown. Cable or connector interruptions are never debounced as a live high-voltage contract | EPR-entry failure, bounded retry, detach, and protocol-loss tests |
-| Peer-reviewed fuzzing found widespread assumptions around malformed power negotiation: 15 of 24 tested PD products accepted a non-5 V first PDO, and a tested source-only Blechmeki charger accepted a Request with inverted operating/maximum current fields | [USENIX Security 2023, *Fuzz The Power*](https://www.usenix.org/conference/usenixsecurity23/presentation/kim-kyungtae) (case study and Tables 3/5) | Incoming capabilities must still begin with a fixed 5 V PDO or the policy engine hard-resets before product policy runs. Outgoing fixed RDOs always encode operating current at or below the maximum field; PPS/AVS use their single bounded operating-current field. Battery/variable source PDOs are retained for reporting but never selected | `real_policy_engine_hard_resets_an_invalid_mandatory_five_volt_pdo` and `fixed_rdo_never_inverts_operating_and_maximum_fields` |
+| Observed behavior | Firmware rule |
+|---|---|
+| Commercial PPS sources advertise bounded but noncanonical ranges, including 3.3/3.6/4.5 V minima and fields above 5 A | Preserve a complete offer only when it remains within 3.3-21 V and has nonzero current. Label it `compatible`, cap every request to 5 A and configured board limits, and never invent an endpoint |
+| Some EPR AVS offers extend below 15 V or to nominal 50 V | Normal selection uses only the 15-48 V standards-valid intersection. The complete 5-50 V bounded range requires explicit compatibility selection and a matching board limit |
+| Multi-port sources replace their capability table when another port or load changes | Discard an encoded pending request, retain user intent only if the new table can satisfy it, otherwise clear intent and request fixed 5 V |
+| Sources may initially advertise only 5 V, interrupt EPR entry with fresh SPR capabilities, or defer Sink traffic with SinkTxNG | Treat new capabilities as current truth, re-plan from them, preserve deferred commands, and bound automatic EPR attempts |
+| Optional Source_Info, Status, and PPS_Status fields are frequently unsupported or inconsistent | Display them as source-reported telemetry. Refusal, timeout, or malformed optional data must not invalidate an otherwise healthy contract |
+| PPS current-limit behavior varies from sustained regulation to a later Hard Reset | Requested current is a negotiated ceiling, not guaranteed electronic current limiting. Hardware overcurrent protection remains mandatory |
+| Poor, extended, or non-EPR-marked cables reduce advertised current, prevent EPR entry, or cause detach/PHY loss | Obey the reduced offer, bound recovery, turn the load off on protocol loss, and advise users to retry with a direct certified cable |
+| Some sources transition voltage slowly or answer a Request with `Wait` | Keep the load off for a changed operating point until `PS_RDY`; preserve an unchanged contract during `Wait` and retry only after SinkRequestTimer |
 
-## Result
+## AOHi AOC-C022 observations
 
-Two narrow interoperability exceptions are justified: bounded noncanonical PPS
-offers, and bounded EPR AVS offers outside 15-48 V but no higher than nominal
-50 V. The firmware retains and labels both. The EPR extension is not selected
-by default; its standard intersection remains available normally and any
-outside portion requires an explicit opt-in plus a sufficiently high sink
-limit. The other named reports are covered by conservative behavior already in
-the design, with explicit
-regressions for malformed capabilities/RDOs, optional-query refusal or silence,
-and the capture-compatible EPR Extended Message form. I did not find a
-trustworthy packet-level Mophie state-machine deviation in this quick pass; its
-documented 3.3-21 V PPS offer uses the deprecated-but-recognized 3.3 V endpoint
-and already works.
+The 140 W port and 240 W port have distinct tables:
 
-The remaining interoperability risk is physical and timing-specific: CC
-thresholds, source transition timing, cable behavior, and multi-port
-redistribution must be captured on the first board as described in
-`first_board_verification.md`.
+- The 140 W port ends at fixed 28 V/5 A and advertises an EPR AVS range through
+  28 V with 140 W PDP.
+- The 240 W port can advertise fixed 28/36/48 V at 5 A and EPR AVS through
+  48 V with 240 W PDP.
+
+The 240 W port has also produced a genuine 140 W-limited EPR table: fixed
+36 V/3.88 A, fixed 48 V/2.91 A, and raw AVS `0xd7c0968c` with 140 W PDP. A
+later explicit 5 A demand was followed by the full 240 W table, which then
+survived reconnects and MCU resets. Earlier firmware had declared a 140 W EPR
+Operational PDP; current firmware declares 240 W consistently in EPR Mode
+Enter and Sink Capabilities Extended. Whether the charger retained a
+per-port allocation or reacted to a capability-mismatch exchange has not yet
+been captured.
+
+AOHi Source_Info has reported internally inconsistent values such as
+`present=240 W`, `maximum=240 W`, and `reported=1 W`. The raw Source PDOs
+therefore remain authoritative for request planning.
+
+## Confirmed regressions
+
+- Five-second PPS refresh remains periodic while one-second PPS telemetry is
+  active.
+- Fixed/AVS 48 V can transition to PPS, fixed 20 V, and fixed 5 V without the
+  previous keepalive-related sink reset.
+- Independently restarting the MCU while CC and the source remain connected
+  recovers without the previous Hard Reset loop. A single resynchronizing Hard
+  Reset may still occur when the source retains an old contract.
+- A source-signaled Hard Reset remains labeled as received while the sink is
+  waiting for an EPR keepalive response.
+- Desktop Web Serial and Android WebUSB use the same compact CDC firmware.
+
+## Remaining evidence
+
+Capture the AOHi 240 W port from a completely discharged source state using
+current firmware, including the outgoing EPR Mode Enter object and the first
+EPR capability table. If the 140 W table returns, preserve the complete
+sequence around an explicit 5 A demand to distinguish a spontaneous update
+from a Capability Mismatch response.
+
+Hardware-specific failures should be retained as short raw traces and turned
+into host protocol regressions whenever they can be represented as PD
+messages. CC analog thresholds, VBUS timing, and power-path cutoff remain
+scope/analyzer tests.

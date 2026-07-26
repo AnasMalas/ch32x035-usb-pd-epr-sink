@@ -38,7 +38,7 @@ and text queues in RAM.
 The reusable framing and data model live in
 [`crates/pd-sink/src/control.rs`](../crates/pd-sink/src/control.rs). The USB CDC
 adapter is intentionally reference-firmware code in
-[`examples/usb-console/src/control_transport.rs`](../examples/usb-console/src/control_transport.rs),
+[`examples/reference-firmware/src/control_transport.rs`](../examples/reference-firmware/src/control_transport.rs),
 so an application can carry the same protocol over another packet transport.
 The library also emits typed `SinkEvent` values. Human-readable line formatting,
 the command prompt, USB ownership, and the executor are part of the reference
@@ -70,14 +70,13 @@ and the browser renders its descriptive name.
 
 `dev-text-console` retains the line-oriented ASCII protocol used during early
 bring-up. It is convenient with an ordinary serial terminal and includes the
-human-readable format strings and a larger log queue in firmware. The old
-`usb-console` feature is a compatibility alias for this feature.
+human-readable format strings and a larger log queue in firmware.
 The flash-heavy `plans` preview is available in the normal compact-control
 image, not in text-console profiles.
 
-Select only one application protocol in a firmware image. `usb-epr-dual-log`
-combines the development text console with SDI logging and is intended for
-diagnosis only.
+Select only one USB application protocol in a firmware image. LinkE SDI is a
+separate reference-application diagnostic output; it is not part of either
+wire protocol or the reusable library.
 
 ## Browser selection
 

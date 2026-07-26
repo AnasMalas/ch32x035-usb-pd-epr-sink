@@ -15,6 +15,8 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 
 Push-Location $workspace
 try {
+    & (Join-Path $PSScriptRoot 'check-docs.ps1')
+
     cargo fmt --all --check
     if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed with exit code $LASTEXITCODE" }
 

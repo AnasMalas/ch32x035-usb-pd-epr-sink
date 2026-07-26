@@ -30,11 +30,11 @@ all HTML, CSS, and JavaScript and needs no internet connection on desktop.
 On desktop, select the CH32 CDC COM port in the Web Serial prompt. Android
 WebUSB requires a secure context, so copying and opening the local `file:` page
 is not sufficient. After the Pages workflow has deployed, open
-`https://anasmalas.github.io/ch32x035-usb-pd-epr-sink/`, connect the board
-through USB OTG, and select it in Chrome's WebUSB prompt. The Android transport
-claims the CDC interfaces only while the page is connected. Other serial
-applications can use the same firmware after the page disconnects, but two
-applications cannot own the device simultaneously.
+[the hosted control page](https://anasmalas.com/ch32x035-usb-pd-epr-sink/),
+connect the board through USB OTG, and select it in Chrome's WebUSB prompt. The
+Android transport claims the CDC interfaces only while the page is connected.
+Other serial applications can use the same firmware after the page
+disconnects, but two applications cannot own the device simultaneously.
 
 The deployment workflow is `.github/workflows/pages.yml`. GitHub Pages must
 use **GitHub Actions** as its publishing source; pushes that change this

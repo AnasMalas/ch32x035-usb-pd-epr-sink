@@ -9,7 +9,7 @@ The repository defines the complete build:
 - the three `vendor/` crates contain the exact HAL/PD revisions plus local
   repairs;
 - `.cargo/config.toml` selects `riscv32imc-unknown-none-elf`;
-- `examples/usb-console/build.rs` supplies the CH32 linker arguments.
+- `examples/reference-firmware/build.rs` supplies the CH32 linker arguments.
 
 Docker is unnecessary. VS Code with rust-analyzer is a convenient editor, but
 the PowerShell scripts and Cargo files are the reproducible interface.
@@ -61,17 +61,14 @@ Useful interactive builds are:
 .\scripts\build.ps1 -Profile usb-epr
 .\scripts\build.ps1 -Profile usb-epr-50v
 .\scripts\build.ps1 -Profile usb-epr-text
-.\scripts\build.ps1 -Profile usb-epr-dual-log
 ```
 
-`usb-epr` is the normal compact binary control image. It uses 54,920 of 63,488
-flash bytes (8,568 free) and reserves 4,584 of 20,480 static RAM bytes. The
-opt-in `usb-epr-50v` compatibility image uses 54,928 flash bytes (8,560 free)
-and the same static RAM. It raises only the configured sink ceiling; normal AVS
-selection remains within 15-48 V. The development ASCII `usb-epr-text` image
-uses 62,136 flash bytes (1,352 free) and 7,656 static RAM bytes.
-`usb-epr-dual-log` sends human-readable logs over both CDC and SDI and remains
-a bring-up diagnostic rather than a primary user image.
+`usb-epr` is the normal compact binary control image. The opt-in
+`usb-epr-50v` image raises only the configured sink ceiling; normal AVS
+selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
+console for bring-up. Build output reports the current flash and static-RAM
+usage; do not copy size figures into documentation because they change with
+every compiler and feature update.
 
 ## USB ISP and runtime CDC
 
@@ -145,8 +142,7 @@ Treat either as a deliberate source change:
 1. change the exact version/revision or dated toolchain;
 2. update `Cargo.lock` if needed;
 3. run `scripts/check.ps1`;
-4. compare flash use for `usb-epr`, `usb-epr-50v`, `usb-epr-text`, and
-   `usb-epr-dual-log`;
+4. compare flash use for `usb-epr`, `usb-epr-50v`, and `usb-epr-text`;
 5. commit the lockfile/toolchain change with the code that required it.
 
 Do not point the project at moving Git branches or an unpinned nightly.

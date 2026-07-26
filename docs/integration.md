@@ -116,7 +116,7 @@ The application creates the CH32 PHY with its chosen CC pins, wraps it in
 `Ch32x035UsbPdDriver`, creates `SinkDevice`, and passes both to the maintained
 `usbpd::sink::policy_engine::Sink`. The application then runs the policy engine
 and applies its own bounded restart policy. See
-[`examples/usb-console/src/main.rs`](../examples/usb-console/src/main.rs) for a
+[`examples/reference-firmware/src/main.rs`](../examples/reference-firmware/src/main.rs) for a
 complete buildable consumer.
 
 Every physical attachment starts by requesting fixed 5 V and learning source

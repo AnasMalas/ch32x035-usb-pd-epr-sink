@@ -7,6 +7,17 @@ offer, select a fixed PDO, or ask for any in-range PPS/AVS voltage. The
 result reports the exact wire-encoded voltage and a conservative usable
 current derived from source and configured product limits.
 
+The repository has two intentional ownership domains:
+
+| Domain | Directories | Responsibility |
+|---|---|---|
+| Reusable core | `crates/pd-sink`, `vendor/usbpd*`, `vendor/ch32-hal`, `tests/protocol` | PD decisions, wire behavior, typed state, and optional pin-agnostic CH32 integration |
+| Reference application | `examples/reference-firmware`, `tools/pd-control`, `scripts` | Board pins, executor, USB/SDI transports, human formatting, GUI, build profiles, and flashing |
+
+The reference application may demonstrate a policy without making that policy
+a library requirement. In particular, PA6, PB12, USB CDC, LinkE SDI, and the
+browser are not owned by the core crate.
+
 ## Layer boundaries
 
 ### CH32 hardware layer
@@ -98,11 +109,11 @@ load-safety input.
 
 ### Diagnostics and commands
 
-Messages are produced independently of transport. Builds can select LinkE
-SDI, native USB CDC, both, or neither. USB output uses a bounded non-blocking
-32-line queue sized to retain a complete 11-PDO planning report, so a missing
-or slow host cannot block PD or safety work. USB input and delayed bench tasks
-feed the same typed four-entry command queue.
+The library produces typed `SinkEvent` observations independently of
+transport. The reference firmware can route them through compact USB control,
+the development ASCII console, LinkE SDI, or no diagnostic output. Compact
+USB uses typed packets; text and SDI formatting lives only in the example. A
+missing or slow host cannot block PD or safety work.
 
 In the normal compact USB-control image, `plans` dry-runs `Demand::Maximum`
 against every current PDO and reports either the exact encoded voltage, usable
@@ -138,7 +149,7 @@ that fail to send the expected Alert.
   maintenance uses the same DPM/contract path as user requests. Adversarial
   traces cover truncated and oversized frames, malformed chunks, and reserved
   EPR values through the real sink policy engine.
-- `scripts/check.ps1` builds every runtime and bench feature combination.
+- `scripts/check.ps1` builds every supported reference profile.
 - `docs/first_board_verification.md` turns first hardware observations into a
   repeatable evidence checklist and future regression tests.
 
