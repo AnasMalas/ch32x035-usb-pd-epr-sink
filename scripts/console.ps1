@@ -43,6 +43,7 @@ $serial.WriteTimeout = 1000
 try {
     $serial.Open()
     Write-Host "Connected to $Port."
+    Write-Host 'ASCII pass-through only; requires dev-text-console firmware. Use the browser GUI for compact usb-control.'
 
     if ($Send.Count -gt 0) {
         foreach ($line in $Send) {

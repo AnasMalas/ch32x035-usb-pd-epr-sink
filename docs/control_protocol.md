@@ -74,6 +74,12 @@ human-readable format strings and a larger log queue in firmware.
 The flash-heavy `plans` preview is available in the normal compact-control
 image, not in text-console profiles.
 
+[`scripts/console.ps1`](../scripts/console.ps1) is intentionally a thin ASCII
+serial terminal for this profile. It does not frame, decode, or translate
+`usb-control`; keeping the compact decoder in the browser avoids maintaining a
+second host implementation in PowerShell. Use the browser GUI for compact
+firmware.
+
 Select only one USB application protocol in a firmware image. LinkE SDI is a
 separate reference-application diagnostic output; it is not part of either
 wire protocol or the reusable library.
@@ -98,7 +104,7 @@ The text firmware emits raw PDO and Status words where that saves target flash;
 the browser applies the same decoder used for compact binary events, so both
 transports present the same table and telemetry.
 
-The production `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
+The standard reference `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
 `usb-epr-50v` profiles use `usb-control`. Use `usb-epr-text` for a
 conventional serial terminal.
 

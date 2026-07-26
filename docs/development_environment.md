@@ -130,6 +130,9 @@ For a scripted smoke test:
 The baud-rate argument is conventional metadata for USB CDC; there is no UART
 baud clock in the data path. The development text firmware accepts ASCII lines
 terminated by LF or CRLF. Type `help` for the complete command grammar.
+`console.ps1` is deliberately an ASCII pass-through terminal: it neither
+decodes nor translates the compact `usb-control` protocol. Use the browser GUI
+with the standard compact-control profiles.
 
 USB logging is non-blocking with respect to the PD task. A disconnected or
 slow host may lose diagnostic lines, but it cannot stop negotiation or the
