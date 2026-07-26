@@ -1,6 +1,6 @@
 # Generated example artifacts
 
-The reference scripts place local build outputs here:
+The two example applications place local build outputs here:
 
 - `ch32x035-usb-pd-epr-sink-reference-<profile>.elf` from the firmware build;
 - `usb-pd-control.html` from the browser-client packager; and

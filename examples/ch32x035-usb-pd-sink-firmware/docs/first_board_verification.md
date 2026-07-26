@@ -67,20 +67,20 @@ for every later EPR test.
 Build the runtime image:
 
 ```powershell
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
 ```
 
 Enter the factory USB ISP boot mode and flash:
 
 ```powershell
-.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-safe-5v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-safe-5v
 ```
 
 Leave ISP mode and reset normally. The same D+/D- pins should now enumerate as
 a CDC COM port rather than the ROM bootloader. Find it with:
 
 ```powershell
-.\examples\reference-firmware\scripts\console.ps1 -List
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\console.ps1 -List
 ```
 
 If Windows does not enumerate it, capture the Device Manager error and a USB
@@ -93,7 +93,7 @@ Start the local GUI, connect the CDC device in the browser, then attach an
 ordinary PD source:
 
 ```powershell
-.\examples\pd-control\scripts\launch.ps1
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
 ```
 
 Expected ordering is:
@@ -204,8 +204,8 @@ rated for the configured EPR limits, or while using the isolated protocol
 fixture above where source VBUS has no electrical path to the board or a load:
 
 ```powershell
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr
-.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-epr
 ```
 
 Use `usb-epr-50v` instead only for a deliberate compatibility test on a path

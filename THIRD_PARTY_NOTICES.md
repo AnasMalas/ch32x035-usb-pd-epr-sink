@@ -44,5 +44,5 @@ The upstream `usbpd` project states that its message parsing inherits code from
 
 The remaining Cargo dependencies are consumed without local source
 modification. `Cargo.lock` records their exact resolved versions for firmware
-and reference-firmware builds. A tagged binary release should also include a
+and reference firmware builds. A tagged binary release should also include a
 generated complete dependency and license report.

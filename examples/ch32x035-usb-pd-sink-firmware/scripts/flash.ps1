@@ -26,11 +26,11 @@ if (-not (Get-Command wchisp -ErrorAction SilentlyContinue) -and (Test-Path -Lit
 }
 
 if (-not (Get-Command wchisp -ErrorAction SilentlyContinue)) {
-    throw 'wchisp is not installed. Run .\examples\reference-firmware\scripts\install-wchisp.ps1 or install a prebuilt wchisp release.'
+    throw 'wchisp is not installed. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\install-wchisp.ps1 or install a prebuilt wchisp release.'
 }
 
 $firmwarePath = if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Join-Path $examples "artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
+    Join-Path $examples "generated-artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
 }
 else {
     Join-Path $workspace $Firmware
@@ -38,7 +38,7 @@ else {
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
     if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-        throw "Firmware profile '$Profile' not found at $firmwarePath. Run .\examples\reference-firmware\scripts\build.ps1 -Profile $Profile first."
+        throw "Firmware profile '$Profile' not found at $firmwarePath. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile $Profile first."
     }
     throw "Firmware not found at $firmwarePath. Run the reference firmware build script first."
 }

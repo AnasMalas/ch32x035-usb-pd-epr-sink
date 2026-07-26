@@ -1,6 +1,6 @@
-# USB PD Control
+# Browser USB-PD sink control client example
 
-USB PD Control is the reference browser interface for the sink firmware.
+USB-PD Sink Control is the example browser interface for the sink firmware.
 It connects directly to the firmware's USB CDC interface. Desktop Chrome/Edge
 use Web Serial from the standalone file; Android Chrome uses a small WebUSB
 CDC-ACM transport from an HTTPS-hosted copy. There is no native bridge or Node
@@ -19,14 +19,14 @@ Flash `usb-epr` (preferred compact control) or `usb-epr-text` (development
 ASCII console), then run from the repository root:
 
 ```powershell
-.\examples\pd-control\scripts\launch.ps1
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
 ```
 
-The launcher builds `examples\artifacts\usb-pd-control.html`, opens that local
-file, and exits immediately. Pass `-NoBrowser` to package the file without
-opening it, or `-Output <path>` to choose the destination. The generated page
-embeds all HTML, CSS, and JavaScript and needs no internet connection on
-desktop.
+The launcher builds `examples\generated-artifacts\usb-pd-control.html`, opens
+that local file, and exits immediately. Pass `-NoBrowser` to package the file
+without opening it, or `-Output <path>` to choose the destination. The
+generated page embeds all HTML, CSS, and JavaScript and needs no internet
+connection on desktop.
 
 On desktop, select the CH32 CDC COM port in the Web Serial prompt. Android
 WebUSB requires a secure context, so copying and opening the local `file:` page
@@ -91,7 +91,7 @@ The pure browser protocol tests can optionally be run by contributors who have
 Node.js installed:
 
 ```powershell
-node .\examples\pd-control\protocol.test.js
+node .\examples\browser-usb-pd-control-client\protocol.test.js
 ```
 
 Node.js is not used to launch or operate the GUI.

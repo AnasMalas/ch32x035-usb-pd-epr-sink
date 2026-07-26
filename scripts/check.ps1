@@ -57,7 +57,7 @@ try {
 
     $guiCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) "usb-pd-control-$([guid]::NewGuid().ToString('N')).html"
     try {
-        $packageGui = Join-Path $workspace 'examples\pd-control\scripts\package.ps1'
+        $packageGui = Join-Path $workspace 'examples\browser-usb-pd-control-client\scripts\package.ps1'
         $packagedGui = & $packageGui -Output $guiCheckPath
         $gui = [System.IO.File]::ReadAllText($packagedGui)
         foreach ($required in @(
@@ -87,7 +87,7 @@ try {
     }
 
     if (Get-Command node -ErrorAction SilentlyContinue) {
-        node examples/pd-control/protocol.test.js
+        node examples/browser-usb-pd-control-client/protocol.test.js
         if ($LASTEXITCODE -ne 0) { throw "browser protocol tests failed with exit code $LASTEXITCODE" }
     }
     else {

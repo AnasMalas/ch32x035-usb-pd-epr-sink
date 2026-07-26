@@ -12,7 +12,8 @@ The repository has two intentional ownership domains:
 | Domain | Directories | Responsibility |
 |---|---|---|
 | Reusable core | `crates/pd-sink`, `vendor/usbpd*`, `vendor/ch32-hal`, `tests/protocol` | PD decisions, wire behavior, typed state, and optional pin-agnostic CH32 integration |
-| Reference applications | `examples/reference-firmware`, `examples/pd-control` | Board pins, executor, USB/SDI transports, human formatting, GUI, build profiles, and flashing |
+| Embedded firmware example | `examples/ch32x035-usb-pd-sink-firmware` | Board pins, executor, USB/SDI transports, human formatting, build profiles, and flashing |
+| Browser host-client example | `examples/browser-usb-pd-control-client` | Desktop Web Serial, Android WebUSB, controls, tables, and host-side diagnostic formatting |
 
 The reference application may demonstrate a policy without making that policy
 a library requirement. In particular, PA6, PB12, USB CDC, LinkE SDI, and the
@@ -28,7 +29,7 @@ F8U6's linker map exposes a 62 KiB application region. Local repairs include a
 detach cancellation, and active-CC sampling at the 1.23 V comparator threshold
 for PD 3.x SinkTxOK.
 
-The reference-firmware USBFS module is intentionally compact: fixed endpoint 0
+The embedded firmware example's USBFS module is intentionally compact: fixed endpoint 0
 control, endpoint 1 notification, endpoint 2 bulk OUT, and endpoint 3 bulk IN.
 Control requests execute in the USB interrupt; application tasks exchange one
 64-byte packet at a time through reset-safe async wrappers.
@@ -103,7 +104,7 @@ The reference application's supervisor owns PA6 attach/detach and PB12 load
 enable; neither pin is selected by the library. Its invariant is that reset,
 detach, protocol loss, or an unconfirmed transition leaves the load off. The
 separate hardware gate documented in
-[`examples/reference-firmware/docs/hardware_interface.md`](../examples/reference-firmware/docs/hardware_interface.md)
+[`examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md`](../examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md)
 remains the primary fast cutoff. PA6 is not required to pulse for protocol
 recovery after Hard Reset;
 this keeps the isolated always-high fixture usable while preserving PA6 as a
@@ -152,7 +153,8 @@ that fail to send the expected Alert.
   traces cover truncated and oversized frames, malformed chunks, and reserved
   EPR values through the real sink policy engine.
 - `scripts/check.ps1` builds every supported reference profile.
-- `examples/reference-firmware/docs/first_board_verification.md` defines
+- `examples/ch32x035-usb-pd-sink-firmware/docs/first_board_verification.md`
+  defines
   reproducible hardware evidence and regression criteria for the example.
 
 Desktop tests prove decisions and bytes, not CH32 register behavior or analog

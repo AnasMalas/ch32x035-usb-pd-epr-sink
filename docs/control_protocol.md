@@ -58,10 +58,11 @@ label its cause as unspecified. The cause codes are:
 
 Reference implementations are kept with the examples:
 
-- [`examples/reference-firmware/src/control_transport.rs`](../examples/reference-firmware/src/control_transport.rs)
+- [`examples/ch32x035-usb-pd-sink-firmware/src/control_transport.rs`](../examples/ch32x035-usb-pd-sink-firmware/src/control_transport.rs)
   carries compact frames over USB CDC.
-- [`examples/pd-control/`](../examples/pd-control/) is a browser host that
+- [`examples/browser-usb-pd-control-client/`](../examples/browser-usb-pd-control-client/)
+  is a browser host that
   translates typed frames into controls, tables, and diagnostic lines.
 - The reference firmware's optional ASCII console is a separate application
   protocol documented in its
-  [`README`](../examples/reference-firmware/README.md).
+  [`README`](../examples/ch32x035-usb-pd-sink-firmware/README.md).

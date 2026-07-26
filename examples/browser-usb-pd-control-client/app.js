@@ -1499,7 +1499,7 @@ updatePdoFields();
 updateActionAvailability();
 addLog(
   IS_ANDROID
-    ? "USB PD Control is ready. Android transport is WebUSB CDC."
-    : "USB PD Control is ready. Desktop standalone prefers Web Serial.",
+    ? "USB-PD Sink Control is ready. Android transport is WebUSB CDC."
+    : "USB-PD Sink Control is ready. Desktop standalone prefers Web Serial.",
   "system",
 );

@@ -47,7 +47,7 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 `VBUS_PRESENT` and `HARDWARE_OK` must disable the power path without working
-firmware. Read [the reference hardware interface](examples/reference-firmware/docs/hardware_interface.md)
+firmware. Read [the reference hardware interface](examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md)
 before adapting the example.
 
 ## Project boundaries
@@ -58,9 +58,9 @@ before adapting the example.
 | `vendor/usbpd*` | Maintained core dependency | PD protocol, policy engine, messages, counters, and timers |
 | `vendor/ch32-hal/` | Maintained hardware dependency | CH32 clocks, interrupts, USB-PD PHY, and USBFS CDC primitives |
 | `tests/protocol/` | Core verification | Scripted wire-level policy-engine tests |
-| `examples/reference-firmware/` | Reference device application | Executor, PA6/PB12 policy, USB CDC ownership, SDI/text formatting, board profiles, flashing, and board verification |
-| `examples/pd-control/` | Reference host application | Desktop Web Serial and Android WebUSB client for the compact control protocol |
-| `examples/artifacts/` | Generated example output | Ignored local ELF, HTML, map, and capture staging; only its README is tracked |
+| `examples/ch32x035-usb-pd-sink-firmware/` | Embedded sink firmware example | CH32X035 executor, PA6/PB12 policy, USB CDC ownership, SDI/text formatting, board profiles, flashing, and board verification |
+| `examples/browser-usb-pd-control-client/` | Browser host-client example | Desktop Web Serial and Android WebUSB client for the compact control protocol |
+| `examples/generated-artifacts/` | Generated example output | Ignored local ELF, HTML, map, and capture staging; only its README is tracked |
 | `scripts/` | Repository tooling | Workspace bootstrap, checks, and documentation-link validation |
 
 The core emits typed observations and load requests; it does not own a logger,
@@ -74,10 +74,10 @@ Build Tools, then run:
 
 ```powershell
 .\scripts\bootstrap.ps1
-.\examples\reference-firmware\scripts\install-wchisp.ps1
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\install-wchisp.ps1
 .\scripts\check.ps1
-.\examples\reference-firmware\scripts\program.ps1 -Profile usb-epr
-.\examples\pd-control\scripts\launch.ps1
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\program.ps1 -Profile usb-epr
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
 ```
 
 The reference `program.ps1` builds and flashes the same selected profile.
@@ -105,7 +105,7 @@ lines. `usb-epr-text` is retained for direct serial-terminal bring-up.
 The packaged desktop GUI is a single offline HTML file:
 
 ```powershell
-.\examples\pd-control\scripts\launch.ps1
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
 ```
 
 Desktop Chrome/Edge use Web Serial. Android Chrome uses WebUSB and therefore
@@ -119,15 +119,15 @@ Both transports use the same CDC-ACM firmware.
   crate.
 - [Architecture](docs/architecture.md) — maintainers changing layer
   boundaries or protocol behavior.
-- [Reference hardware interface](examples/reference-firmware/docs/hardware_interface.md)
+- [Reference hardware interface](examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md)
   — schematic and safety requirements for the example.
-- [Reference hardware validation](examples/reference-firmware/docs/first_board_verification.md)
+- [Reference hardware validation](examples/ch32x035-usb-pd-sink-firmware/docs/first_board_verification.md)
   — repeatable
   bring-up and regression procedure.
 - [Control protocol](docs/control_protocol.md) — host and GUI implementers.
-- [Reference firmware](examples/reference-firmware/README.md) — contributors
+- [CH32X035 sink firmware example](examples/ch32x035-usb-pd-sink-firmware/README.md) — contributors
   building and flashing the device example.
-- [Browser control example](examples/pd-control/README.md) — desktop and
+- [Browser control-client example](examples/browser-usb-pd-control-client/README.md) — desktop and
   Android host-client users.
 - [Interoperability](docs/charger_interoperability.md) — measured source
   behavior and the conservative policy used in response.

@@ -1,4 +1,4 @@
-# CH32X035 reference firmware
+# CH32X035 USB-PD sink firmware example
 
 This example binds the reusable sink library to a concrete CH32X035F8U6
 application: PA6 source-VBUS sensing, PB12 load-enable policy, USB CDC or LinkE
@@ -19,7 +19,8 @@ The repository defines the complete build:
 - the three `vendor/` crates contain the exact HAL/PD revisions plus local
   repairs;
 - `.cargo/config.toml` selects `riscv32imc-unknown-none-elf`;
-- `examples/reference-firmware/build.rs` supplies the CH32 linker arguments.
+- `examples/ch32x035-usb-pd-sink-firmware/build.rs` supplies the CH32 linker
+  arguments.
 
 Docker is unnecessary. VS Code with rust-analyzer is a convenient editor, but
 the PowerShell scripts and Cargo files are the reproducible interface.
@@ -40,7 +41,7 @@ a tested toolchain change rather than by following a moving channel.
 
 ```powershell
 .\scripts\bootstrap.ps1
-.\examples\reference-firmware\scripts\install-wchisp.ps1
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\install-wchisp.ps1
 ```
 
 The workspace bootstrap activates the pinned Rust components, downloads locked
@@ -51,7 +52,7 @@ the pinned USB-ISP flasher.
 
 ```powershell
 .\scripts\check.ps1
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
 ```
 
 `check.ps1` runs formatting, warning-as-error Clippy for the host policy/test
@@ -63,16 +64,16 @@ caller sets `CARGO_TARGET_DIR`:
 <repository>\target
 ```
 
-Selected ELF files are copied to `examples/artifacts/`.
+Selected ELF files are copied to `examples/generated-artifacts/`.
 
 Useful interactive builds are:
 
 ```powershell
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-safe-5v
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-pps
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-50v
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-text
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
 `usb-epr` is the normal compact binary control image. The opt-in
@@ -93,8 +94,8 @@ exclusive programs:
 Build and flash an explicit profile:
 
 ```powershell
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr
-.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-epr
 ```
 
 For an explicitly qualified 50 V compatibility path, substitute
@@ -105,7 +106,7 @@ For an explicitly qualified 50 V compatibility path, substitute
 and immediately program the same explicit profile in one command, use:
 
 ```powershell
-.\examples\reference-firmware\scripts\program.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\program.ps1 -Profile usb-epr
 ```
 
 The lower-level `flash.ps1 -Firmware <path>` form remains available when an
@@ -116,27 +117,28 @@ packages one offline HTML file, speaks the compact protocol directly, and
 translates device events locally:
 
 ```powershell
-.\examples\pd-control\scripts\launch.ps1
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
 ```
 
-The launcher exits after opening `examples\artifacts\usb-pd-control.html`; it
-does not leave a localhost server running. Use `-NoBrowser` to package only or
-`-Output` to choose a distributable destination.
+The launcher exits after opening
+`examples\generated-artifacts\usb-pd-control.html`; it does not leave a
+localhost server running. Use `-NoBrowser` to package only or `-Output` to
+choose a distributable destination.
 
 For direct ASCII terminal work, build and flash `usb-epr-text`, then list and
 open the COM port:
 
 ```powershell
-.\examples\reference-firmware\scripts\build.ps1 -Profile usb-epr-text
-.\examples\reference-firmware\scripts\flash.ps1 -Profile usb-epr-text
-.\examples\reference-firmware\scripts\console.ps1 -List
-.\examples\reference-firmware\scripts\console.ps1 -Port COM7
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-epr-text
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\console.ps1 -List
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\console.ps1 -Port COM7
 ```
 
 For a scripted smoke test:
 
 ```powershell
-.\examples\reference-firmware\scripts\console.ps1 -Port COM7 -Send status,caps -ListenSeconds 5
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\console.ps1 -Port COM7 -Send status,caps -ListenSeconds 5
 ```
 
 The baud-rate argument is conventional metadata for USB CDC; there is no UART

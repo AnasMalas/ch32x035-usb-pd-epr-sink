@@ -43,14 +43,14 @@ try {
     cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
 
-    $artifactDirectory = Join-Path $examples 'artifacts'
+    $artifactDirectory = Join-Path $examples 'generated-artifacts'
     $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-reference'
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
     $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
     Copy-Item -LiteralPath $builtFirmware -Destination $profileArtifact -Force
     & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact
     Write-Host "Built profile '$Profile': $profileArtifact"
-    Write-Host "Flash it with: .\examples\reference-firmware\scripts\flash.ps1 -Profile $Profile"
+    Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile"
     if ($Profile -eq 'safe-5v') {
         Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-reference.elf') -Force
     }

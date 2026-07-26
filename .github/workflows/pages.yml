@@ -6,7 +6,7 @@ on:
       - main
     paths:
       - ".github/workflows/pages.yml"
-      - "examples/pd-control/**"
+      - "examples/browser-usb-pd-control-client/**"
   workflow_dispatch:
 
 permissions:
@@ -34,13 +34,13 @@ jobs:
       - name: Package single-file control page
         shell: pwsh
         run: |
-          ./examples/pd-control/scripts/package.ps1 -Output examples/artifacts/pages/index.html
-          Copy-Item examples/pd-control/robots.txt examples/artifacts/pages/robots.txt
+          ./examples/browser-usb-pd-control-client/scripts/package.ps1 -Output examples/generated-artifacts/pages/index.html
+          Copy-Item examples/browser-usb-pd-control-client/robots.txt examples/generated-artifacts/pages/robots.txt
 
       - name: Upload control page
         uses: actions/upload-pages-artifact@v4
         with:
-          path: examples/artifacts/pages
+          path: examples/generated-artifacts/pages
 
       - name: Deploy
         id: deployment

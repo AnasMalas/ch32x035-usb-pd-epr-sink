@@ -8,7 +8,7 @@ $ErrorActionPreference = 'Stop'
 $packageScript = Join-Path $PSScriptRoot 'package.ps1'
 $page = & $packageScript -Output $Output
 
-Write-Host "USB PD Control was packaged as a standalone offline page:"
+Write-Host "USB-PD Sink Control was packaged as a standalone offline page:"
 Write-Host $page
 
 if (-not $NoBrowser) {

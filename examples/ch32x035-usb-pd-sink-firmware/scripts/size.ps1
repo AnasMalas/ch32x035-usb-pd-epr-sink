@@ -10,7 +10,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $example = Split-Path -Parent $PSScriptRoot
 $examples = Split-Path -Parent $example
-$artifactDirectory = Join-Path $examples 'artifacts'
+$artifactDirectory = Join-Path $examples 'generated-artifacts'
 $firmwarePath = if ([IO.Path]::IsPathRooted($Firmware)) { $Firmware } else { Join-Path $artifactDirectory $Firmware }
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {

@@ -8,7 +8,7 @@ $source = Split-Path -Parent $PSScriptRoot
 $examples = Split-Path -Parent $source
 
 if ([string]::IsNullOrWhiteSpace($Output)) {
-    $Output = Join-Path (Join-Path $examples 'artifacts') 'usb-pd-control.html'
+    $Output = Join-Path (Join-Path $examples 'generated-artifacts') 'usb-pd-control.html'
 }
 
 $index = [System.IO.File]::ReadAllText((Join-Path $source 'index.html'))

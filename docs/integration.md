@@ -131,8 +131,8 @@ The application creates the CH32 PHY with its chosen CC pins, wraps it in
 `Ch32x035UsbPdDriver`, creates `SinkDevice`, and passes both to the maintained
 `usbpd::sink::policy_engine::Sink`. The application then runs the policy engine
 and applies its own bounded restart policy. See
-[`examples/reference-firmware/src/main.rs`](../examples/reference-firmware/src/main.rs) for a
-complete buildable consumer.
+[`examples/ch32x035-usb-pd-sink-firmware/src/main.rs`](../examples/ch32x035-usb-pd-sink-firmware/src/main.rs)
+for a complete buildable consumer.
 
 Every physical attachment starts by requesting fixed 5 V and learning source
 capabilities. A high voltage is not selected until an explicit request or the
@@ -149,4 +149,4 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 
 VBUS removal must turn the load path off without relying on the executor, the
 PD stack, or a functioning MCU. The reference implementation is documented in
-[`examples/reference-firmware/docs/hardware_interface.md`](../examples/reference-firmware/docs/hardware_interface.md).
+[`examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md`](../examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md).
