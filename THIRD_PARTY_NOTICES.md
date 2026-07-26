@@ -1,9 +1,10 @@
 # Third-party notices
 
-This project contains maintained descendants of the following open-source
-projects. Their licenses permit modification and redistribution; attribution
-and the applicable license texts are retained here and in the vendored source
-directories.
+`LICENSE-MIT` and `LICENSE-APACHE` cover project-owned code. This project also
+contains maintained descendants of the following open-source projects.
+Upstream license texts remain with vendored source when provided; the
+`licenses/` directory contains terms and attribution records for inherited
+code whose retained upstream tree did not include a standalone license text.
 
 ## ch32-hal
 
@@ -12,8 +13,8 @@ directories.
 - Copyright: Copyright (c) 2023 Andelf
 - License: MIT OR Apache-2.0
 - Local record: [`vendor/ch32-hal/UPSTREAM.md`](vendor/ch32-hal/UPSTREAM.md)
-- License texts: [`licenses/ch32-hal-MIT.txt`](licenses/ch32-hal-MIT.txt) and
-  [`licenses/ch32-hal-APACHE-2.0.txt`](licenses/ch32-hal-APACHE-2.0.txt)
+- License texts: [`vendor/ch32-hal/LICENSE-MIT`](vendor/ch32-hal/LICENSE-MIT)
+  and [`vendor/ch32-hal/LICENSE-APACHE`](vendor/ch32-hal/LICENSE-APACHE)
 
 ## usbpd and usbpd-traits
 
@@ -26,9 +27,9 @@ directories.
 - License text: [`licenses/usbpd-MIT.txt`](licenses/usbpd-MIT.txt)
 
 The pinned upstream repository did not contain a repository-level license file.
-Before a public release, this project will seek upstream clarification and will
-continue preserving the manifest declaration, author metadata, provenance, and
-MIT terms in the meantime.
+This repository therefore preserves the package-manifest declaration, author
+metadata, provenance, and MIT terms. Upstream clarification remains a gate for
+a tagged binary release.
 
 ## usb-pd-rs
 
@@ -43,5 +44,5 @@ The upstream `usbpd` project states that its message parsing inherits code from
 
 The remaining Cargo dependencies are consumed without local source
 modification. `Cargo.lock` records their exact resolved versions for firmware
-and reference-firmware builds. A generated complete dependency/license report
-remains a release gate before tagged binary distribution.
+and reference-firmware builds. A tagged binary release should also include a
+generated complete dependency and license report.
