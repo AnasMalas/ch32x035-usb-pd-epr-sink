@@ -104,6 +104,33 @@ pub enum HardResetOrigin {
     Sink,
 }
 
+/// Policy-engine condition that caused a Hard Reset.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+#[repr(u8)]
+pub enum HardResetReason {
+    /// Detailed reason tracking is disabled in this build.
+    Unspecified = 255,
+    /// Hard Reset Signaling was received from the Source.
+    SourceSignaled = 0,
+    /// Source capabilities were malformed or incompatible with the current mode.
+    InvalidSourceCapabilities = 1,
+    /// A Soft Reset could not be transmitted successfully.
+    SoftResetFailed = 2,
+    /// Source_Capabilities did not arrive before SinkWaitCapTimer expired.
+    SourceCapabilitiesTimeout = 3,
+    /// The Source did not respond to a Request before SenderResponseTimer expired.
+    RequestResponseTimeout = 4,
+    /// A protocol error occurred while VBUS was transitioning after an accepted Request.
+    PowerTransitionFailure = 5,
+    /// EPR entry succeeded but EPR_Source_Capabilities did not arrive in time.
+    EprCapabilitiesTimeout = 6,
+    /// The EPR state sequence became incompatible with the active contract or received data.
+    EprProtocolError = 7,
+    /// EPR_KeepAlive could not be completed successfully.
+    EprKeepAliveFailed = 8,
+}
+
 /// Trait for the device policy manager.
 ///
 /// This entity commands the policy engine and enforces device policy.
@@ -181,6 +208,13 @@ pub trait DevicePolicyManager {
     /// The device should immediately reset its local power state, prepare for
     /// VBUS to return to vSafe5V, and return promptly so the Protocol Layer can
     /// receive during the recovery interval below.
+    #[cfg(feature = "hard-reset-reasons")]
+    fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) -> impl Future<Output = ()> {
+        async {}
+    }
+
+    #[cfg(not(feature = "hard-reset-reasons"))]
+    /// Notify the device of a Hard Reset without retaining a detailed cause.
     fn hard_reset(&mut self, _origin: HardResetOrigin) -> impl Future<Output = ()> {
         async {}
     }

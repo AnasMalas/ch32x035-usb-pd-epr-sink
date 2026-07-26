@@ -25,11 +25,21 @@
 }
 
 html {
-  min-width: 320px;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-x: clip;
   scroll-behavior: smooth;
 }
 
 body {
+  position: relative;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+  overflow-x: hidden;
+  overflow-x: clip;
   margin: 0;
   color: var(--ink);
   background:
@@ -40,6 +50,8 @@ body {
 button,
 input,
 select {
+  min-width: 0;
+  max-width: 100%;
   font: inherit;
 }
 
@@ -58,6 +70,8 @@ select:disabled {
   position: sticky;
   z-index: 20;
   top: 0;
+  width: 100%;
+  max-width: 100%;
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -71,6 +85,7 @@ select:disabled {
 
 .brand {
   display: inline-flex;
+  min-width: 0;
   gap: 12px;
   align-items: center;
   color: inherit;
@@ -137,6 +152,8 @@ select:disabled {
 }
 
 .page-shell {
+  min-width: 0;
+  max-width: 100%;
   width: min(1240px, calc(100% - 40px));
   margin: 30px auto 56px;
 }
@@ -150,6 +167,7 @@ select:disabled {
 }
 
 .panel {
+  min-width: 0;
   padding: 24px;
 }
 
@@ -666,8 +684,12 @@ select:focus {
 }
 
 .table-scroll {
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
   overflow-x: auto;
-  margin: 0 -8px -8px;
+  margin: 0 0 -8px;
+  overscroll-behavior-x: contain;
 }
 
 table {
@@ -869,6 +891,8 @@ tbody tr:last-child td {
 }
 
 .command-reference {
+  min-width: 0;
+  max-width: 100%;
   margin-top: 16px;
   border: 1px solid var(--line);
   border-radius: 12px;
@@ -904,6 +928,8 @@ tbody tr:last-child td {
 }
 
 .command-reference-content {
+  min-width: 0;
+  max-width: 100%;
   padding: 17px;
 }
 
@@ -911,6 +937,37 @@ tbody tr:last-child td {
   margin: 0 0 14px;
   color: var(--muted);
   line-height: 1.55;
+}
+
+.diagnostic-reference-content {
+  padding-top: 10px;
+}
+
+.diagnostic-list {
+  margin: 0;
+}
+
+.diagnostic-list > div {
+  display: grid;
+  grid-template-columns: minmax(150px, 0.35fr) minmax(0, 1fr);
+  gap: 16px;
+  padding: 10px 0;
+  border-bottom: 1px solid var(--line);
+}
+
+.diagnostic-list > div:last-child {
+  border-bottom: 0;
+}
+
+.diagnostic-list dt,
+.diagnostic-list dd {
+  min-width: 0;
+  margin: 0;
+}
+
+.diagnostic-list dd {
+  color: var(--muted);
+  line-height: 1.5;
 }
 
 .console-legend {
@@ -1018,6 +1075,10 @@ footer {
     padding: 11px 16px;
   }
 
+  .connection-cluster {
+    gap: 8px;
+  }
+
   .brand small,
   .connection-state {
     display: none;
@@ -1026,6 +1087,7 @@ footer {
   .page-shell,
   footer {
     width: min(100% - 24px, 1240px);
+    max-width: calc(100% - 24px);
   }
 
   .page-shell {
@@ -1047,7 +1109,31 @@ footer {
   .request-form,
   .command-grid,
   .advanced-request form {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  form,
+  fieldset,
+  label,
+  details,
+  summary {
+    min-width: 0;
+    max-width: 100%;
+  }
+
+  .ceiling-options {
+    width: 100%;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+
+  .terminal-summary > span:first-child,
+  .command-reference > summary > span:first-child {
+    min-width: 0;
+  }
+
+  .diagnostic-list > div {
     grid-template-columns: 1fr;
+    gap: 4px;
   }
 
   .metric-card {

@@ -575,8 +575,24 @@
         expectLength(payload, 1);
         return [payload[0] === 0 ? "Request rejected; old contract active" : payload[0] === 1 ? "Request deferred; retry armed" : `Request result=${payload[0]}`];
       case EVENT.hardReset:
-        expectLength(payload, 5);
-        return [`Hard reset ${payload[0] === 0 ? "received" : payload[0] === 1 ? "sent" : `direction-${payload[0]}`}; load off; recovery=${readU32(payload, 1)}ms`];
+        if (payload.length !== 5 && payload.length !== 6) {
+          throw new Error(`Expected 5 or 6 payload bytes, received ${payload.length}.`);
+        }
+        {
+          const causes = [
+            "source-signaled",
+            "invalid-source-capabilities",
+            "soft-reset-failed",
+            "source-capabilities-timeout",
+            "request-response-timeout",
+            "power-transition-failure",
+            "epr-capabilities-timeout",
+            "epr-protocol-error",
+            "epr-keepalive-failed",
+          ];
+          const cause = payload.length === 6 ? (causes[payload[5]] ?? `cause-${payload[5]}`) : "legacy-unspecified";
+          return [`Hard reset ${payload[0] === 0 ? "received" : payload[0] === 1 ? "sent" : `direction-${payload[0]}`}; cause=${cause}; load off; recovery=${readU32(payload, 1)}ms`];
+        }
       case EVENT.epr:
         return translateEpr(payload);
       case EVENT.capabilityPlansStarted:

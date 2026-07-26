@@ -5,6 +5,8 @@ use embassy_futures::select::{Either, Either3, select, select3};
 use uom::si::power::watt;
 use usbpd_traits::Driver;
 
+#[cfg(feature = "hard-reset-reasons")]
+use super::device_policy_manager::HardResetReason;
 use super::device_policy_manager::{
     DevicePolicyManager, HardResetOrigin, RequestRejection, StatusQueryFailure, StatusQueryKind,
 };
@@ -44,6 +46,33 @@ enum Contract {
     Explicit,
 }
 
+macro_rules! hard_reset_state {
+    ($reason:expr) => {{
+        #[cfg(feature = "hard-reset-reasons")]
+        {
+            State::HardReset($reason)
+        }
+        #[cfg(not(feature = "hard-reset-reasons"))]
+        {
+            State::HardReset
+        }
+    }};
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+macro_rules! hard_reset_pattern {
+    ($reason:ident) => {
+        State::HardReset($reason)
+    };
+}
+
+#[cfg(not(feature = "hard-reset-reasons"))]
+macro_rules! hard_reset_pattern {
+    ($reason:ident) => {
+        State::HardReset
+    };
+}
+
 /// Sink states.
 #[derive(Debug, Clone)]
 enum State {
@@ -59,6 +88,9 @@ enum State {
     SendNotSupported(request::PowerSource),
     SendSoftReset,
     SoftReset,
+    #[cfg(feature = "hard-reset-reasons")]
+    HardReset(HardResetReason),
+    #[cfg(not(feature = "hard-reset-reasons"))]
     HardReset,
     TransitionToDefault,
     /// Give sink capabilities. The Mode indicates whether to send Sink_Capabilities (Spr)
@@ -128,6 +160,9 @@ pub struct Sink<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> {
     /// Origin of the Hard Reset currently returning the Sink to default
     /// power. Every path into `TransitionToDefault` sets this first.
     hard_reset_origin: HardResetOrigin,
+    /// Policy-engine condition associated with `hard_reset_origin`.
+    #[cfg(feature = "hard-reset-reasons")]
+    hard_reset_reason: HardResetReason,
     /// Product-selected receive window for the first Source_Capabilities
     /// after Hard Reset. This survives Startup/Discovery so the PHY listens
     /// throughout recovery instead of sleeping before SinkWaitCapTimer.
@@ -191,6 +226,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             pps_refresh_deadline_tick: None,
             epr_keep_alive_deadline_tick: None,
             hard_reset_origin: HardResetOrigin::Source,
+            #[cfg(feature = "hard-reset-reasons")]
+            hard_reset_reason: HardResetReason::SourceSignaled,
             hard_reset_recovery_ms: None,
             _timer: PhantomData,
         }
@@ -225,6 +262,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.pps_refresh_deadline_tick = None;
         self.epr_keep_alive_deadline_tick = None;
         self.hard_reset_origin = HardResetOrigin::Source;
+        #[cfg(feature = "hard-reset-reasons")]
+        {
+            self.hard_reset_reason = HardResetReason::SourceSignaled;
+        }
         self.hard_reset_recovery_ms = None;
     }
 
@@ -240,6 +281,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Handle when hard reset is signaled by the driver itself.
                 (_, _, ProtocolError::RxError(RxError::HardReset) | ProtocolError::TxError(TxError::HardReset)) => {
                     self.hard_reset_origin = HardResetOrigin::Source;
+                    #[cfg(feature = "hard-reset-reasons")]
+                    {
+                        self.hard_reset_reason = HardResetReason::SourceSignaled;
+                    }
                     Some(State::TransitionToDefault)
                 }
 
@@ -249,23 +294,23 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Per spec 6.3.13: If the Soft_Reset Message fails, a Hard Reset shall be initiated.
                 // This handles the case where we're trying to send/receive a soft reset and it fails.
                 (_, State::SoftReset | State::SendSoftReset, ProtocolError::TransmitRetriesExceeded(_)) => {
-                    Some(State::HardReset)
+                    Some(hard_reset_state!(HardResetReason::SoftResetFailed))
                 }
 
                 // Per spec 8.3.3.3.3: SinkWaitCapTimer timeout triggers Hard Reset.
                 (_, State::WaitForCapabilities, ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(State::HardReset)
+                    Some(hard_reset_state!(HardResetReason::SourceCapabilitiesTimeout))
                 }
 
                 // Per spec 8.3.3.3.5: SenderResponseTimer timeout triggers Hard Reset.
                 (_, State::SelectCapability(_), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(State::HardReset)
+                    Some(hard_reset_state!(HardResetReason::RequestResponseTimeout))
                 }
 
                 // EnterSucceeded was received, but the first EPR Source
                 // Capabilities did not arrive in time.
                 (_, State::EprWaitForCapabilities(_), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(State::HardReset)
+                    Some(hard_reset_state!(HardResetReason::EprCapabilitiesTimeout))
                 }
 
                 // tEnterEPR expiry requires a Soft Reset.
@@ -276,7 +321,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Per USB PD Spec R3.2 Section 8.3.3.3.6 and Table 6.72:
                 // Any Protocol Error during power transition (PE_SNK_Transition_Sink state)
                 // shall trigger a Hard Reset, not a Soft Reset.
-                (_, State::TransitionSink(_), _) => Some(State::HardReset),
+                (_, State::TransitionSink(_), _) => Some(hard_reset_state!(HardResetReason::PowerTransitionFailure)),
+
+                // Only genuine keep-alive protocol failures reach this arm:
+                // partner Hard/Soft Reset and detach are handled above or by
+                // Error::from before a Sink reset is selected.
+                (_, State::EprKeepAlive(_), _) => Some(hard_reset_state!(HardResetReason::EprKeepAliveFailed)),
 
                 // Unexpected messages indicate a protocol error and demand a soft reset.
                 // Per spec 6.8.1 Table 6.72 (for non-power-transitioning states).
@@ -431,6 +481,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         TIMER::now_128ms_ticks().wrapping_add(ticks)
     }
 
+    #[cfg(feature = "hard-reset-reasons")]
+    #[inline(always)]
+    fn reported_hard_reset_reason(reason: HardResetReason) -> HardResetReason {
+        reason
+    }
+
     fn ensure_periodic_deadlines(&mut self, power_source: request::PowerSource) {
         if Self::is_pps(power_source) {
             if self.pps_refresh_deadline_tick.is_none() {
@@ -472,7 +528,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 if self.mode == Mode::Epr && !self.get_source_cap_pending {
-                    State::HardReset
+                    hard_reset_state!(HardResetReason::EprProtocolError)
                 } else {
                     match message.payload {
                         Some(Payload::Data(Data::SourceCapabilities(capabilities))) => {
@@ -480,7 +536,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
                                 State::EvaluateCapabilities(capabilities)
                             } else {
-                                State::HardReset
+                                hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
                             }
                         }
                         _ => State::SendSoftReset,
@@ -495,7 +551,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     let caps = SourceCapabilities(pdos);
 
                     if self.mode != Mode::Epr || !Self::capabilities_valid_for_mode(&caps, Mode::Epr) {
-                        State::HardReset
+                        hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
                     } else {
                         State::EvaluateCapabilities(caps)
                     }
@@ -565,7 +621,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     }
                     State::EvaluateCapabilities(capabilities)
                 } else {
-                    State::HardReset
+                    hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
                 }
             }
             State::EvaluateCapabilities(capabilities) => {
@@ -628,7 +684,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         if self.mode == Mode::Epr
                             && !matches!(self.active_power_source, Some(PowerSource::EprRequest(_))) =>
                     {
-                        State::HardReset
+                        hard_reset_state!(HardResetReason::EprProtocolError)
                     }
                     (Contract::Explicit, ControlMessageType::Reject) => {
                         State::Ready(self.active_power_source.expect("explicit contract has an active request"))
@@ -661,6 +717,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 } else {
                     self.pps_refresh_deadline_tick = None;
                 }
+                // A successful Request/PS_RDY exchange is current EPR traffic.
+                // Rearm from PS_RDY so a keep-alive deadline that expired during
+                // a long high-to-low VBUS transition cannot fire immediately.
+                self.epr_keep_alive_deadline_tick = None;
                 self.ensure_periodic_deadlines(accepted_power_source);
                 State::Ready(accepted_power_source)
             }
@@ -780,7 +840,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 State::WaitForCapabilities
             }
-            State::HardReset => {
+            hard_reset_pattern!(reason) => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 self.pps_refresh_deadline_tick = None;
@@ -806,6 +866,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 // Transmit Hard Reset Signaling
                 self.hard_reset_origin = HardResetOrigin::Sink;
+                #[cfg(feature = "hard-reset-reasons")]
+                {
+                    self.hard_reset_reason = *reason;
+                }
                 self.protocol_layer.hard_reset().await?;
 
                 State::TransitionToDefault
@@ -835,7 +899,16 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.hard_reset_recovery_ms = (recovery_ms != 0).then_some(recovery_ms);
 
                 // Notify DPM about hard reset (DPM should transition to default power level).
-                self.device_policy_manager.hard_reset(self.hard_reset_origin).await;
+                #[cfg(feature = "hard-reset-reasons")]
+                {
+                    self.device_policy_manager
+                        .hard_reset(self.hard_reset_origin, Self::reported_hard_reset_reason(self.hard_reset_reason))
+                        .await;
+                }
+                #[cfg(not(feature = "hard-reset-reasons"))]
+                {
+                    self.device_policy_manager.hard_reset(self.hard_reset_origin).await;
+                }
 
                 // Reset protocol layer (per spec 6.8.3: "Protocol Layers shall be reset as for Soft Reset")
                 self.protocol_layer.reset();
@@ -956,7 +1029,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     {
                         State::EvaluateCapabilities(capabilities)
                     }
-                    Some(_) if mode_matches => State::HardReset,
+                    Some(_) if mode_matches => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
                     Some(_) => State::Ready(*power_source),
                     None => State::SendSoftReset,
                 }
@@ -1183,18 +1256,20 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 let message = self.protocol_layer.wait_for_source_capabilities(None).await?;
 
                 match message.payload {
-                    Some(Payload::Data(Data::SourceCapabilities(_))) => State::HardReset,
+                    Some(Payload::Data(Data::SourceCapabilities(_))) => {
+                        hard_reset_state!(HardResetReason::EprProtocolError)
+                    }
                     Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
                         let capabilities = SourceCapabilities(pdos);
                         if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) {
                             State::EvaluateCapabilities(capabilities)
                         } else {
-                            State::HardReset
+                            hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
                         }
                     }
                     _ => {
                         error!("Expected source capabilities after EPR mode entry");
-                        State::HardReset
+                        hard_reset_state!(HardResetReason::EprProtocolError)
                     }
                 }
             }
@@ -1226,7 +1301,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     _ => false,
                 };
 
-                if is_epr_pdo_contract { State::HardReset } else { State::WaitForCapabilities }
+                if is_epr_pdo_contract {
+                    hard_reset_state!(HardResetReason::EprProtocolError)
+                } else {
+                    State::WaitForCapabilities
+                }
             }
             State::EprKeepAlive(power_source) => {
                 // Per spec 8.3.3.3.11 (PE_SNK_EPR_Keep_Alive):
@@ -1238,30 +1317,26 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAlive,
                     )
                     .await?;
-                match self
+                let message = self
                     .protocol_layer
                     .receive_message_type(
                         &[MessageType::Extended(ExtendedMessageType::ExtendedControl)],
                         TimerType::SenderResponse,
                     )
-                    .await
-                {
-                    Ok(message) => {
-                        if let Some(Payload::Extended(extended::Extended::ExtendedControl(control))) = message.payload {
-                            if control.message_type()
-                                == crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAliveAck
-                            {
-                                self.mode = Mode::Epr;
-                                self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
-                                State::Ready(*power_source)
-                            } else {
-                                State::SendNotSupported(*power_source)
-                            }
-                        } else {
-                            State::SendNotSupported(*power_source)
-                        }
+                    .await?;
+
+                if let Some(Payload::Extended(extended::Extended::ExtendedControl(control))) = message.payload {
+                    if control.message_type()
+                        == crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAliveAck
+                    {
+                        self.mode = Mode::Epr;
+                        self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
+                        State::Ready(*power_source)
+                    } else {
+                        State::SendNotSupported(*power_source)
                     }
-                    Err(_) => State::HardReset,
+                } else {
+                    State::SendNotSupported(*power_source)
                 }
             }
         };

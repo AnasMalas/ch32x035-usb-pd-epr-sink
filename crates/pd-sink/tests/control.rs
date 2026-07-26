@@ -1,8 +1,9 @@
 use pd_sink::{
     decode_control_command, encode_control_event, encode_control_frame, CapabilitiesKind, Command, CommandStatus,
     ControlCommandKind, ControlEvent, ControlFrameDecoder, ControlFrameError, ControlPlanStage, Demand, DeviceInfo,
-    Milliamps, Millivolts, Milliwatts, PpsStatus, Preference, SourceAlert, SourceCapabilities, SourceStatus,
-    StatusQuery, StatusQueryFailure, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
+    HardResetCause, HardResetDirection, Milliamps, Millivolts, Milliwatts, PpsStatus, Preference, SourceAlert,
+    SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure, UserRequest, CONTROL_MAX_FRAME_LEN,
+    CONTROL_PROTOCOL_VERSION,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -151,6 +152,23 @@ fn command_result_keeps_the_request_sequence() {
     let frame = decode_one(&bytes[..len]);
     assert_eq!(frame.sequence, 123);
     assert_eq!(frame.payload(), &[CommandStatus::Queued as u8]);
+}
+
+#[test]
+fn hard_reset_event_appends_a_stable_cause_code() {
+    let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+    let len = encode_control_event(
+        ControlEvent::HardReset {
+            direction: HardResetDirection::Sent,
+            cause: HardResetCause::EprKeepAliveFailed,
+            recovery_ms: 2_000,
+        },
+        0,
+        &mut bytes,
+    )
+    .unwrap();
+
+    assert_eq!(decode_one(&bytes[..len]).payload(), &[1, 0xd0, 0x07, 0, 0, 8]);
 }
 
 #[test]

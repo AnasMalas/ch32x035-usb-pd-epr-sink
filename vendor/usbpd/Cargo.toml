@@ -32,6 +32,7 @@ tokio = { version = "1.49.0", features = ["rt", "macros"] }
 [features]
 default = []
 
+hard-reset-reasons = []
 log = ["dep:log"]
 defmt = ["dep:defmt", "heapless/defmt"]
 serde = ["dep:serde", "heapless/serde"]

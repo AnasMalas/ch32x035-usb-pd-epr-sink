@@ -46,8 +46,8 @@ pub use request::{
     RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestPlanner, SinkLimits,
 };
 pub use runtime::{
-    CapabilityPlan, HardResetDirection, RequestResult, SinkConfig, SinkConfigError, SinkDevice, SinkEvent,
-    SinkPowerDescriptor, SinkRuntime,
+    CapabilityPlan, HardResetCause, HardResetDirection, RequestResult, SinkConfig, SinkConfigError, SinkDevice,
+    SinkEvent, SinkPowerDescriptor, SinkRuntime,
 };
 pub use safety::{PortInputs, PortState, PortSupervisor, SafetyDecision, SafetyTimings};
 pub use stack::{capabilities_from_stack, request_to_stack, StackConversionError};

@@ -14,8 +14,9 @@ name = "pd_sink"
 path = "src/lib.rs"
 
 [features]
-default = []
+default = ["hard-reset-reasons"]
 ch32x035 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits"]
+hard-reset-reasons = ["usbpd/hard-reset-reasons"]
 
 [dependencies]
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["ch32x035f8u6", "embassy"], optional = true }

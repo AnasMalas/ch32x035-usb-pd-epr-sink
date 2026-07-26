@@ -11,7 +11,7 @@ use crate::request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, Preference, RequestMessage,
     RequestPlan,
 };
-use crate::runtime::{HardResetDirection, RequestResult};
+use crate::runtime::{HardResetCause, HardResetDirection, RequestResult};
 use crate::status::{PpsStatus, SourceAlert, SourceStatus, StatusQuery, StatusQueryFailure};
 use crate::units::{Milliamps, Millivolts, Milliwatts};
 
@@ -147,7 +147,7 @@ pub enum ControlEvent {
     PpsStatus(PpsStatus),
     StatusQueryFailed { query: StatusQuery, failure: StatusQueryFailure },
     RequestResult(RequestResult),
-    HardReset { direction: HardResetDirection, recovery_ms: u32 },
+    HardReset { direction: HardResetDirection, cause: HardResetCause, recovery_ms: u32 },
     Epr { event: EprEvent, detail: u8, extra: u8 },
     CapabilityPlansStarted { count: u8 },
     CapabilityPlanUnavailable { position: u8, validity: PdoValidity },
@@ -417,12 +417,13 @@ pub fn encode_event(event: ControlEvent, sequence: u8, output: &mut [u8]) -> Res
             })?;
             EventKind::RequestResult
         }
-        ControlEvent::HardReset { direction, recovery_ms } => {
+        ControlEvent::HardReset { direction, cause, recovery_ms } => {
             writer.u8(match direction {
                 HardResetDirection::Received => 0,
                 HardResetDirection::Sent => 1,
             })?;
             writer.u32(recovery_ms)?;
+            writer.u8(cause as u8)?;
             EventKind::HardReset
         }
         ControlEvent::Epr { event, detail, extra } => {

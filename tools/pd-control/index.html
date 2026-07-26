@@ -33,7 +33,7 @@
         <div class="notice notice-error">JavaScript is required to communicate with the USB PD controller.</div>
       </noscript>
       <div id="browser-notice" class="notice notice-error hidden" role="alert">
-        This browser cannot access USB serial devices. Use current Chrome or Edge on desktop, or Chrome with USB host support on Android.
+        This browser cannot access USB serial devices. Use current Chrome or Edge on desktop. Android WebUSB requires an HTTPS-hosted copy of this page.
       </div>
 
       <section class="hero panel">
@@ -323,12 +323,31 @@
               </div>
             </div>
           </details>
+
+          <details class="command-reference diagnostic-reference">
+            <summary>
+              <span>
+                <strong>Reading diagnostics</strong>
+                <small>Requests, raw words, transport bytes, refreshes, and reset causes</small>
+              </span>
+              <span class="pill">Show guide</span>
+            </summary>
+            <div class="command-reference-content diagnostic-reference-content">
+              <dl class="diagnostic-list">
+                <div><dt><code>RDO=0x…</code></dt><dd>The exact 32-bit USB PD Request Data Object sent over CC. It is an on-wire value, not a console command.</dd></div>
+                <div><dt><code>raw=0x…</code></dt><dd>The source's exact advertised 32-bit PDO before the browser decodes voltage, current, range, and flags.</dd></div>
+                <div><dt><code>RAW Serial/WebUSB</code></dt><dd>Exact host USB CDC bytes in hexadecimal. These are control-transport chunks, not CC packets; browser read boundaries are arbitrary. The latest 1,000 chunks are cached while Raw stream is Off and appear when it is turned On.</dd></div>
+                <div><dt><code>Contract refresh confirmed</code></dt><dd>A repeated PPS Request completed successfully. EPR keepalives are more frequent internal housekeeping and are intentionally shown only when a failure causes recovery.</dd></div>
+                <div><dt><code>Hard reset … cause=</code></dt><dd>Shows whether the source signaled the reset or which sink recovery category initiated it. Load cutoff still happens immediately for every cause.</dd></div>
+              </dl>
+            </div>
+          </details>
         </div>
       </details>
     </main>
 
     <footer>
-      <span>Runs offline in your browser. USB data never leaves this device.</span>
+      <span>Desktop standalone runs locally. USB device traffic stays in this browser.</span>
       <span id="device-id">No device selected</span>
     </footer>
   </body>

@@ -5,7 +5,7 @@ use std::task::{Context, Poll, Waker};
 
 use usbpd::protocol_layer::message::header::{ControlMessageType, MessageType};
 use usbpd::protocol_layer::message::header::{DataMessageType, Header, SpecificationRevision};
-use usbpd::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin};
+use usbpd::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin, HardResetReason};
 use usbpd::sink::policy_engine::{Error as SinkError, Sink};
 use usbpd::timers::Timer;
 use usbpd::{DataRole, PowerRole};
@@ -73,39 +73,39 @@ impl Driver for OriginDriver {
 }
 
 struct OriginDpm {
-    origins: Arc<Mutex<Vec<HardResetOrigin>>>,
+    resets: Arc<Mutex<Vec<(HardResetOrigin, HardResetReason)>>>,
 }
 
 impl DevicePolicyManager for OriginDpm {
-    async fn hard_reset(&mut self, origin: HardResetOrigin) {
-        self.origins.lock().unwrap().push(origin);
+    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
+        self.resets.lock().unwrap().push((origin, reason));
     }
 }
 
-fn run_origin_trace(first_receive: FirstReceive) -> (Vec<HardResetOrigin>, usize) {
-    let origins = Arc::new(Mutex::new(Vec::new()));
+fn run_origin_trace(first_receive: FirstReceive) -> (Vec<(HardResetOrigin, HardResetReason)>, usize) {
+    let resets = Arc::new(Mutex::new(Vec::new()));
     let hard_resets_sent = Arc::new(AtomicUsize::new(0));
     let driver = OriginDriver { first_receive: Some(first_receive), hard_resets_sent: Arc::clone(&hard_resets_sent) };
-    let dpm = OriginDpm { origins: Arc::clone(&origins) };
+    let dpm = OriginDpm { resets: Arc::clone(&resets) };
     let mut sink: Sink<_, NeverTimer, _> = Sink::new(driver, dpm);
 
     assert!(matches!(block_on(sink.run()), Err(SinkError::Detached)));
 
-    let recorded = origins.lock().unwrap().clone();
+    let recorded = resets.lock().unwrap().clone();
     (recorded, hard_resets_sent.load(Ordering::SeqCst))
 }
 
 #[test]
 fn reports_a_source_initiated_hard_reset() {
     let (origins, sent) = run_origin_trace(FirstReceive::SourceHardReset);
-    assert_eq!(origins, [HardResetOrigin::Source]);
+    assert_eq!(origins, [(HardResetOrigin::Source, HardResetReason::SourceSignaled)]);
     assert_eq!(sent, 0);
 }
 
 #[test]
 fn reports_a_sink_initiated_hard_reset() {
     let (origins, sent) = run_origin_trace(FirstReceive::InvalidCapabilities);
-    assert_eq!(origins, [HardResetOrigin::Sink]);
+    assert_eq!(origins, [(HardResetOrigin::Sink, HardResetReason::InvalidSourceCapabilities)]);
     assert_eq!(sent, 1);
 }
 
@@ -197,7 +197,7 @@ struct RecoveryDpm {
 }
 
 impl DevicePolicyManager for RecoveryDpm {
-    async fn hard_reset(&mut self, _origin: HardResetOrigin) {
+    async fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) {
         self.hard_resets.fetch_add(1, Ordering::SeqCst);
     }
 

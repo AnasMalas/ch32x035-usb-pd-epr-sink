@@ -2,8 +2,9 @@
 
 USB PD Control is the product-facing browser interface for the sink firmware.
 It connects directly to the firmware's USB CDC interface. Desktop Chrome/Edge
-use Web Serial; Android Chrome uses a small WebUSB CDC-ACM transport. There is
-no cloud service, native bridge, Node installation, or runtime web server.
+use Web Serial from the standalone file; Android Chrome uses a small WebUSB
+CDC-ACM transport from an HTTPS-hosted copy. There is no native bridge or Node
+runtime.
 
 The preferred `usb-control` firmware sends compact, versioned binary events.
 The browser decodes PDO words and translates identity, lifecycle, plan,
@@ -24,14 +25,21 @@ ASCII console), then run from the repository root:
 The launcher builds `artifacts\usb-pd-control.html`, opens that local file,
 and exits immediately. Pass `-NoBrowser` to package the file without opening
 it, or `-Output <path>` to choose the destination. The generated page embeds
-all HTML, CSS, and JavaScript and can be copied to another device. It needs no
-internet connection.
+all HTML, CSS, and JavaScript and needs no internet connection on desktop.
 
-On desktop, select the CH32 CDC COM port in the Web Serial prompt. On Android,
-connect the board through a USB OTG adapter and select it in Chrome's WebUSB
-prompt. The Android transport claims the CDC interfaces only while the page
-is connected. Other serial applications can use the same firmware after the
-page disconnects, but two applications cannot own the device simultaneously.
+On desktop, select the CH32 CDC COM port in the Web Serial prompt. Android
+WebUSB requires a secure context, so copying and opening the local `file:` page
+is not sufficient. After the Pages workflow has deployed, open
+`https://anasmalas.github.io/ch32x035-usb-pd-epr-sink/`, connect the board
+through USB OTG, and select it in Chrome's WebUSB prompt. The Android transport
+claims the CDC interfaces only while the page is connected. Other serial
+applications can use the same firmware after the page disconnects, but two
+applications cannot own the device simultaneously.
+
+The deployment workflow is `.github/workflows/pages.yml`. GitHub Pages must
+use **GitHub Actions** as its publishing source; pushes that change this
+application on `main` or `codex/usb-control-protocol` then publish
+`tools/pd-control/` as the site artifact.
 
 ## Interface
 
@@ -68,7 +76,10 @@ typed packets; with `dev-text-console`, they originate as MCU ASCII.
 contract-maintenance lines and hides `Queued`; switching it off shows every
 decoded line. `Raw stream: On` additionally records and displays the exact
 transport bytes in hexadecimal for both device-to-host and host-to-device
-traffic. The two switches are independent.
+traffic. The latest 1,000 raw chunks are cached while Raw stream is Off and
+appear when it is switched On. The two switches are independent. Selecting
+rendered rows or using Copy produces one timestamp, direction marker, and
+message per clipboard line.
 
 The Start telemetry button controls optional PPS_Status polling only. PPS
 contract maintenance is required to keep a PPS contract alive and cannot be
@@ -87,11 +98,11 @@ Node.js is not used to launch or operate the GUI.
 
 Current desktop Chrome/Edge expose Web Serial on Windows, macOS, Linux, and
 ChromeOS. Android Chrome does not expose Web Serial, so the page falls back to
-WebUSB and speaks CDC-ACM directly. Android can normally claim CDC devices
-because the operating system does not include a general CDC-ACM API. Desktop
-Windows deliberately prefers Web Serial because its CDC driver already owns
-the interface; replacing that driver with WinUSB would make ordinary COM-port
-software less convenient.
+WebUSB and speaks CDC-ACM directly when the page is served over HTTPS. Android
+can normally claim CDC devices because the operating system does not include
+a general CDC-ACM API. Desktop Windows deliberately prefers Web Serial because
+its CDC driver already owns the interface; replacing that driver with WinUSB
+would make ordinary COM-port software less convenient.
 
 The current WebUSB selector matches the development VID `1A86` and PID `FE0C`.
 Replace those identifiers together with the firmware descriptors before a

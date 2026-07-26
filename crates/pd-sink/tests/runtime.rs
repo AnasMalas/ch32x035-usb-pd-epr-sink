@@ -3,14 +3,15 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 
 use pd_sink::{
-    CapabilitiesKind, Command, ContractState, ControllerConfig, HardResetDirection, Milliamps, Milliwatts,
-    RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime,
+    CapabilitiesKind, Command, ContractState, ControllerConfig, HardResetCause, HardResetDirection, Milliamps,
+    Milliwatts, RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor,
+    SinkRuntime,
 };
 use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::request::PowerSource;
 use usbpd::protocol_layer::message::data::source_capabilities::{FixedSupply, PowerDataObject, SourceCapabilities};
 use usbpd::protocol_layer::message::extended::pps_status::PpsStatus as StackPpsStatus;
-use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin};
+use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin, HardResetReason};
 
 fn block_on<F: Future>(future: F) -> F::Output {
     let mut future = pin!(future);
@@ -90,16 +91,18 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
     assert_eq!(device.contract().active_plan().unwrap().object_position, 1);
     assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
 
-    block_on(device.hard_reset(HardResetOrigin::Source));
+    block_on(device.hard_reset(HardResetOrigin::Source, HardResetReason::SourceSignaled));
     assert_eq!(device.contract().state(), ContractState::Lost);
     assert_eq!(DevicePolicyManager::hard_reset_recovery_millis(&device), 2_000);
     let runtime = device.runtime_mut();
     assert_eq!(runtime.load_states.last(), Some(&false));
     assert_eq!(runtime.clear_count, 1);
     assert!(runtime.delays.is_empty());
-    assert!(runtime
-        .events
-        .contains(&SinkEvent::HardReset { direction: HardResetDirection::Received, recovery_ms: 2_000 }));
+    assert!(runtime.events.contains(&SinkEvent::HardReset {
+        direction: HardResetDirection::Received,
+        cause: HardResetCause::SourceSignaled,
+        recovery_ms: 2_000
+    }));
     assert!(!runtime.events.contains(&SinkEvent::HardResetRecoveryComplete));
     assert!(runtime.events.iter().any(|event| matches!(
         event,

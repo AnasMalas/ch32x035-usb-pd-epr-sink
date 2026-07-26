@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::future::{Future, pending};
-use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU32, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -36,9 +36,15 @@ fn block_on<F: Future>(future: F) -> F::Output {
     }
 }
 
-struct NeverTimer;
+static EPR_CLOCK_TICKS: AtomicU32 = AtomicU32::new(0);
 
-impl Timer for NeverTimer {
+struct EprTransitionTimer;
+
+impl Timer for EprTransitionTimer {
+    fn now_128ms_ticks() -> u32 {
+        EPR_CLOCK_TICKS.load(Ordering::SeqCst)
+    }
+
     async fn after_millis(_milliseconds: u64) {
         pending().await
     }
@@ -264,7 +270,13 @@ impl DevicePolicyManager for EprDpm {
             {
                 Some(Event::RequestPower(epr_avs_request(9, 33_700, 5_000, self.epr_avs_pdo)))
             }
-            (2, 3) => Some(Event::RequestPower(epr_fixed_request(1, self.fixed_5v_pdo))),
+            (2, 3) => {
+                // Make the keepalive deadline from the preceding 48 V/AVS
+                // contract stale while this long high-to-low transition is in
+                // flight. PS_RDY must rearm it before Ready is entered.
+                EPR_CLOCK_TICKS.store(10, Ordering::SeqCst);
+                Some(Event::RequestPower(epr_fixed_request(1, self.fixed_5v_pdo)))
+            }
             (3, 4) => Some(Event::ExitEprMode),
             _ => None,
         };
@@ -283,6 +295,7 @@ impl DevicePolicyManager for EprDpm {
 
 #[test]
 fn policy_engine_negotiates_fixed_48v_arbitrary_epr_avs_and_a_legal_exit() {
+    EPR_CLOCK_TICKS.store(0, Ordering::SeqCst);
     let fixed_5v = fixed_pdo(5_000, 3_000, true);
     let fixed_20v = fixed_pdo(20_000, 5_000, false);
     let fixed_48v = fixed_pdo(48_000, 5_000, false);
@@ -339,7 +352,7 @@ fn policy_engine_negotiates_fixed_48v_arbitrary_epr_avs_and_a_legal_exit() {
         epr_sink_cap_requested: Arc::clone(&epr_sink_cap_requested),
         sink_cap_ext_requested: Arc::clone(&sink_cap_ext_requested),
     };
-    let mut sink: Sink<_, NeverTimer, _> = Sink::new(driver, dpm);
+    let mut sink: Sink<_, EprTransitionTimer, _> = Sink::new(driver, dpm);
 
     let result = block_on(sink.run());
 

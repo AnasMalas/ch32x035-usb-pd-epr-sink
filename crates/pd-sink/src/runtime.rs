@@ -17,6 +17,7 @@ use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
     SinkCapabilitiesExtended, SINK_MODE_AVS_SUPPORTED, SINK_MODE_PPS_SUPPORTED, SINK_MODE_VBUS_POWERED,
 };
 use usbpd::protocol_layer::message::extended::{pps_status as stack_pps_status, status as stack_status};
+pub use usbpd::sink::device_policy_manager::HardResetReason as HardResetCause;
 use usbpd::sink::device_policy_manager::{
     DevicePolicyManager, Event, HardResetOrigin, RequestRejection, StatusQueryFailure as StackStatusQueryFailure,
     StatusQueryKind as StackStatusQueryKind,
@@ -142,7 +143,9 @@ pub enum RequestResult {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SinkEvent {
     SourceCapabilities(crate::SourceCapabilities),
-    CapabilityPlansStarted { count: u8 },
+    CapabilityPlansStarted {
+        count: u8,
+    },
     CapabilityPlansUnavailable,
     CapabilityPlan(CapabilityPlan),
     Requesting(RequestPlan),
@@ -152,18 +155,43 @@ pub enum SinkEvent {
     ControllerRejected(ControllerError),
     StackCapabilitiesRejected(CapabilityListError),
     StackRequestRejected(StackConversionError),
-    SourceInfo { present_watts: u8, maximum_watts: u8, reported_watts: u8 },
+    SourceInfo {
+        present_watts: u8,
+        maximum_watts: u8,
+        reported_watts: u8,
+    },
     SourceAlert(SourceAlert),
     SourceStatus(SourceStatus),
     PpsStatus(PpsStatus),
-    StatusQueryFailed { query: StatusQuery, failure: StatusQueryFailure },
+    StatusQueryFailed {
+        query: StatusQuery,
+        failure: StatusQueryFailure,
+    },
     RequestResult(RequestResult),
-    HardReset { direction: HardResetDirection, recovery_ms: u64 },
+    #[cfg(feature = "hard-reset-reasons")]
+    HardReset {
+        direction: HardResetDirection,
+        cause: HardResetCause,
+        recovery_ms: u64,
+    },
+    #[cfg(not(feature = "hard-reset-reasons"))]
+    HardReset {
+        direction: HardResetDirection,
+        recovery_ms: u64,
+    },
     HardResetRecoveryComplete,
     Detached,
-    ProtocolLost { epr_attempts: u8, maximum_epr_attempts: u8 },
-    EprEntryFailed { reason: u8 },
-    EprDiscoveryStarted { attempt: u8, maximum_attempts: u8 },
+    ProtocolLost {
+        epr_attempts: u8,
+        maximum_epr_attempts: u8,
+    },
+    EprEntryFailed {
+        reason: u8,
+    },
+    EprDiscoveryStarted {
+        attempt: u8,
+        maximum_attempts: u8,
+    },
     EprDiscoveryUnavailable,
     EprAutomaticDiscoveryDisabled,
     EprManualEntryStarted,
@@ -241,6 +269,11 @@ pub trait SinkRuntime {
     fn on_request_result(&mut self, result: RequestResult) {
         self.observe(SinkEvent::RequestResult(result));
     }
+    #[cfg(feature = "hard-reset-reasons")]
+    fn on_hard_reset(&mut self, direction: HardResetDirection, cause: HardResetCause, recovery_ms: u64) {
+        self.observe(SinkEvent::HardReset { direction, cause, recovery_ms });
+    }
+    #[cfg(not(feature = "hard-reset-reasons"))]
     fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
         self.observe(SinkEvent::HardReset { direction, recovery_ms });
     }
@@ -515,6 +548,23 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.on_status_query_failed(query, failure);
     }
 
+    #[cfg(feature = "hard-reset-reasons")]
+    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetCause) {
+        self.runtime.set_load_enabled(false);
+        self.runtime.clear_pending_commands();
+        self.contract.on_protocol_loss();
+        self.pending_contract_refresh = false;
+        self.controller.reset_port();
+        self.source_info_requested = false;
+        self.source_status_pending = false;
+        let direction = match origin {
+            HardResetOrigin::Source => HardResetDirection::Received,
+            HardResetOrigin::Sink => HardResetDirection::Sent,
+        };
+        self.runtime.on_hard_reset(direction, reason, self.config.hard_reset_recovery_ms);
+    }
+
+    #[cfg(not(feature = "hard-reset-reasons"))]
     async fn hard_reset(&mut self, origin: HardResetOrigin) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();

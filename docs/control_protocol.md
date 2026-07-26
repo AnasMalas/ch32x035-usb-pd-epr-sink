@@ -40,6 +40,31 @@ The reusable framing and data model live in
 adapter is intentionally reference-firmware code in
 [`examples/usb-console/src/control_transport.rs`](../examples/usb-console/src/control_transport.rs),
 so an application can carry the same protocol over another packet transport.
+The library also emits typed `SinkEvent` values. Human-readable line formatting,
+the command prompt, USB ownership, and the executor are part of the reference
+example, not hidden behavior owned by `pd-sink`.
+
+The Hard Reset event contains direction, recovery interval, and a stable cause
+category such as `source-signaled`, `power-transition-failure`, or
+`epr-keepalive-failed`. Current payloads append the cause byte to the original
+five-byte direction/interval payload; hosts should accept the legacy form and
+label its cause as unspecified. The cause codes are:
+
+| Code | Cause |
+|---:|---|
+| 0 | source-signaled |
+| 1 | invalid-source-capabilities |
+| 2 | soft-reset-failed |
+| 3 | source-capabilities-timeout |
+| 4 | request-response-timeout |
+| 5 | power-transition-failure |
+| 6 | epr-capabilities-timeout |
+| 7 | epr-protocol-error |
+| 8 | epr-keepalive-failed |
+
+The flash-constrained development text-console profile retains the older
+direction/recovery line. The normal compact-control profile carries the cause,
+and the browser renders its descriptive name.
 
 ## `dev-text-console`
 
@@ -59,9 +84,11 @@ diagnosis only.
 The browser keeps USB CDC as the physical interface. Desktop Chromium uses the
 operating system's serial port through Web Serial. Android Chromium, which has
 no Web Serial API, claims the same CDC-ACM interfaces through WebUSB and uses
-their bulk endpoints directly. This is a host-side transport choice; it does
-not require a second firmware protocol or prevent other serial software from
-using the device after the browser disconnects.
+their bulk endpoints directly. WebUSB is available only in a secure context,
+so the packaged local `file:` page is desktop-only and the Android copy must
+be served over HTTPS. This is a host-side transport choice; it does not require
+a second firmware protocol or prevent other serial software from using the
+device after the browser disconnects.
 
 USB PD Control waits for device output before sending a command. A valid
 `PD`, version-1 frame selects `usb-control`; a complete printable line selects
@@ -80,3 +107,17 @@ The text console reports a successful identical maintenance Request as one
 `Contract refresh confirmed` line. It does not expose a command that disables
 PPS maintenance, because stopping those Requests would allow the Source to
 drop the PPS contract.
+
+## Reading diagnostic values
+
+- `RDO=0x...` is the exact 32-bit USB PD Request Data Object transmitted over
+  CC. It is not a console command.
+- `raw=0x...` on a PDO line is the exact 32-bit source advertisement before
+  decoding.
+- `RAW Serial` or `RAW WebUSB` is exact USB CDC host-transport data. It is not
+  a PD packet capture, and browser read chunks need not match USB packet
+  boundaries. The GUI retains the latest 1,000 chunks even while Raw stream is
+  off and reveals them when the toggle is enabled.
+- `Contract refresh confirmed` is a completed PPS maintenance Request. EPR
+  keepalive exchanges are much more frequent and intentionally remain silent;
+  a failed exchange is visible as a Hard Reset with its cause.

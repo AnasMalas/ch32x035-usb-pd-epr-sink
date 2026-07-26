@@ -1,5 +1,7 @@
 //! Tests for the policy engine.
 
+use core::sync::atomic::{AtomicU32, Ordering};
+
 use super::Sink;
 use crate::counters::{Counter, CounterType};
 use crate::dummy::{DUMMY_CAPABILITIES, DummyDriver, DummySinkDevice, DummyTimer, MAX_DATA_MESSAGE_SIZE};
@@ -11,14 +13,19 @@ use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType,
 };
 use crate::protocol_layer::message::{Message, Payload};
+#[cfg(feature = "hard-reset-reasons")]
+use crate::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin, HardResetReason};
 use crate::sink::policy_engine::State;
+use crate::timers::Timer;
+#[cfg(feature = "hard-reset-reasons")]
+use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 
 fn get_policy_engine() -> Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DummySinkDevice> {
     Sink::new(DummyDriver::new(), DummySinkDevice {})
 }
 
-fn simulate_source_control_message<DPM: crate::sink::device_policy_manager::DevicePolicyManager>(
-    policy_engine: &mut Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DPM>,
+fn simulate_source_control_message<TIMER: Timer, DPM: crate::sink::device_policy_manager::DevicePolicyManager>(
+    policy_engine: &mut Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, TIMER, DPM>,
     control_message_type: ControlMessageType,
     message_id: u8,
 ) {
@@ -32,6 +39,113 @@ fn simulate_source_control_message<DPM: crate::sink::device_policy_manager::Devi
     ))
     .to_bytes(&mut buf);
     policy_engine.protocol_layer.driver().inject_received_data(&buf[..len]);
+}
+
+static TRANSITION_CLOCK: AtomicU32 = AtomicU32::new(0);
+
+struct TransitionDeadlineTimer;
+
+impl Timer for TransitionDeadlineTimer {
+    fn now_128ms_ticks() -> u32 {
+        TRANSITION_CLOCK.load(Ordering::SeqCst)
+    }
+
+    async fn after_millis(_milliseconds: u64) {
+        embassy_futures::yield_now().await;
+    }
+}
+
+#[tokio::test]
+async fn successful_epr_power_transition_rearms_keep_alive_from_ps_rdy() {
+    use crate::dummy::get_source_capability_request;
+    use crate::sink::policy_engine::Mode;
+
+    let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, TransitionDeadlineTimer, DummySinkDevice> =
+        Sink::new(DummyDriver::new(), DummySinkDevice {});
+    let request = get_source_capability_request();
+
+    policy_engine.mode = Mode::Epr;
+    policy_engine.state = State::TransitionSink(request);
+    policy_engine.epr_keep_alive_deadline_tick = Some(7);
+    TRANSITION_CLOCK.store(100, Ordering::SeqCst);
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::PsRdy, 0);
+
+    policy_engine.run_step().await.unwrap();
+
+    assert!(matches!(policy_engine.state, State::Ready(..)));
+    assert_eq!(policy_engine.epr_keep_alive_deadline_tick, Some(103));
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+struct KeepAliveSourceResetDriver {
+    sink_hard_resets: std::sync::Arc<AtomicU32>,
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+impl Driver for KeepAliveSourceResetDriver {
+    const HAS_AUTO_GOOD_CRC: bool = true;
+    const HAS_AUTO_RETRY: bool = true;
+
+    async fn wait_for_vbus(&mut self) {}
+
+    async fn receive(&mut self, _buffer: &mut [u8]) -> Result<usize, DriverRxError> {
+        Err(DriverRxError::HardReset)
+    }
+
+    async fn transmit(&mut self, _data: &[u8]) -> Result<(), DriverTxError> {
+        Ok(())
+    }
+
+    async fn transmit_hard_reset(&mut self) -> Result<(), DriverTxError> {
+        self.sink_hard_resets.fetch_add(1, Ordering::SeqCst);
+        Ok(())
+    }
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+struct KeepAliveSourceResetDpm {
+    origin: std::sync::Arc<AtomicU32>,
+    reason: std::sync::Arc<AtomicU32>,
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+impl DevicePolicyManager for KeepAliveSourceResetDpm {
+    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
+        self.origin.store(
+            match origin {
+                HardResetOrigin::Source => 1,
+                HardResetOrigin::Sink => 2,
+            },
+            Ordering::SeqCst,
+        );
+        self.reason.store(reason as u32, Ordering::SeqCst);
+    }
+}
+
+#[cfg(feature = "hard-reset-reasons")]
+#[tokio::test]
+async fn source_hard_reset_while_waiting_for_keep_alive_ack_is_not_retransmitted() {
+    use crate::dummy::get_source_capability_request;
+    use crate::sink::policy_engine::Mode;
+
+    let sink_hard_resets = std::sync::Arc::new(AtomicU32::new(0));
+    let origin = std::sync::Arc::new(AtomicU32::new(0));
+    let reason = std::sync::Arc::new(AtomicU32::new(u32::MAX));
+    let driver = KeepAliveSourceResetDriver { sink_hard_resets: std::sync::Arc::clone(&sink_hard_resets) };
+    let dpm =
+        KeepAliveSourceResetDpm { origin: std::sync::Arc::clone(&origin), reason: std::sync::Arc::clone(&reason) };
+    let mut policy_engine: Sink<_, DummyTimer, _> = Sink::new(driver, dpm);
+
+    policy_engine.mode = Mode::Epr;
+    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::TransitionToDefault));
+
+    policy_engine.run_step().await.unwrap();
+    assert_eq!(origin.load(Ordering::SeqCst), 1);
+    assert_eq!(reason.load(Ordering::SeqCst), HardResetReason::SourceSignaled as u32);
+    assert_eq!(sink_hard_resets.load(Ordering::SeqCst), 0);
 }
 
 /// Get a header template for simulating source messages (Source/Dfp roles).

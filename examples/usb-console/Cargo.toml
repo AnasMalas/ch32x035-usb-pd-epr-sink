@@ -9,7 +9,7 @@ publish = false
 [features]
 default = ["sdi-log"]
 sdi-log = []
-usb-control = []
+usb-control = ["pd-sink/hard-reset-reasons"]
 dev-text-console = []
 # Compatibility alias for commands documented by the private development
 # repository before the production control protocol was separated.
@@ -20,7 +20,7 @@ epr-50v-compatible-hardware = ["epr-capable-hardware"]
 bench-epr-fixed-48v = ["epr-capable-hardware"]
 
 [dependencies]
-pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink", features = ["ch32x035"] }
+pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink", default-features = false, features = ["ch32x035"] }
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = [
     "ch32x035f8u6",
     "memory-x",

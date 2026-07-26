@@ -81,6 +81,8 @@ const state = {
   nextSequence: 1,
   lineBuffer: "",
   log: [],
+  rawLog: [],
+  nextLogSequence: 1,
   pdos: new Map(),
   expectedPdoCount: 0,
   sourceKind: null,
@@ -103,6 +105,7 @@ const state = {
 
 const encoder = new TextEncoder();
 const MAX_LOG_LINES = 1500;
+const MAX_RAW_LOG_LINES = 1000;
 const BOARD_SETTING_PREFIX = "usb-pd-control.board.";
 const ALLOWED_VOLTAGE_CEILINGS = new Set(controlProtocol.VOLTAGE_CEILINGS);
 const DEVELOPMENT_USB_FILTERS = Object.freeze([
@@ -382,6 +385,20 @@ function timeStamp(date = new Date()) {
   return date.toLocaleTimeString([], { hour12: false, hour: "2-digit", minute: "2-digit", second: "2-digit" });
 }
 
+function logMarker(direction) {
+  return direction === "outgoing" ? ">" : direction === "system" ? "•" : "<";
+}
+
+function formatLogEntry(entry, timestamp, updateCount = 1) {
+  const suffix = updateCount > 1 ? ` ×${updateCount}` : "";
+  return `${timestamp} ${logMarker(entry.direction)} ${entry.text}${suffix}`;
+}
+
+function visibleLogEntries() {
+  if (!state.rawStream) return state.log;
+  return [...state.log, ...state.rawLog].sort((left, right) => left.sequence - right.sequence);
+}
+
 function collapsedConsoleKey(entry) {
   if (entry.direction !== "incoming") return null;
   if (entry.text === "Queued") return "hidden";
@@ -402,7 +419,7 @@ function createLogRow(entry, updateCount = 1) {
 
   const marker = document.createElement("span");
   marker.className = "terminal-direction";
-  marker.textContent = entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<";
+  marker.textContent = logMarker(entry.direction);
 
   const content = document.createElement("span");
   content.className = "terminal-text";
@@ -415,6 +432,7 @@ function createLogRow(entry, updateCount = 1) {
   }
 
   row.append(time, marker, content);
+  row.dataset.copyLine = formatLogEntry(entry, time.textContent, updateCount);
   return row;
 }
 
@@ -442,16 +460,25 @@ function appendVisibleLog(entry) {
 function renderConsole() {
   ui.terminal.replaceChildren();
   state.collapsedConsoleRows.clear();
-  for (const entry of state.log) appendVisibleLog(entry);
+  for (const entry of visibleLogEntries()) appendVisibleLog(entry);
   if (ui.autoScroll.checked) ui.terminal.scrollTop = ui.terminal.scrollHeight;
 }
 
 function addLog(text, direction = "incoming", severity = "normal", { rawTransport = false } = {}) {
-  const entry = { time: new Date(), text, direction, severity, rawTransport };
-  state.log.push(entry);
-  if (state.log.length > MAX_LOG_LINES) {
-    state.log.splice(0, state.log.length - MAX_LOG_LINES);
-    renderConsole();
+  const entry = {
+    time: new Date(),
+    text,
+    direction,
+    severity,
+    rawTransport,
+    sequence: state.nextLogSequence++,
+  };
+  const target = rawTransport ? state.rawLog : state.log;
+  const maximum = rawTransport ? MAX_RAW_LOG_LINES : MAX_LOG_LINES;
+  target.push(entry);
+  if (target.length > maximum) {
+    target.splice(0, target.length - maximum);
+    if (!rawTransport || state.rawStream) renderConsole();
   } else {
     appendVisibleLog(entry);
   }
@@ -461,7 +488,7 @@ function addLog(text, direction = "incoming", severity = "normal", { rawTranspor
 }
 
 function addRawTransportLog(bytes, direction) {
-  if (!state.rawStream || bytes.length === 0) return;
+  if (bytes.length === 0) return;
   const hex = [...bytes].map((byte) => byte.toString(16).padStart(2, "0")).join(" ");
   const api = state.connectionApi === "webusb-cdc" ? "WebUSB" : "Serial";
   addLog(`RAW ${api} ${bytes.length} B · ${hex}`, direction, "normal", { rawTransport: true });
@@ -1367,16 +1394,17 @@ ui.rawCommandForm.addEventListener("submit", async (event) => {
 
 ui.clearLog.addEventListener("click", () => {
   state.log.length = 0;
+  state.rawLog.length = 0;
   state.collapsedConsoleRows.clear();
   ui.terminal.replaceChildren();
 });
 
 function exportLogEntries() {
-  return state.log.filter((entry) => state.rawStream || !entry.rawTransport);
+  return visibleLogEntries();
 }
 
 ui.copyLog.addEventListener("click", async () => {
-  const text = exportLogEntries().map((entry) => `${timeStamp(entry.time)} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
+  const text = exportLogEntries().map((entry) => formatLogEntry(entry, timeStamp(entry.time))).join("\n");
   try {
     await navigator.clipboard.writeText(text);
     setFeedback("Console copied to the clipboard.");
@@ -1386,7 +1414,7 @@ ui.copyLog.addEventListener("click", async () => {
 });
 
 ui.saveLog.addEventListener("click", () => {
-  const text = exportLogEntries().map((entry) => `${entry.time.toISOString()} ${entry.direction === "outgoing" ? ">" : entry.direction === "system" ? "•" : "<"} ${entry.text}`).join("\n");
+  const text = exportLogEntries().map((entry) => formatLogEntry(entry, entry.time.toISOString())).join("\n");
   const blob = new Blob([`${text}\n`], { type: "text/plain;charset=utf-8" });
   const link = document.createElement("a");
   link.href = URL.createObjectURL(blob);
@@ -1395,7 +1423,31 @@ ui.saveLog.addEventListener("click", () => {
   setTimeout(() => URL.revokeObjectURL(link.href), 0);
 });
 
-if (!("serial" in navigator) && !("usb" in navigator)) {
+ui.terminal.addEventListener("copy", (event) => {
+  const selection = window.getSelection();
+  if (!selection || selection.isCollapsed || selection.rangeCount === 0) return;
+  const range = selection.getRangeAt(0);
+  const lines = [...ui.terminal.querySelectorAll(".terminal-line")]
+    .filter((row) => {
+      try {
+        return range.intersectsNode(row);
+      } catch {
+        return false;
+      }
+    })
+    .map((row) => row.dataset.copyLine);
+  if (lines.length === 0 || !event.clipboardData) return;
+  event.clipboardData.setData("text/plain", lines.join("\n"));
+  event.preventDefault();
+});
+
+const androidRequiresHttps = /Android/i.test(navigator.userAgent) && location.protocol !== "https:";
+if (androidRequiresHttps) {
+  ui.browserNotice.textContent =
+    "Android WebUSB requires this page to be served over HTTPS. The standalone local file supports desktop Chrome or Edge through Web Serial.";
+  ui.browserNotice.classList.remove("hidden");
+  ui.connectButton.disabled = true;
+} else if (!("serial" in navigator) && !("usb" in navigator)) {
   ui.browserNotice.classList.remove("hidden");
   ui.connectButton.disabled = true;
 }
@@ -1430,4 +1482,7 @@ setConnected(false);
 clearDeviceState();
 updatePdoFields();
 updateActionAvailability();
-addLog("USB PD Control is ready. Connect a USB-control or development text-console device through Web Serial or WebUSB.", "system");
+addLog(
+  "USB PD Control is ready. Desktop standalone uses Web Serial; Android WebUSB requires an HTTPS-hosted page.",
+  "system",
+);

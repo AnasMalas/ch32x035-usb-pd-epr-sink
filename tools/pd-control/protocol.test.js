@@ -153,6 +153,14 @@ assert.deepEqual(eventLines(0x91, [1, 3]), [
   "PPS_Status query failed: timeout",
 ]);
 
+assert.deepEqual(eventLines(0x88, [1, ...u32(2000), 8]), [
+  "Hard reset sent; cause=epr-keepalive-failed; load off; recovery=2000ms",
+]);
+
+assert.deepEqual(eventLines(0x88, [0, ...u32(2000)]), [
+  "Hard reset received; cause=legacy-unspecified; load off; recovery=2000ms",
+]);
+
 assert.throws(() => protocol.encodeCommand("request 17200 2300 magic", 1), /preference/i);
 assert.throws(() => protocol.encodeCommand("pdo 10 adjust 48000 0", 1), /range/i);
 

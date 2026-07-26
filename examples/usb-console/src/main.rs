@@ -41,6 +41,7 @@ use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
 #[cfg(feature = "usb-control")]
 use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
+    HardResetCause,
 };
 #[cfg(feature = "bench-epr-fixed-48v")]
 use pd_sink::{Preference, UserRequest};
@@ -132,6 +133,7 @@ const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const PROTOCOL_RESTART_COOLDOWN_MS: u64 = 2_000;
 const UNRESPONSIVE_RETRY_MS: u64 = 10_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
+const EPR_OPERATIONAL_PDP_WATTS: u8 = 240;
 
 static VBUS_PRESENT: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
 static VBUS_ATTACHED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -209,7 +211,7 @@ fn sink_config() -> SinkConfig {
                 limits,
                 source_present_pdp: None,
             },
-            epr_operational_pdp: epr_capable.then_some(Milliwatts(140_000)),
+            epr_operational_pdp: epr_capable.then_some(Milliwatts(u32::from(EPR_OPERATIONAL_PDP_WATTS) * 1_000)),
         },
         descriptor: SinkPowerDescriptor {
             // Temporary WCH development identifiers, matching the USB
@@ -223,7 +225,7 @@ fn sink_config() -> SinkConfig {
             spr_operational_pdp_watts: 15,
             spr_maximum_pdp_watts: if epr_capable || pps_capable { 100 } else { 15 },
             epr_minimum_pdp_watts: if epr_capable { 5 } else { 0 },
-            epr_operational_pdp_watts: if epr_capable { 140 } else { 0 },
+            epr_operational_pdp_watts: if epr_capable { EPR_OPERATIONAL_PDP_WATTS } else { 0 },
             epr_maximum_pdp_watts: if epr_capable { 240 } else { 0 },
         },
         max_auto_epr_attempts: if epr_capable { MAX_AUTO_EPR_ATTEMPTS } else { 0 },
@@ -788,7 +790,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     fn on_capability_plans_unavailable(&mut self) {
         control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable));
-        logln!("Plans unavailable in text console; use usb-epr");
+        logln!("Plans unavailable");
     }
 
     #[cfg(not(feature = "dev-text-console"))]
@@ -840,12 +842,12 @@ impl SinkRuntime for FirmwareRuntime {
 
     fn on_stack_capabilities_rejected(&mut self, _error: pd_sink::CapabilityListError) {
         control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilitiesRejected));
-        logln!("Source capabilities rejected by integration");
+        logln!("Source caps error");
     }
 
     fn on_stack_request_rejected(&mut self, _error: pd_sink::StackConversionError) {
         control_event!(ControlEvent::IntegrationError(ControlIntegrationError::RequestRejected));
-        logln!("Request rejected by integration");
+        logln!("Request error");
     }
 
     fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
@@ -892,11 +894,24 @@ impl SinkRuntime for FirmwareRuntime {
         }
     }
 
-    fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
-        control_event!(ControlEvent::HardReset { direction, recovery_ms: recovery_ms.min(u64::from(u32::MAX)) as u32 });
+    #[cfg(feature = "usb-control")]
+    fn on_hard_reset(&mut self, direction: HardResetDirection, _cause: HardResetCause, recovery_ms: u64) {
+        control_event!(ControlEvent::HardReset {
+            direction,
+            cause: _cause,
+            recovery_ms: recovery_ms.min(u64::from(u32::MAX)) as u32
+        });
         match direction {
-            HardResetDirection::Received => logln!("Hard reset received; load off; recovery={}ms", recovery_ms),
-            HardResetDirection::Sent => logln!("Hard reset sent; load off; recovery={}ms", recovery_ms),
+            HardResetDirection::Received => logln!("HR received; off; {}ms", recovery_ms),
+            HardResetDirection::Sent => logln!("HR sent; off; {}ms", recovery_ms),
+        }
+    }
+
+    #[cfg(not(feature = "usb-control"))]
+    fn on_hard_reset(&mut self, direction: HardResetDirection, recovery_ms: u64) {
+        match direction {
+            HardResetDirection::Received => logln!("HR received; off; {}ms", recovery_ms),
+            HardResetDirection::Sent => logln!("HR sent; off; {}ms", recovery_ms),
         }
     }
 
@@ -907,12 +922,12 @@ impl SinkRuntime for FirmwareRuntime {
             extra: 0,
         });
         #[cfg(not(feature = "dev-text-console"))]
-        logln!("Reset recovery complete; Source_Capabilities received");
+        logln!("Reset recovery complete");
     }
 
     fn on_detached(&mut self) {
         control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::Detached, detail: 0, extra: 0 });
-        logln!("Detached; contract lost; load off");
+        logln!("Detached; contract lost; off");
     }
 
     fn on_protocol_lost(&mut self, epr_attempts: u8, maximum_epr_attempts: u8) {
@@ -921,12 +936,12 @@ impl SinkRuntime for FirmwareRuntime {
             detail: u32::from(epr_attempts),
             extra: u32::from(maximum_epr_attempts),
         });
-        logln!("Protocol lost; load off; EPR={}/{}", epr_attempts, maximum_epr_attempts);
+        logln!("Protocol lost; off; EPR={}/{}", epr_attempts, maximum_epr_attempts);
     }
 
     fn on_epr_entry_failed(&mut self, reason: u8) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::EntryFailed, detail: reason, extra: 0 });
-        logln!("EPR entry failed reason={}; auto off", reason);
+        logln!("EPR failed={}; auto off", reason);
     }
 
     fn on_epr_discovery_started(&mut self, attempt: u8, maximum_attempts: u8) {
@@ -935,23 +950,23 @@ impl SinkRuntime for FirmwareRuntime {
             detail: attempt,
             extra: maximum_attempts,
         });
-        logln!("EPR discovery: enter attempt={}/{}; hold 5 V", attempt, maximum_attempts);
+        logln!("EPR enter={}/{}; 5 V", attempt, maximum_attempts);
     }
 
     fn on_epr_discovery_unavailable(&mut self) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::DiscoveryUnavailable, detail: 0, extra: 0 });
         #[cfg(not(feature = "dev-text-console"))]
-        logln!("EPR discovery unavailable; auto off");
+        logln!("EPR unavailable");
     }
 
     fn on_epr_automatic_discovery_disabled(&mut self) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::AutomaticDiscoveryDisabled, detail: 0, extra: 0 });
-        logln!("EPR auto off; staying SPR; manual retry available");
+        logln!("EPR off; SPR active");
     }
 
     fn on_epr_manual_entry_started(&mut self) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::ManualEntryStarted, detail: 0, extra: 0 });
-        logln!("EPR manual enter; hold 5 V");
+        logln!("EPR manual; 5 V");
     }
 
     fn on_identity_requested(&mut self) {
@@ -987,7 +1002,7 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
 
         sink.restart();
         control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::CcDetected, detail: 0, extra: 0 });
-        logln!("CC detected; waiting for VBUS");
+        logln!("CC; wait VBUS");
 
         let result = sink.run().await;
         let (restart_delay_ms, wait_for_detach) = match result {
