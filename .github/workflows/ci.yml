@@ -10,15 +10,29 @@ permissions:
 
 jobs:
   check:
-    runs-on: ubuntu-latest
+    name: Check (${{ matrix.os }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        os:
+          - ubuntu-latest
+          - windows-latest
     steps:
       - name: Check out repository
         uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+
+      - name: Use Node.js 24
+        uses: actions/setup-node@v6
+        with:
+          node-version: 24
 
       - name: Show pinned toolchain
         run: rustup show active-toolchain
 
       - name: Run maintained repository checks
         shell: pwsh
-        run: ./scripts/check.ps1 -HostTarget x86_64-unknown-linux-gnu -RequireNode
+        run: ./scripts/check.ps1 -RequireNode
