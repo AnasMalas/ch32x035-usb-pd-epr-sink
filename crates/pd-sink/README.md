@@ -51,6 +51,28 @@ Applications that need the CH32 adapter normally use
 `hard-reset-reasons` only when that diagnostic detail is worth the firmware
 space.
 
+## Flash use
+
+These request-planning paths add roughly the following release/LTO flash over
+the same minimal CH32X035 program. Each row is an alternative, not a
+cumulative cost.
+
+| Application behavior | Added flash |
+|---|---:|
+| Decode advertised PDOs | ~1 KiB |
+| Request a fixed PDO | ~4 KiB |
+| Request PPS at 12 V | ~5 KiB |
+| Request SPR AVS at 12 V | ~5 KiB |
+| Change PPS voltage at runtime | ~5 KiB |
+| Request EPR AVS at runtime | ~5 KiB |
+
+These paths construct and retain requests; they do not include the on-wire
+policy engine, PD PHY, executor, console, or application. The complete
+reference sink, including those runtime pieces and its safety supervisor, is
+about 47 KiB without a console or 57 KiB with compact USB control. Fixed, PPS,
+and EPR configurations are broadly the same size because they are selected at
+runtime.
+
 ## Integration sequence
 
 1. Build `SinkConfig` from the complete board's voltage, current, and power

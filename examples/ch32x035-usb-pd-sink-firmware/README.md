@@ -92,8 +92,8 @@ Useful interactive builds are:
 `usb-epr-50v` image raises only the configured sink ceiling; normal AVS
 selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
 console for bring-up. Build output reports the current flash and static-RAM
-usage; do not copy size figures into documentation because they change with
-every compiler and feature update.
+usage; the [crate guide](../../crates/pd-sink/README.md#flash-use)
+shows representative linked costs for common integration paths.
 
 ## USB ISP and runtime CDC
 

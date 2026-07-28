@@ -99,7 +99,7 @@ crate owns PD parsing, request planning, contract state, recovery, and the
 optional pin-agnostic CH32X035 PHY adapter. See the
 [crate guide](crates/pd-sink/README.md) and
 [integration guide](docs/integration.md) for the required adapters and startup
-sequence.
+sequence. The crate guide also shows representative linked flash use.
 
 ### Supported behavior
 
