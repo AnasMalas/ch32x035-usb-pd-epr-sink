@@ -13,3 +13,8 @@ console tools live with the
 [embedded firmware example](../examples/ch32x035-usb-pd-sink-firmware/scripts/);
 browser packaging and launching live with the
 [browser control-client example](../examples/browser-usb-pd-control-client/scripts/).
+
+`check.ps1` detects the native Rust host target on developer machines. CI
+passes `-HostTarget x86_64-unknown-linux-gnu -RequireNode` so host tests use
+the runner target and a missing Node.js installation cannot silently skip the
+browser protocol tests.

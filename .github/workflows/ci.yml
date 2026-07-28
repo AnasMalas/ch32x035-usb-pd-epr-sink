@@ -1,31 +1,24 @@
-name: firmware
+name: Repository checks
 
 on:
   push:
   pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
 
 jobs:
-  build:
+  check:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
     steps:
-      - uses: actions/checkout@v4
+      - name: Check out repository
+        uses: actions/checkout@v6
+
       - name: Show pinned toolchain
         run: rustup show active-toolchain
-      - name: Check formatting
-        run: |
-          cargo fmt --all --check
-          cargo fmt --manifest-path vendor/ch32-hal/Cargo.toml -- --check
-          cargo fmt --manifest-path vendor/usbpd/Cargo.toml -- --check
-          cargo fmt --manifest-path vendor/usbpd-traits/Cargo.toml -- --check
-      - name: Lint host policy and stack tests
-        run: cargo clippy -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --all-targets --target x86_64-unknown-linux-gnu --locked -- -D warnings
-      - name: Run host policy and stack tests
-        run: cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --target x86_64-unknown-linux-gnu --locked
-      - name: Build safe 5 V firmware
-        run: cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked
-      - name: Build PPS 19.4 V firmware
-        run: cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features bench-pps-19v4
-      - name: Build EPR AVS 19.4 V firmware
-        run: cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features bench-epr-avs-19v4
-      - name: Build EPR fixed 48 V firmware
-        run: cargo build -p ch32x035-usb-pd-epr-sink-example --release --locked --features bench-epr-fixed-48v
+
+      - name: Run maintained repository checks
+        shell: pwsh
+        run: ./scripts/check.ps1 -HostTarget x86_64-unknown-linux-gnu -RequireNode
