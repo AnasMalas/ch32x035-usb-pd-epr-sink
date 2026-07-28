@@ -15,8 +15,12 @@ sends a command.
 
 ## Start
 
-Flash `usb-epr` (preferred compact control) or `usb-epr-text` (development
-ASCII console), then run from the repository root:
+This client requires a CH32X035 already running a compatible USB firmware
+profile. For a new board, first complete the firmware example's
+[safe 5 V start](../ch32x035-usb-pd-sink-firmware/README.md#first-safe-run-on-windows).
+
+For desktop offline use, flash a compact-control profile such as
+`usb-safe-5v`, `usb-pps`, or `usb-epr`, then run from the repository root:
 
 ```powershell
 .\examples\browser-usb-pd-control-client\scripts\launch.ps1
@@ -36,12 +40,6 @@ connect the board through USB OTG, and select it in Chrome's WebUSB prompt. The
 Android transport claims the CDC interfaces only while the page is connected.
 Other serial applications can use the same firmware after the page
 disconnects, but two applications cannot own the device simultaneously.
-
-The deployment workflow is `.github/workflows/pages.yml`. GitHub Pages must
-use **GitHub Actions** as its publishing source; pushes that change this
-application on `main` package the same HTML, CSS, and JavaScript into one
-hosted `index.html`. Keeping the hosted application to one request avoids
-repeated origin round trips on proxied custom domains.
 
 ## Interface
 
@@ -87,15 +85,6 @@ The Start telemetry button controls optional PPS_Status polling only. PPS
 contract maintenance is required to keep a PPS contract alive and cannot be
 disabled by the GUI; its latest confirmation time is shown separately.
 
-The pure browser protocol tests can optionally be run by contributors who have
-Node.js installed:
-
-```powershell
-node .\examples\browser-usb-pd-control-client\protocol.test.js
-```
-
-Node.js is not used to launch or operate the GUI.
-
 ## Transport selection
 
 The page waits for device output before sending a command. A valid `PD`,
@@ -138,3 +127,19 @@ software less convenient.
 The bundled WebUSB selector matches the development VID `1A86` and PID
 `FE0C`. A downstream device using different USB descriptors must update the
 selector at the same time. No USB data leaves the browser.
+
+## Development and deployment
+
+Node.js is not used to launch or operate the GUI. Contributors use it only for
+the pure browser protocol tests:
+
+```powershell
+node .\examples\browser-usb-pd-control-client\protocol.test.js
+```
+
+The deployment workflow is `.github/workflows/pages.yml`. GitHub Pages must
+use **GitHub Actions** as its publishing source; pushes that change this
+application on `main` package the same HTML, CSS, and JavaScript into one
+hosted `index.html`. Keeping the hosted application to one request avoids
+repeated origin round trips on proxied custom domains. Repository-wide
+contribution guidance is in [`CONTRIBUTING.md`](../../CONTRIBUTING.md).

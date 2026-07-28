@@ -1,0 +1,99 @@
+name: Firmware, protocol, or GUI bug
+description: Report a reproducible problem with the sink library or reference applications
+title: "[Bug] "
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting a problem. Keep traces short, but include the first
+        unexpected state transition and enough preceding context to reproduce it.
+        Do not attach USB-IF specification documents.
+
+  - type: dropdown
+    id: area
+    attributes:
+      label: Affected area
+      options:
+        - Reusable sink crate
+        - USB-PD policy engine or messages
+        - CH32X035 PHY or USB firmware
+        - Reference firmware behavior
+        - Browser control client
+        - Build, flash, or documentation
+        - Not sure
+    validations:
+      required: true
+
+  - type: input
+    id: revision
+    attributes:
+      label: Firmware or repository revision
+      description: Commit SHA, tag, or exact downloaded revision
+      placeholder: 0123456789abcdef...
+    validations:
+      required: true
+
+  - type: input
+    id: profile
+    attributes:
+      label: Firmware profile
+      description: For example usb-safe-5v, usb-pps, usb-epr, or downstream custom
+      placeholder: usb-epr
+    validations:
+      required: true
+
+  - type: textarea
+    id: setup
+    attributes:
+      label: Hardware and connection
+      description: Board revision, VBUS sensing/load-gate arrangement, source model and exact port, and cable identity
+      placeholder: |
+        Board:
+        VBUS/load gate:
+        Source and port:
+        Cable:
+    validations:
+      required: true
+
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and observed behavior
+      description: State the first point where the observed sequence diverged
+      placeholder: |
+        Expected:
+        Observed:
+        First divergence:
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Minimal reproduction
+      description: Commands or physical sequence starting from a known state
+    validations:
+      required: true
+
+  - type: textarea
+    id: trace
+    attributes:
+      label: Short trace or measurements
+      description: Paste the smallest complete raw trace; add analyzer, scope, or meter evidence when the claim depends on wire or power-path behavior
+      render: text
+
+  - type: checkboxes
+    id: safety
+    attributes:
+      label: Safety check
+      options:
+        - label: Any powered test used appropriately rated hardware and independent current/fault protection.
+          required: true
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Existing reports
+      options:
+        - label: I searched existing issues for the same source, port, profile, or symptom.
+          required: true

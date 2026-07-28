@@ -3,6 +3,11 @@
 This procedure stops at safe 5 V, full source-capability discovery, and detach
 cutoff. Do not issue a high-voltage command during this pass.
 
+For an initial board, complete the optional isolated fixture guidance and
+sections 1-4 first. Sections 5-9 are advanced protocol, reconnect, EPR, status,
+and evidence checks for qualification or regression work; they are not
+prerequisites for opening the GUI at safe 5 V.
+
 ## Optional isolated protocol bring-up
 
 Before the load-switch hardware is fitted, the PD protocol and USB console may

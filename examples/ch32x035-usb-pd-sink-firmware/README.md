@@ -10,55 +10,67 @@ Run the commands below from the repository root. Read the
 [first-board verification](docs/first_board_verification.md) before enabling
 PPS or EPR on a new board.
 
-## Reproducible build inputs
+## First safe run on Windows
 
-The repository defines the complete build:
+This repository supplies firmware source and a pin-level hardware contract,
+not a reference schematic or finished board. You need to know how your board
+enters the CH32X035 factory USB ISP boot mode and how its PA6/PB12 safety
+signals are implemented.
 
-- `rust-toolchain.toml` pins Rust, rustfmt, Clippy, and the RISC-V target;
-- `Cargo.lock` pins the resolved dependency graph;
-- the three `vendor/` crates contain the exact HAL/PD revisions plus local
-  repairs;
-- `.cargo/config.toml` selects `riscv32imc-unknown-none-elf`;
-- `examples/ch32x035-usb-pd-sink-firmware/build.rs` supplies the CH32 linker
-  arguments.
-
-Docker is unnecessary. VS Code with rust-analyzer is a convenient editor, but
-the PowerShell scripts and Cargo files are the reproducible interface.
-
-The project currently pins a dated nightly because that is the compiler
-snapshot used to validate this embedded dependency set. Application code does
-not intentionally depend on nightly syntax; moving to stable should be done as
-a tested toolchain change rather than by following a moving channel.
-
-## One-time Windows setup
-
-1. Install Git.
+1. Install Git and clone this repository.
 2. Install Rust through <https://rustup.rs/>.
 3. Install Microsoft Visual Studio Build Tools with the C++ workload and a
    Windows SDK. Host-side Rust tests need `link.exe`.
 4. Open PowerShell in this repository.
-5. Run:
+5. Install the pinned dependencies and USB-ISP flasher:
 
 ```powershell
 .\scripts\bootstrap.ps1
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\install-wchisp.ps1
 ```
 
-The workspace bootstrap activates the pinned Rust components, downloads locked
-dependencies, and builds the workspace. The example-specific installer adds
-the pinned USB-ISP flasher.
-
-## Daily workflow
+6. Read the [hardware interface](docs/hardware_interface.md), prove the
+   default-off load gate, and enter your board's factory USB ISP mode.
+7. Build and program the 5 V-only compact-control profile:
 
 ```powershell
-.\scripts\check.ps1
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\program.ps1 -Profile usb-safe-5v
+```
+
+8. Leave ISP mode, reset normally, and launch the browser client:
+
+```powershell
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
+```
+
+Select the CH32 CDC device. A successful first pass reports source
+capabilities and confirms PDO 1 at fixed 5 V. Continue with
+[first-board verification](docs/first_board_verification.md); do not flash a
+PPS or EPR profile merely because the safe firmware negotiates correctly.
+
+## Firmware profiles
+
+| Profile | Diagnostics/control | Declared hardware policy |
+|---|---|---|
+| `safe-5v` | LinkE SDI | fixed 5 V |
+| `usb-safe-5v` | compact USB control | fixed 5 V |
+| `usb-pps` | compact USB control | PPS through 21 V |
+| `usb-epr` | compact USB control | standard EPR through 48 V |
+| `usb-epr-50v` | compact USB control | explicit non-standard 50 V compatibility |
+| `usb-epr-text` | ASCII USB console | standard EPR through 48 V |
+
+These profiles are board assertions, not software-only unlocks. Do not select
+one whose voltage, current, or power exceeds the complete connector,
+protection, switch, measurement, and load path.
+
+## Build profiles
+
+```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
 ```
 
-`check.ps1` runs formatting, warning-as-error Clippy for the host policy/test
-crates, all desktop tests, and every firmware feature combination used for
-bring-up. Cargo uses the repository's standard `target/` directory unless the
-caller sets `CARGO_TARGET_DIR`:
+Cargo uses the repository's standard `target/` directory unless the caller
+sets `CARGO_TARGET_DIR`:
 
 ```text
 <repository>\target
@@ -162,7 +174,42 @@ USB logging is non-blocking with respect to the PD task. A disconnected or
 slow host may lose diagnostic lines, but it cannot stop negotiation or the
 load supervisor.
 
-## Updating dependencies or Rust
+## Development and maintenance
+
+### Repository checks
+
+Before committing a change, run:
+
+```powershell
+.\scripts\check.ps1 -RequireNode
+```
+
+It checks documentation, formatting, warning-free Clippy, desktop policy
+tests, every reference firmware profile, browser packaging, and browser
+protocol tests. See [`CONTRIBUTING.md`](../../CONTRIBUTING.md) for repository
+boundaries and evidence requirements.
+
+### Reproducible build inputs
+
+The repository defines the complete build:
+
+- `rust-toolchain.toml` pins Rust, rustfmt, Clippy, and the RISC-V target;
+- `Cargo.lock` pins the resolved dependency graph;
+- the three `vendor/` crates contain the exact HAL/PD revisions plus local
+  repairs;
+- `.cargo/config.toml` selects `riscv32imc-unknown-none-elf`;
+- `examples/ch32x035-usb-pd-sink-firmware/build.rs` supplies the CH32 linker
+  arguments.
+
+Docker is unnecessary. VS Code with rust-analyzer is a convenient editor, but
+the PowerShell scripts and Cargo files are the reproducible interface.
+
+The project currently pins a dated nightly because that is the compiler
+snapshot used to validate this embedded dependency set. Application code does
+not intentionally depend on nightly syntax; moving to stable should be done as
+a tested toolchain change rather than by following a moving channel.
+
+### Updating dependencies or Rust
 
 Treat either as a deliberate source change:
 
