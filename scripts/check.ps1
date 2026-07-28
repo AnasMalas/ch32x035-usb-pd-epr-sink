@@ -7,10 +7,22 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
-$cargoBin = Join-Path $env:USERPROFILE '.cargo\bin'
 
-if (-not (Get-Command cargo -ErrorAction SilentlyContinue) -and (Test-Path -LiteralPath (Join-Path $cargoBin 'cargo.exe'))) {
-    $env:Path = "$cargoBin;$env:Path"
+if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
+    $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
+    if (-not [string]::IsNullOrWhiteSpace($userProfile)) {
+        $cargoBin = Join-Path $userProfile '.cargo/bin'
+        $cargoExecutable = if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+            'cargo.exe'
+        }
+        else {
+            'cargo'
+        }
+
+        if (Test-Path -LiteralPath (Join-Path $cargoBin $cargoExecutable) -PathType Leaf) {
+            $env:Path = "$cargoBin$([IO.Path]::PathSeparator)$env:Path"
+        }
+    }
 }
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
