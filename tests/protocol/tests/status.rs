@@ -118,23 +118,23 @@ struct StatusDpm {
 }
 
 impl DevicePolicyManager for StatusDpm {
-    async fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
+    fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn inform_alert(&mut self, alert: &AlertDataObject) {
+    fn inform_alert(&mut self, alert: &AlertDataObject) {
         self.alert_seen.store(alert.operating_condition_change(), Ordering::SeqCst);
     }
 
-    async fn inform_pps_status(&mut self, status: &PpsStatus) {
+    fn inform_pps_status(&mut self, status: &PpsStatus) {
         self.pps_raw.store(u32::from_le_bytes(status.raw_bytes()), Ordering::SeqCst);
     }
 
-    async fn inform_status(&mut self, status: &Status) {
+    fn inform_status(&mut self, status: &Status) {
         self.status_event_flags.store(status.event_flags() as usize, Ordering::SeqCst);
     }
 
-    async fn status_query_failed(&mut self, query: StatusQueryKind, failure: StatusQueryFailure) {
+    fn status_query_failed(&mut self, query: StatusQueryKind, failure: StatusQueryFailure) {
         let query = match query {
             StatusQueryKind::General => 0,
             StatusQueryKind::Pps => 10,

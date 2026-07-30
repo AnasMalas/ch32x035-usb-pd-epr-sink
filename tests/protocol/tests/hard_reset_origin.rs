@@ -77,7 +77,7 @@ struct OriginDpm {
 }
 
 impl DevicePolicyManager for OriginDpm {
-    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
+    fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
         self.resets.lock().unwrap().push((origin, reason));
     }
 }
@@ -197,7 +197,7 @@ struct RecoveryDpm {
 }
 
 impl DevicePolicyManager for RecoveryDpm {
-    async fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) {
+    fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) {
         self.hard_resets.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -205,11 +205,11 @@ impl DevicePolicyManager for RecoveryDpm {
         2_000
     }
 
-    async fn hard_reset_recovered(&mut self) {
+    fn hard_reset_recovered(&mut self) {
         self.recovered.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
+    fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 }

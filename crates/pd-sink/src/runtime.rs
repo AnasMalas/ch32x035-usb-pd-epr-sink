@@ -444,7 +444,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         )
     }
 
-    async fn inform(&mut self, source_capabilities: &StackSourceCapabilities) {
+    fn inform(&mut self, source_capabilities: &StackSourceCapabilities) {
         if matches!(self.contract.state(), ContractState::Detached | ContractState::Lost) {
             self.contract.on_attach();
         }
@@ -457,7 +457,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         }
     }
 
-    async fn request(&mut self, source_capabilities: &StackSourceCapabilities) -> PowerSource {
+    fn request(&mut self, source_capabilities: &StackSourceCapabilities) -> PowerSource {
         let capabilities =
             self.capabilities_or_report(source_capabilities).expect("policy engine must bound Source PDO count");
         let plan = self
@@ -473,7 +473,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         request_to_stack(plan).expect("request planner must return a stack-representable plan")
     }
 
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
+    fn transition_power(&mut self, _accepted: &PowerSource) {
         self.contract.on_accept().expect("PS_RDY must correspond to a pending request");
         self.contract.on_ps_ready().expect("accepted request must become the active contract");
         self.controller.on_ps_ready();
@@ -488,7 +488,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         }
     }
 
-    async fn request_not_accepted(&mut self, reason: RequestRejection) {
+    fn request_not_accepted(&mut self, reason: RequestRejection) {
         self.contract.on_reject_or_wait();
         self.pending_contract_refresh = false;
         let result = match reason {
@@ -507,7 +507,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.on_request_result(result);
     }
 
-    async fn inform_source_info(&mut self, source_info: &SourceInfo) {
+    fn inform_source_info(&mut self, source_info: &SourceInfo) {
         let present_watts = source_info.port_present_pdp_watts();
         let present_pdp = (present_watts != 0).then_some(Milliwatts(u32::from(present_watts) * 1_000));
         self.controller.set_source_present_pdp(present_pdp);
@@ -518,23 +518,23 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         );
     }
 
-    async fn inform_alert(&mut self, alert: &AlertDataObject) {
+    fn inform_alert(&mut self, alert: &AlertDataObject) {
         self.runtime.on_source_alert(SourceAlert::from_raw(alert.0));
         if alert.has_non_battery_status_change() {
             self.source_status_pending = true;
         }
     }
 
-    async fn inform_status(&mut self, status: &stack_status::Status) {
+    fn inform_status(&mut self, status: &stack_status::Status) {
         let pps_mode_valid = matches!(self.contract.active_plan().map(|plan| plan.supply), Some(SupplyKind::Pps));
         self.runtime.on_source_status(SourceStatus::from_raw_bytes(status.raw_bytes(), pps_mode_valid));
     }
 
-    async fn inform_pps_status(&mut self, status: &stack_pps_status::PpsStatus) {
+    fn inform_pps_status(&mut self, status: &stack_pps_status::PpsStatus) {
         self.runtime.on_pps_status(PpsStatus::from_raw_bytes(status.raw_bytes()));
     }
 
-    async fn status_query_failed(&mut self, query: StackStatusQueryKind, failure: StackStatusQueryFailure) {
+    fn status_query_failed(&mut self, query: StackStatusQueryKind, failure: StackStatusQueryFailure) {
         let query = match query {
             StackStatusQueryKind::General => StatusQuery::General,
             StackStatusQueryKind::Pps => StatusQuery::Pps,
@@ -549,7 +549,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     #[cfg(feature = "hard-reset-reasons")]
-    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetCause) {
+    fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetCause) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
@@ -565,7 +565,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     #[cfg(not(feature = "hard-reset-reasons"))]
-    async fn hard_reset(&mut self, origin: HardResetOrigin) {
+    fn hard_reset(&mut self, origin: HardResetOrigin) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
@@ -584,11 +584,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.config.hard_reset_recovery_ms.min(u64::from(u32::MAX)) as u32
     }
 
-    async fn hard_reset_recovered(&mut self) {
+    fn hard_reset_recovered(&mut self) {
         self.runtime.on_hard_reset_recovery_complete();
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_detach();
@@ -601,7 +601,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.on_detached();
     }
 
-    async fn protocol_lost(&mut self) {
+    fn protocol_lost(&mut self) {
         self.runtime.set_load_enabled(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
@@ -612,7 +612,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.on_protocol_lost(self.epr_discovery_attempts, self.config.max_auto_epr_attempts);
     }
 
-    async fn epr_mode_entry_failed(&mut self, reason: DataEnterFailed) {
+    fn epr_mode_entry_failed(&mut self, reason: DataEnterFailed) {
         self.controller.epr_entry_failed();
         self.pending_contract_refresh = false;
         self.source_info_requested = false;

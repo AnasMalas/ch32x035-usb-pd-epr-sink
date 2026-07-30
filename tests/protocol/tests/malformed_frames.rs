@@ -149,11 +149,11 @@ struct RecoveryDpm {
 }
 
 impl DevicePolicyManager for RecoveryDpm {
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 
-    async fn protocol_lost(&mut self) {
+    fn protocol_lost(&mut self) {
         self.protocol_lost.store(true, Ordering::SeqCst);
     }
 }

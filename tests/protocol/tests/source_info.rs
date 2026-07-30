@@ -124,11 +124,11 @@ struct SourceInfoDpm {
 }
 
 impl DevicePolicyManager for SourceInfoDpm {
-    async fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
+    fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn inform_source_info(&mut self, source_info: &SourceInfo) {
+    fn inform_source_info(&mut self, source_info: &SourceInfo) {
         self.present_pdp.store(source_info.port_present_pdp_watts() as usize, Ordering::SeqCst);
         self.second_object_seen.store(source_info.object2.is_some(), Ordering::SeqCst);
     }

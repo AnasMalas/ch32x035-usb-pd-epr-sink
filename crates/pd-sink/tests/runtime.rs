@@ -81,17 +81,17 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
     let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
     let source = SourceCapabilities::new_vsafe5v_only(300);
 
-    block_on(device.inform(&source));
-    let request = block_on(device.request(&source));
+    device.inform(&source);
+    let request = device.request(&source);
     assert!(matches!(request, PowerSource::FixedVariableSupply(_)));
     assert_eq!(device.contract().state(), ContractState::Pending);
 
-    block_on(device.transition_power(&request));
+    device.transition_power(&request);
     assert_eq!(device.contract().state(), ContractState::Ready);
     assert_eq!(device.contract().active_plan().unwrap().object_position, 1);
     assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
 
-    block_on(device.hard_reset(HardResetOrigin::Source, HardResetReason::SourceSignaled));
+    device.hard_reset(HardResetOrigin::Source, HardResetReason::SourceSignaled);
     assert_eq!(device.contract().state(), ContractState::Lost);
     assert_eq!(DevicePolicyManager::hard_reset_recovery_millis(&device), 2_000);
     let runtime = device.runtime_mut();
@@ -109,7 +109,7 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
         SinkEvent::SourceCapabilities(capabilities) if capabilities.kind() == CapabilitiesKind::Spr
     )));
 
-    block_on(DevicePolicyManager::hard_reset_recovered(&mut device));
+    DevicePolicyManager::hard_reset_recovered(&mut device);
     assert!(device.runtime_mut().events.contains(&SinkEvent::HardResetRecoveryComplete));
 }
 
@@ -118,12 +118,12 @@ fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
     let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
     let source = SourceCapabilities::new_vsafe5v_only(300);
 
-    block_on(device.inform(&source));
-    let initial = block_on(device.request(&source));
-    block_on(device.transition_power(&initial));
+    device.inform(&source);
+    let initial = device.request(&source);
+    device.transition_power(&initial);
 
-    block_on(device.inform(&source));
-    let refresh = block_on(device.request(&source));
+    device.inform(&source);
+    let refresh = device.request(&source);
     assert!(matches!(refresh, PowerSource::FixedVariableSupply(_)));
     assert!(device
         .runtime_mut()
@@ -132,7 +132,7 @@ fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
         .any(|event| matches!(event, SinkEvent::ContractRefreshStarted(plan) if plan.object_position == 1)));
     assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
 
-    block_on(device.transition_power(&refresh));
+    device.transition_power(&refresh);
     let runtime = device.runtime_mut();
     assert_eq!(runtime.load_states, [false, true, true]);
     assert!(runtime
@@ -189,9 +189,9 @@ fn ready_epr_source_starts_one_bounded_automatic_entry() {
     let source = SourceCapabilities::new_with_pdos(pdos);
     let mut device = SinkDevice::new(config, TestRuntime::default()).unwrap();
 
-    block_on(device.inform(&source));
-    let request = block_on(device.request(&source));
-    block_on(device.transition_power(&request));
+    device.inform(&source);
+    let request = device.request(&source);
+    device.transition_power(&request);
 
     assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
     assert!(matches!(block_on(device.get_event(&source)), Event::EnterEprMode(_)));
@@ -203,20 +203,20 @@ fn alert_and_pps_status_reach_application_led_policy_without_owning_a_gpio() {
     let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
     let source = SourceCapabilities::new_vsafe5v_only(300);
 
-    block_on(device.inform(&source));
-    let request = block_on(device.request(&source));
-    block_on(device.transition_power(&request));
+    device.inform(&source);
+    let request = device.request(&source);
+    device.transition_power(&request);
     assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
 
     let pps_status = StackPpsStatus::from_bytes(&[0x5c, 0x03, 46, 0b0000_1010]).unwrap();
-    block_on(device.inform_pps_status(&pps_status));
+    device.inform_pps_status(&pps_status);
     assert!(device
         .runtime_mut()
         .events
         .iter()
         .any(|event| matches!(event, SinkEvent::PpsStatus(status) if status.is_current_limited())));
 
-    block_on(device.inform_alert(&AlertDataObject(1 << 28)));
+    device.inform_alert(&AlertDataObject(1 << 28));
     assert!(matches!(block_on(device.get_event(&source)), Event::RequestStatus));
     assert!(device
         .runtime_mut()

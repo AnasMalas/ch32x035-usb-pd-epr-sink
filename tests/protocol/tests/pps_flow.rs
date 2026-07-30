@@ -210,12 +210,12 @@ struct SprAvsDpm {
 }
 
 impl DevicePolicyManager for PpsDpm {
-    async fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
         self.request_calls.fetch_add(1, Ordering::SeqCst);
         self.request
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 
@@ -225,12 +225,12 @@ impl DevicePolicyManager for PpsDpm {
 }
 
 impl DevicePolicyManager for TelemetryDpm {
-    async fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
         self.request_calls.fetch_add(1, Ordering::SeqCst);
         self.request
     }
 
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
+    fn transition_power(&mut self, _accepted: &PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
@@ -252,7 +252,7 @@ impl DevicePolicyManager for TelemetryDpm {
 }
 
 impl DevicePolicyManager for WaitRetryDpm {
-    async fn request(&mut self, source_capabilities: &SourceCapabilities) -> PowerSource {
+    fn request(&mut self, source_capabilities: &SourceCapabilities) -> PowerSource {
         let call = self.request_calls.fetch_add(1, Ordering::SeqCst);
         if call == 0 {
             PowerSource::new_fixed(CurrentRequest::Highest, VoltageRequest::Safe5V, source_capabilities).unwrap()
@@ -261,16 +261,16 @@ impl DevicePolicyManager for WaitRetryDpm {
         }
     }
 
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
+    fn transition_power(&mut self, _accepted: &PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn request_not_accepted(&mut self, reason: RequestRejection) {
+    fn request_not_accepted(&mut self, reason: RequestRejection) {
         assert_eq!(reason, RequestRejection::Wait);
         self.wait_seen.store(true, Ordering::SeqCst);
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 
@@ -291,16 +291,16 @@ impl DevicePolicyManager for WaitRetryDpm {
 }
 
 impl DevicePolicyManager for SprAvsDpm {
-    async fn inform(&mut self, source_capabilities: &SourceCapabilities) {
+    fn inform(&mut self, source_capabilities: &SourceCapabilities) {
         assert!(matches!(source_capabilities.pdos().get(1), Some(PowerDataObject::Augmented(Augmented::SprAvs(_)))));
         self.typed_offer_seen.store(true, Ordering::SeqCst);
     }
 
-    async fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
         self.request
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 

@@ -134,69 +134,46 @@ pub enum HardResetReason {
 /// Trait for the device policy manager.
 ///
 /// This entity commands the policy engine and enforces device policy.
+/// Notification and policy callbacks are synchronous and must return promptly.
+/// [`DevicePolicyManager::get_event`] is the sole asynchronous, cancellation-safe hook.
 pub trait DevicePolicyManager {
     /// Inform the device about source capabilities, e.g. after a request.
-    fn inform(&mut self, _source_capabilities: &source_capabilities::SourceCapabilities) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn inform(&mut self, _source_capabilities: &source_capabilities::SourceCapabilities) {}
 
     /// Request a power source.
     ///
     /// Defaults to 5 V at maximum current.
-    fn request(
-        &mut self,
-        source_capabilities: &source_capabilities::SourceCapabilities,
-    ) -> impl Future<Output = request::PowerSource> {
-        async {
-            request::PowerSource::new_fixed(
-                request::CurrentRequest::Highest,
-                request::VoltageRequest::Safe5V,
-                source_capabilities,
-            )
-            .unwrap()
-        }
+    fn request(&mut self, source_capabilities: &source_capabilities::SourceCapabilities) -> request::PowerSource {
+        request::PowerSource::new_fixed(
+            request::CurrentRequest::Highest,
+            request::VoltageRequest::Safe5V,
+            source_capabilities,
+        )
+        .unwrap()
     }
 
     /// Notify the device that it shall transition to a new power level.
     ///
     /// The device is informed about the request that was accepted by the source.
-    fn transition_power(&mut self, _accepted: &request::PowerSource) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn transition_power(&mut self, _accepted: &request::PowerSource) {}
 
     /// Notify the device that its most recent request was rejected or deferred.
-    fn request_not_accepted(&mut self, _reason: RequestRejection) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn request_not_accepted(&mut self, _reason: RequestRejection) {}
 
     /// Inform the product about a Source_Info response.
-    fn inform_source_info(&mut self, _source_info: &source_info::SourceInfo) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn inform_source_info(&mut self, _source_info: &source_info::SourceInfo) {}
 
     /// Inform the product about an Alert from the Port Partner.
-    fn inform_alert(&mut self, _alert: &alert::AlertDataObject) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn inform_alert(&mut self, _alert: &alert::AlertDataObject) {}
 
     /// Inform the product about a general Status response.
-    fn inform_status(&mut self, _status: &status::Status) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn inform_status(&mut self, _status: &status::Status) {}
 
     /// Inform the product about a PPS_Status response.
-    fn inform_pps_status(&mut self, _status: &pps_status::PpsStatus) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn inform_pps_status(&mut self, _status: &pps_status::PpsStatus) {}
 
     /// Report a refused, deferred, or timed-out optional status inquiry.
-    fn status_query_failed(
-        &mut self,
-        _query: StatusQueryKind,
-        _failure: StatusQueryFailure,
-    ) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn status_query_failed(&mut self, _query: StatusQueryKind, _failure: StatusQueryFailure) {}
 
     /// Notify the device that a hard reset has occurred.
     ///
@@ -209,15 +186,11 @@ pub trait DevicePolicyManager {
     /// VBUS to return to vSafe5V, and return promptly so the Protocol Layer can
     /// receive during the recovery interval below.
     #[cfg(feature = "hard-reset-reasons")]
-    fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn hard_reset(&mut self, _origin: HardResetOrigin, _reason: HardResetReason) {}
 
     #[cfg(not(feature = "hard-reset-reasons"))]
     /// Notify the device of a Hard Reset without retaining a detailed cause.
-    fn hard_reset(&mut self, _origin: HardResetOrigin) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn hard_reset(&mut self, _origin: HardResetOrigin) {}
 
     /// Maximum interval in which Source_Capabilities may arrive after Hard
     /// Reset. Returning zero uses the ordinary SinkWaitCapTimer.
@@ -227,18 +200,14 @@ pub trait DevicePolicyManager {
 
     /// Notify the product that valid Source_Capabilities ended Hard Reset
     /// recovery.
-    fn hard_reset_recovered(&mut self) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn hard_reset_recovered(&mut self) {}
 
     /// Notify the device that the Type-C connection or VBUS was removed.
     ///
     /// The implementation must immediately invalidate the active contract and
     /// disable any firmware-controlled load path. Hardware cutoff remains the
     /// primary fast path.
-    fn detached(&mut self) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn detached(&mut self) {}
 
     /// Notify the device that the policy engine is abandoning the current
     /// port session because the protocol/PHY became unusable.
@@ -246,9 +215,7 @@ pub trait DevicePolicyManager {
     /// This is not necessarily a physical detach, but any explicit contract
     /// must be treated as invalid and a firmware-controlled load must be
     /// disabled before the port is restarted.
-    fn protocol_lost(&mut self) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn protocol_lost(&mut self) {}
 
     /// Notify the device that EPR mode entry failed.
     ///
@@ -262,9 +229,7 @@ pub trait DevicePolicyManager {
     /// - EPR capable bit not set in RDO
     /// - Source unable to enter EPR mode (sink may retry later)
     /// - EPR capable bit not set in PDO
-    fn epr_mode_entry_failed(&mut self, _reason: epr_mode::DataEnterFailed) -> impl Future<Output = ()> {
-        async {}
-    }
+    fn epr_mode_entry_failed(&mut self, _reason: epr_mode::DataEnterFailed) {}
 
     /// Get the sink's power capabilities.
     ///

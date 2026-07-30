@@ -229,7 +229,7 @@ impl DevicePolicyManager for EprDpm {
         )
     }
 
-    async fn inform(
+    fn inform(
         &mut self,
         source_capabilities: &usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities,
     ) {
@@ -238,7 +238,7 @@ impl DevicePolicyManager for EprDpm {
         }
     }
 
-    async fn request(
+    fn request(
         &mut self,
         source_capabilities: &usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities,
     ) -> PowerSource {
@@ -249,11 +249,11 @@ impl DevicePolicyManager for EprDpm {
         }
     }
 
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
+    fn transition_power(&mut self, _accepted: &PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 

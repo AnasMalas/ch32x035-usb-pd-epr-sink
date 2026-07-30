@@ -102,7 +102,7 @@ struct SoftResetDpm {
 }
 
 impl DevicePolicyManager for SoftResetDpm {
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 }

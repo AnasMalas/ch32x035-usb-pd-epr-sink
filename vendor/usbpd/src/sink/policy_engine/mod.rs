@@ -379,11 +379,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             match self.run_step().await {
                 Ok(()) => {}
                 Err(Error::Detached) => {
-                    self.device_policy_manager.detached().await;
+                    self.device_policy_manager.detached();
                     return Err(Error::Detached);
                 }
                 Err(error) => {
-                    self.device_policy_manager.protocol_lost().await;
+                    self.device_policy_manager.protocol_lost();
                     return Err(error);
                 }
             }
@@ -616,7 +616,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 let valid_for_mode = Self::capabilities_valid_for_mode(&capabilities, self.mode);
                 if valid_for_mode {
                     if recovery_ms.is_some() {
-                        self.device_policy_manager.hard_reset_recovered().await;
+                        self.device_policy_manager.hard_reset_recovered();
                     }
                     State::EvaluateCapabilities(capabilities)
                 } else {
@@ -627,12 +627,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 // Sink now knows that it is attached.
-                self.device_policy_manager.inform(capabilities).await;
+                self.device_policy_manager.inform(capabilities);
                 self.source_capabilities = Some(capabilities.clone());
 
                 self.hard_reset_counter.reset();
 
-                let request = self.device_policy_manager.request(self.source_capabilities.as_ref().unwrap()).await;
+                let request = self.device_policy_manager.request(self.source_capabilities.as_ref().unwrap());
 
                 if (self.mode == Mode::Epr) != matches!(request, PowerSource::EprRequest(_)) {
                     return Err(Error::InvalidRequestForMode);
@@ -664,10 +664,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 match control_message_type {
                     ControlMessageType::Reject => {
-                        self.device_policy_manager.request_not_accepted(RequestRejection::Reject).await;
+                        self.device_policy_manager.request_not_accepted(RequestRejection::Reject);
                     }
                     ControlMessageType::Wait => {
-                        self.device_policy_manager.request_not_accepted(RequestRejection::Wait).await;
+                        self.device_policy_manager.request_not_accepted(RequestRejection::Wait);
                         self.wait_retry_pending = true;
                     }
                     ControlMessageType::Accept => {}
@@ -709,7 +709,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     .await?;
 
                 self.contract = Contract::TransitionToExplicit;
-                self.device_policy_manager.transition_power(&accepted_power_source).await;
+                self.device_policy_manager.transition_power(&accepted_power_source);
                 self.active_power_source = Some(accepted_power_source);
                 if Self::is_pps(accepted_power_source) {
                     self.pps_refresh_deadline_tick = Some(Self::deadline_after(39));
@@ -792,10 +792,8 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                                     // re-planning against the latest retained
                                     // limits, this lets the DPM re-arm its
                                     // contract tracker before Accept/PS_RDY.
-                                    let retry = self
-                                        .device_policy_manager
-                                        .request(self.source_capabilities.as_ref().unwrap())
-                                        .await;
+                                    let retry =
+                                        self.device_policy_manager.request(self.source_capabilities.as_ref().unwrap());
                                     if (self.mode == Mode::Epr) != matches!(retry, PowerSource::EprRequest(_)) {
                                         return Err(Error::InvalidRequestForMode);
                                     }
@@ -901,12 +899,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 #[cfg(feature = "hard-reset-reasons")]
                 {
                     self.device_policy_manager
-                        .hard_reset(self.hard_reset_origin, Self::reported_hard_reset_reason(self.hard_reset_reason))
-                        .await;
+                        .hard_reset(self.hard_reset_origin, Self::reported_hard_reset_reason(self.hard_reset_reason));
                 }
                 #[cfg(not(feature = "hard-reset-reasons"))]
                 {
-                    self.device_policy_manager.hard_reset(self.hard_reset_origin).await;
+                    self.device_policy_manager.hard_reset(self.hard_reset_origin);
                 }
 
                 // Reset protocol layer (per spec 6.8.3: "Protocol Layers shall be reset as for Soft Reset")
@@ -1056,7 +1053,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 match response {
                     Ok(message) => {
                         if let Some(Payload::Data(Data::SourceInfo(source_info))) = message.payload {
-                            self.device_policy_manager.inform_source_info(&source_info).await;
+                            self.device_policy_manager.inform_source_info(&source_info);
                         }
                     }
                     Err(
@@ -1073,7 +1070,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 State::Ready(*power_source)
             }
             State::SourceAlert(alert, power_source) => {
-                self.device_policy_manager.inform_alert(alert).await;
+                self.device_policy_manager.inform_alert(alert);
                 State::Ready(*power_source)
             }
             State::GetStatus(power_source) => {
@@ -1095,7 +1092,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 match response {
                     Ok(message) => match message.payload {
                         Some(Payload::Extended(extended::Extended::Status(status))) => {
-                            self.device_policy_manager.inform_status(&status).await;
+                            self.device_policy_manager.inform_status(&status);
                         }
                         None => {
                             let failure = match message.header.message_type() {
@@ -1107,15 +1104,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                                 _ => None,
                             };
                             if let Some(failure) = failure {
-                                self.device_policy_manager.status_query_failed(StatusQueryKind::General, failure).await;
+                                self.device_policy_manager.status_query_failed(StatusQueryKind::General, failure);
                             }
                         }
                         _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
                     },
                     Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
                         self.device_policy_manager
-                            .status_query_failed(StatusQueryKind::General, StatusQueryFailure::Timeout)
-                            .await;
+                            .status_query_failed(StatusQueryKind::General, StatusQueryFailure::Timeout);
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -1141,7 +1137,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 match response {
                     Ok(message) => match message.payload {
                         Some(Payload::Extended(extended::Extended::PpsStatus(status))) => {
-                            self.device_policy_manager.inform_pps_status(&status).await;
+                            self.device_policy_manager.inform_pps_status(&status);
                         }
                         None => {
                             let failure = match message.header.message_type() {
@@ -1153,15 +1149,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                                 _ => None,
                             };
                             if let Some(failure) = failure {
-                                self.device_policy_manager.status_query_failed(StatusQueryKind::Pps, failure).await;
+                                self.device_policy_manager.status_query_failed(StatusQueryKind::Pps, failure);
                             }
                         }
                         _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
                     },
                     Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
                         self.device_policy_manager
-                            .status_query_failed(StatusQueryKind::Pps, StatusQueryFailure::Timeout)
-                            .await;
+                            .status_query_failed(StatusQueryKind::Pps, StatusQueryFailure::Timeout);
                     }
                     Err(error) => return Err(error.into()),
                 }
@@ -1210,7 +1205,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             // Per spec 8.3.3.26.2.1: EnterFailed → Soft Reset
                             // Notify DPM of the failure reason before soft reset
                             let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
-                            self.device_policy_manager.epr_mode_entry_failed(reason).await;
+                            self.device_policy_manager.epr_mode_entry_failed(reason);
                             State::SendSoftReset
                         }
                         // Per spec 8.3.3.26.2.1: any other EPR_Mode message → Soft Reset
@@ -1241,7 +1236,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             // Per spec 8.3.3.26.2.2: EnterFailed → Soft Reset
                             // Notify DPM of the failure reason before soft reset
                             let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
-                            self.device_policy_manager.epr_mode_entry_failed(reason).await;
+                            self.device_policy_manager.epr_mode_entry_failed(reason);
                             State::SendSoftReset
                         }
                         // Per spec 8.3.3.26.2.2: any other EPR_Mode message → Soft Reset

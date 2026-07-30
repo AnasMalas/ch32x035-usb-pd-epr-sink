@@ -121,15 +121,15 @@ struct Pd2Dpm {
 }
 
 impl DevicePolicyManager for Pd2Dpm {
-    async fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
         self.initial_request
     }
 
-    async fn transition_power(&mut self, _accepted: &PowerSource) {
+    fn transition_power(&mut self, _accepted: &PowerSource) {
         self.transitions.fetch_add(1, Ordering::SeqCst);
     }
 
-    async fn detached(&mut self) {
+    fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
 

@@ -110,7 +110,7 @@ struct KeepAliveSourceResetDpm {
 
 #[cfg(feature = "hard-reset-reasons")]
 impl DevicePolicyManager for KeepAliveSourceResetDpm {
-    async fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
+    fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetReason) {
         self.origin.store(
             match origin {
                 HardResetOrigin::Source => 1,

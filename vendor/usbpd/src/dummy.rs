@@ -83,7 +83,7 @@ impl SinkDevicePolicyManager for DummySinkEprDevice {
         Event::None
     }
 
-    async fn request(&mut self, source_capabilities: &SourceCapabilities) -> request::PowerSource {
+    fn request(&mut self, source_capabilities: &SourceCapabilities) -> request::PowerSource {
         use crate::protocol_layer::message::data::request::{CurrentRequest, PowerSource, VoltageRequest};
         use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
 
