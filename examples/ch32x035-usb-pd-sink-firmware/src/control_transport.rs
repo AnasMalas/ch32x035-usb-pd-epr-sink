@@ -2,13 +2,15 @@ use ch32_hal::usb_x0fs::cdc::{Receiver as CdcReceiver, Sender as CdcSender};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::channel::Channel;
 use pd_sink::{
-    decode_control_command, encode_control_event, Command, CommandStatus, ControlCommandDecodeError, ControlEvent,
-    ControlFrameDecoder, ControlLifecycleEvent, CONTROL_MAX_FRAME_LEN,
+    encode_control_event_packet, Command, CommandStatus, ControlCommandDecodeError, ControlCommandStreamDecoder,
+    ControlEvent, ControlLifecycleEvent, CONTROL_MAX_FRAME_LEN,
 };
 
 use crate::{device_info, COMMANDS};
 
 const CONTROL_QUEUE_DEPTH: usize = 16;
+const USB_CDC_PACKET_LEN: usize = 64;
+const _: () = assert!(CONTROL_MAX_FRAME_LEN <= USB_CDC_PACKET_LEN);
 
 #[derive(Clone, Copy)]
 struct ControlPacket {
@@ -17,10 +19,10 @@ struct ControlPacket {
 }
 
 impl ControlPacket {
-    fn encode(event: ControlEvent, sequence: u8) -> Option<Self> {
+    fn encode(event: ControlEvent, sequence: u8) -> Self {
         let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
-        let len = encode_control_event(event, sequence, &mut bytes).ok()?;
-        Some(Self { bytes, len: len as u8 })
+        let len = encode_control_event_packet(event, sequence, &mut bytes);
+        Self { bytes, len: len as u8 }
     }
 
     fn as_bytes(&self) -> &[u8] {
@@ -35,15 +37,11 @@ pub fn try_emit(event: ControlEvent) {
 }
 
 pub fn try_emit_sequence(event: ControlEvent, sequence: u8) {
-    if let Some(packet) = ControlPacket::encode(event, sequence) {
-        let _ = CONTROL_PACKETS.try_send(packet);
-    }
+    let _ = CONTROL_PACKETS.try_send(ControlPacket::encode(event, sequence));
 }
 
 async fn emit(event: ControlEvent, sequence: u8) {
-    if let Some(packet) = ControlPacket::encode(event, sequence) {
-        CONTROL_PACKETS.send(packet).await;
-    }
+    CONTROL_PACKETS.send(ControlPacket::encode(event, sequence)).await;
 }
 
 fn clear_packets() {
@@ -52,7 +50,7 @@ fn clear_packets() {
 
 pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
     let mut packet = [0u8; 64];
-    let mut decoder = ControlFrameDecoder::new();
+    let mut decoder = ControlCommandStreamDecoder::new();
 
     loop {
         receiver.wait_connection().await;
@@ -68,15 +66,12 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
             };
 
             for &byte in &packet[..count] {
-                let Some(frame) = decoder.push(byte) else {
+                let Some(decoded) = decoder.push(byte) else {
                     continue;
                 };
-                let Ok(frame) = frame else {
-                    continue;
-                };
-                let sequence = frame.sequence;
-                let decoded = match decode_control_command(&frame) {
-                    Ok(decoded) => decoded,
+                let sequence = decoded.sequence;
+                let command = match decoded.command {
+                    Ok(command) => command,
                     Err(error) => {
                         let status = match error {
                             ControlCommandDecodeError::UnsupportedVersion
@@ -90,7 +85,7 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
                     }
                 };
 
-                match decoded.command {
+                match command {
                     Command::Identity => {
                         emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
                         emit(ControlEvent::Device(device_info()), sequence).await;
@@ -118,10 +113,8 @@ pub async fn transmit(mut sender: CdcSender<'static>) -> ! {
         sender.wait_connection().await;
         loop {
             let packet = CONTROL_PACKETS.receive().await;
-            for chunk in packet.as_bytes().chunks(sender.max_packet_size()) {
-                if sender.write_packet(chunk).await.is_err() {
-                    continue 'connection;
-                }
+            if sender.write_packet(packet.as_bytes()).await.is_err() {
+                continue 'connection;
             }
         }
     }

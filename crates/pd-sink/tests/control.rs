@@ -1,9 +1,11 @@
 use pd_sink::{
-    decode_control_command, encode_control_event, encode_control_frame, CapabilitiesKind, Command, CommandStatus,
-    ControlCommandKind, ControlEvent, ControlFrameDecoder, ControlFrameError, ControlPlanStage, Demand, DeviceInfo,
-    HardResetCause, HardResetDirection, Milliamps, Millivolts, Milliwatts, PpsStatus, Preference, SourceAlert,
-    SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure, UserRequest, CONTROL_MAX_FRAME_LEN,
-    CONTROL_PROTOCOL_VERSION,
+    decode_control_command, encode_control_event, encode_control_event_packet, encode_control_frame, CapabilitiesKind,
+    Command, CommandStatus, ControlCommandKind, ControlCommandStreamDecoder, ControlEprEvent, ControlEvent,
+    ControlEventKind, ControlFrameDecoder, ControlFrameError, ControlIntegrationError, ControlLifecycleEvent,
+    ControlPlanStage, ControllerError, CurrentConfidence, Demand, DeviceInfo, HardResetCause, HardResetDirection,
+    LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus,
+    Preference, RequestMessage, RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery,
+    StatusQueryFailure, SupplyKind, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -16,6 +18,18 @@ fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
         }
     }
     decoded.expect("complete frame")
+}
+
+fn decode_stream_command(bytes: &[u8]) -> pd_sink::StreamDecodedCommand {
+    let mut decoder = ControlCommandStreamDecoder::new();
+    let mut decoded = None;
+    for &byte in bytes {
+        if let Some(result) = decoder.push(byte) {
+            assert!(decoded.is_none());
+            decoded = Some(result);
+        }
+    }
+    decoded.expect("complete command frame")
 }
 
 #[test]
@@ -201,4 +215,167 @@ fn status_commands_and_events_use_compact_stable_payloads() {
     )
     .unwrap();
     assert_eq!(decode_one(&bytes[..len]).payload(), &[1, 3]);
+}
+
+#[test]
+fn command_stream_decoder_matches_the_general_protocol_decoder() {
+    let voltage_payload = [0x30, 0x43, 0, 0, 0xfc, 0x08, 0, 0, 2];
+    let pdo_payload = [11, 2, 0xc8, 0x4b, 0, 0, 0xff, 0xff, 0xff, 0xff];
+    let commands: &[(u8, &[u8])] = &[
+        (ControlCommandKind::Device as u8, &[]),
+        (ControlCommandKind::Capabilities as u8, &[]),
+        (ControlCommandKind::Plans as u8, &[]),
+        (ControlCommandKind::SourceInfo as u8, &[]),
+        (ControlCommandKind::EnterEpr as u8, &[]),
+        (ControlCommandKind::EprCapabilities as u8, &[]),
+        (ControlCommandKind::ExitEpr as u8, &[]),
+        (ControlCommandKind::Status as u8, &[]),
+        (ControlCommandKind::Help as u8, &[]),
+        (ControlCommandKind::SourceStatus as u8, &[]),
+        (ControlCommandKind::PpsStatus as u8, &[]),
+        (ControlCommandKind::RequestVoltage as u8, &voltage_payload),
+        (ControlCommandKind::RequestPdo as u8, &pdo_payload),
+    ];
+
+    for &(kind, payload) in commands {
+        let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+        let len = encode_control_frame(CONTROL_PROTOCOL_VERSION, kind, 91, payload, &mut bytes).unwrap();
+        let expected = decode_control_command(&decode_one(&bytes[..len]));
+        let streamed = decode_stream_command(&bytes[..len]);
+        assert_eq!(streamed.sequence, 91);
+        assert_eq!(streamed.command, expected.map(|decoded| decoded.command));
+    }
+}
+
+#[test]
+fn command_stream_decoder_preserves_error_classification_and_recovery() {
+    let cases: &[(u8, u8, &[u8])] = &[
+        (CONTROL_PROTOCOL_VERSION + 1, ControlCommandKind::Status as u8, &[]),
+        (CONTROL_PROTOCOL_VERSION, 0x7f, &[0; 11]),
+        (CONTROL_PROTOCOL_VERSION, ControlCommandKind::Status as u8, &[0; 11]),
+        (CONTROL_PROTOCOL_VERSION, ControlCommandKind::RequestVoltage as u8, &[0; 10]),
+    ];
+
+    for &(version, kind, payload) in cases {
+        let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+        let len = encode_control_frame(version, kind, 47, payload, &mut bytes).unwrap();
+        let expected = decode_control_command(&decode_one(&bytes[..len]));
+        let streamed = decode_stream_command(&bytes[..len]);
+        assert_eq!(streamed.sequence, 47);
+        assert_eq!(streamed.command, expected.map(|decoded| decoded.command));
+    }
+
+    let mut damaged = [0; CONTROL_MAX_FRAME_LEN];
+    let damaged_len =
+        encode_control_frame(CONTROL_PROTOCOL_VERSION, ControlCommandKind::Status as u8, 1, &[], &mut damaged).unwrap();
+    damaged[damaged_len - 1] ^= 0x80;
+    let mut good = [0; CONTROL_MAX_FRAME_LEN];
+    let good_len =
+        encode_control_frame(CONTROL_PROTOCOL_VERSION, ControlCommandKind::Help as u8, 2, &[], &mut good).unwrap();
+    let mut decoder = ControlCommandStreamDecoder::new();
+    let mut results = std::vec::Vec::new();
+    for &byte in damaged[..damaged_len].iter().chain(&good[..good_len]) {
+        if let Some(result) = decoder.push(byte) {
+            results.push(result);
+        }
+    }
+    assert_eq!(results.len(), 1);
+    assert_eq!(results[0].sequence, 2);
+    assert_eq!(results[0].command, Ok(Command::Help));
+}
+
+#[test]
+fn event_encoder_accepts_the_exact_frame_size() {
+    let mut exact = [0; 8];
+    assert_eq!(
+        encode_control_event(ControlEvent::CommandResult(CommandStatus::Queued), 7, &mut exact).unwrap(),
+        exact.len()
+    );
+    assert_eq!(&exact, &[0x50, 0x44, 1, 0x80, 7, 1, 0, 0x50]);
+
+    let mut short = [0; 7];
+    assert_eq!(
+        encode_control_event(ControlEvent::CommandResult(CommandStatus::Queued), 7, &mut short),
+        Err(ControlFrameError::OutputTooSmall)
+    );
+}
+
+#[test]
+fn packet_event_encoder_keeps_protocol_v1_payloads() {
+    let plan = RequestPlan {
+        object_position: 10,
+        supply: SupplyKind::Fixed,
+        message: RequestMessage::EprRequest,
+        rdo: 0xa144_8d23,
+        pdo_copy: Some(0x001f_01f4),
+        voltage: PlannedVoltage::Fixed(Millivolts(48_000)),
+        operating: PlannedOperating::Current {
+            requested: None,
+            source_limit: Milliamps(5_000),
+            operating: Milliamps(2_910),
+            confidence: CurrentConfidence::Advertised,
+            limited_by: LimitReason::SinkPower,
+        },
+        capability_mismatch: false,
+    };
+
+    let events: &[(ControlEvent, ControlEventKind, &[u8])] = &[
+        (
+            ControlEvent::Lifecycle { event: ControlLifecycleEvent::PdStoppedTimeout, detail: 10_000, extra: 0 },
+            ControlEventKind::Lifecycle,
+            &[8, 0x10, 0x27, 0, 0, 0, 0, 0, 0],
+        ),
+        (
+            ControlEvent::Plan { stage: ControlPlanStage::Contract, plan: Some(plan) },
+            ControlEventKind::Plan,
+            &[
+                2, 1, 10, 0, 1, 0, 0x80, 0xbb, 0, 0, 0x80, 0xbb, 0, 0, 0, 0, 0xff, 0xff, 0xff, 0xff, 0x88, 0x13, 0, 0,
+                0x5e, 0x0b, 0, 0, 0, 4, 0x23, 0x8d, 0x44, 0xa1, 0xf4, 0x01, 0x1f, 0,
+            ],
+        ),
+        (
+            ControlEvent::ControllerError(ControllerError::Plan(pd_sink::PlanError::VoltageAboveSinkLimit {
+                requested: Millivolts(50_000),
+                maximum: Millivolts(48_000),
+            })),
+            ControlEventKind::ControllerError,
+            &[22, 0x50, 0xc3, 0, 0, 0x80, 0xbb, 0, 0],
+        ),
+        (
+            ControlEvent::SourceInfo { present_watts: 240, maximum_watts: 240, reported_watts: 1 },
+            ControlEventKind::SourceInfo,
+            &[240, 240, 1],
+        ),
+        (ControlEvent::RequestResult(RequestResult::Deferred), ControlEventKind::RequestResult, &[1]),
+        (
+            ControlEvent::Epr { event: ControlEprEvent::DiscoveryStarted, detail: 1, extra: 2 },
+            ControlEventKind::Epr,
+            &[1, 1, 2],
+        ),
+        (ControlEvent::CapabilityPlansStarted { count: 11 }, ControlEventKind::CapabilityPlansStarted, &[11]),
+        (
+            ControlEvent::CapabilityPlanUnavailable { position: 7, validity: PdoValidity::Compatible },
+            ControlEventKind::CapabilityPlanUnavailable,
+            &[7, 1],
+        ),
+        (
+            ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable),
+            ControlEventKind::IntegrationError,
+            &[2],
+        ),
+        (ControlEvent::Help, ControlEventKind::Help, &[]),
+    ];
+
+    for &(event, expected_kind, expected_payload) in events {
+        let mut packet = [0; CONTROL_MAX_FRAME_LEN];
+        let packet_len = encode_control_event_packet(event, 33, &mut packet);
+        let frame = decode_one(&packet[..packet_len]);
+        assert_eq!(frame.kind, expected_kind as u8);
+        assert_eq!(frame.sequence, 33);
+        assert_eq!(frame.payload(), expected_payload);
+
+        let mut slice = [0; CONTROL_MAX_FRAME_LEN];
+        let slice_len = encode_control_event(event, 33, &mut slice).unwrap();
+        assert_eq!(&slice[..slice_len], &packet[..packet_len]);
+    }
 }

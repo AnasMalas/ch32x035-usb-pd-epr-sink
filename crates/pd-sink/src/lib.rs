@@ -32,12 +32,13 @@ pub use command::{parse_command, Command, CommandError};
 pub use contract::{ContractError, ContractState, ContractTracker};
 pub use control::{
     decode_command as decode_control_command, encode_event as encode_control_event,
-    encode_frame as encode_control_frame, CommandDecodeError as ControlCommandDecodeError,
-    CommandKind as ControlCommandKind, CommandStatus, ControlEvent, ControlFrame,
+    encode_event_packet as encode_control_event_packet, encode_frame as encode_control_frame,
+    CommandDecodeError as ControlCommandDecodeError, CommandKind as ControlCommandKind, CommandStatus,
+    CommandStreamDecoder as ControlCommandStreamDecoder, ControlEvent, ControlFrame,
     DecodedCommand as DecodedControlCommand, DeviceInfo, EprEvent as ControlEprEvent, EventKind as ControlEventKind,
     FrameDecoder as ControlFrameDecoder, FrameError as ControlFrameError, IntegrationError as ControlIntegrationError,
-    LifecycleEvent as ControlLifecycleEvent, PlanStage as ControlPlanStage, CONTROL_PROTOCOL_VERSION,
-    FRAME_MAGIC as CONTROL_FRAME_MAGIC, MAX_FRAME_LEN as CONTROL_MAX_FRAME_LEN,
+    LifecycleEvent as ControlLifecycleEvent, PlanStage as ControlPlanStage, StreamDecodedCommand,
+    CONTROL_PROTOCOL_VERSION, FRAME_MAGIC as CONTROL_FRAME_MAGIC, MAX_FRAME_LEN as CONTROL_MAX_FRAME_LEN,
     MAX_PAYLOAD_LEN as CONTROL_MAX_PAYLOAD_LEN,
 };
 pub use controller::{ControllerAction, ControllerConfig, ControllerError, EprState, SinkController, UserRequest};

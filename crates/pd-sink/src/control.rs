@@ -20,6 +20,7 @@ pub const FRAME_MAGIC: [u8; 2] = *b"PD";
 pub const MAX_FRAME_LEN: usize = 63;
 pub const MAX_PAYLOAD_LEN: usize = MAX_FRAME_LEN - 7;
 const FRAME_PREFIX_LEN: usize = 6;
+const MAX_COMMAND_PAYLOAD_LEN: usize = 10;
 const NONE_U32: u32 = u32::MAX;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -282,6 +283,127 @@ impl FrameDecoder {
     }
 }
 
+/// Streaming decoder specialized for host-to-device command frames.
+///
+/// Protocol-v1 commands carry at most ten payload bytes. Keeping only that
+/// bounded payload avoids retaining and copying a maximum-size event frame in
+/// firmware that only ever receives commands.
+#[derive(Clone, Copy, Debug)]
+pub struct CommandStreamDecoder {
+    payload: [u8; MAX_COMMAND_PAYLOAD_LEN],
+    len: u8,
+    expected_len: u8,
+    version: u8,
+    kind: u8,
+    sequence: u8,
+    payload_len: u8,
+    checksum: u8,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct StreamDecodedCommand {
+    pub sequence: u8,
+    pub command: Result<Command, CommandDecodeError>,
+}
+
+impl Default for CommandStreamDecoder {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
+impl CommandStreamDecoder {
+    pub const fn new() -> Self {
+        Self {
+            payload: [0; MAX_COMMAND_PAYLOAD_LEN],
+            len: 0,
+            expected_len: 0,
+            version: 0,
+            kind: 0,
+            sequence: 0,
+            payload_len: 0,
+            checksum: 0,
+        }
+    }
+
+    pub fn reset(&mut self) {
+        self.len = 0;
+        self.expected_len = 0;
+        self.checksum = 0;
+    }
+
+    /// Returns the next checksum-valid command frame.
+    ///
+    /// Malformed framing is discarded, matching the firmware transport's
+    /// behavior; semantic command errors remain in [`StreamDecodedCommand`]
+    /// so the host can receive an `Invalid` or `Unsupported` result.
+    pub fn push(&mut self, byte: u8) -> Option<StreamDecodedCommand> {
+        match self.len {
+            0 => {
+                if byte == FRAME_MAGIC[0] {
+                    self.len = 1;
+                }
+                return None;
+            }
+            1 => {
+                if byte == FRAME_MAGIC[1] {
+                    self.len = 2;
+                    self.checksum = 0;
+                } else if byte != FRAME_MAGIC[0] {
+                    self.reset();
+                }
+                return None;
+            }
+            _ => {}
+        }
+
+        let index = usize::from(self.len);
+        self.len += 1;
+        match index {
+            2 => self.version = byte,
+            3 => self.kind = byte,
+            4 => self.sequence = byte,
+            5 => {
+                if usize::from(byte) > MAX_PAYLOAD_LEN {
+                    self.reset();
+                    return None;
+                }
+                self.payload_len = byte;
+                self.expected_len = (FRAME_PREFIX_LEN + usize::from(byte) + 1) as u8;
+            }
+            _ => {
+                let payload_index = index - FRAME_PREFIX_LEN;
+                if payload_index < MAX_COMMAND_PAYLOAD_LEN {
+                    self.payload[payload_index] = byte;
+                }
+            }
+        }
+
+        if self.expected_len != 0 && self.len == self.expected_len {
+            if byte != self.checksum {
+                self.reset();
+                return None;
+            }
+
+            let stored_len = usize::from(self.payload_len).min(MAX_COMMAND_PAYLOAD_LEN);
+            let decoded = StreamDecodedCommand {
+                sequence: self.sequence,
+                command: decode_command_fields(
+                    self.version,
+                    self.kind,
+                    usize::from(self.payload_len),
+                    &self.payload[..stored_len],
+                ),
+            };
+            self.reset();
+            return Some(decoded);
+        }
+
+        self.checksum = checksum_byte(self.checksum, byte);
+        None
+    }
+}
+
 pub fn encode_frame(
     version: u8,
     kind: u8,
@@ -308,151 +430,189 @@ pub fn encode_frame(
 }
 
 pub fn decode_command(frame: &ControlFrame) -> Result<DecodedCommand, CommandDecodeError> {
-    if frame.version != CONTROL_PROTOCOL_VERSION {
-        return Err(CommandDecodeError::UnsupportedVersion);
-    }
-
     let payload = frame.payload();
-    let command = match frame.kind {
-        kind if kind == CommandKind::Device as u8 => no_payload(payload, Command::Identity)?,
-        kind if kind == CommandKind::Capabilities as u8 => no_payload(payload, Command::Capabilities)?,
-        kind if kind == CommandKind::Plans as u8 => no_payload(payload, Command::Plans)?,
-        kind if kind == CommandKind::SourceInfo as u8 => no_payload(payload, Command::RequestSourceInfo)?,
-        kind if kind == CommandKind::EnterEpr as u8 => no_payload(payload, Command::EnterEpr)?,
-        kind if kind == CommandKind::EprCapabilities as u8 => no_payload(payload, Command::RequestEprCapabilities)?,
-        kind if kind == CommandKind::ExitEpr as u8 => no_payload(payload, Command::ExitEpr)?,
-        kind if kind == CommandKind::Status as u8 => no_payload(payload, Command::Status)?,
-        kind if kind == CommandKind::Help as u8 => no_payload(payload, Command::Help)?,
-        kind if kind == CommandKind::SourceStatus as u8 => no_payload(payload, Command::RequestSourceStatus)?,
-        kind if kind == CommandKind::PpsStatus as u8 => no_payload(payload, Command::RequestPpsStatus)?,
-        kind if kind == CommandKind::RequestVoltage as u8 => decode_voltage_request(payload)?,
-        kind if kind == CommandKind::RequestPdo as u8 => decode_pdo_request(payload)?,
-        _ => return Err(CommandDecodeError::UnknownCommand),
-    };
+    let command = decode_command_fields(frame.version, frame.kind, payload.len(), payload)?;
     Ok(DecodedCommand { sequence: frame.sequence, command })
 }
 
+fn decode_command_fields(
+    version: u8,
+    kind: u8,
+    payload_len: usize,
+    payload: &[u8],
+) -> Result<Command, CommandDecodeError> {
+    if version != CONTROL_PROTOCOL_VERSION {
+        return Err(CommandDecodeError::UnsupportedVersion);
+    }
+
+    let no_payload_command = match kind {
+        kind if kind == CommandKind::Device as u8 => Some(Command::Identity),
+        kind if kind == CommandKind::Capabilities as u8 => Some(Command::Capabilities),
+        kind if kind == CommandKind::Plans as u8 => Some(Command::Plans),
+        kind if kind == CommandKind::SourceInfo as u8 => Some(Command::RequestSourceInfo),
+        kind if kind == CommandKind::EnterEpr as u8 => Some(Command::EnterEpr),
+        kind if kind == CommandKind::EprCapabilities as u8 => Some(Command::RequestEprCapabilities),
+        kind if kind == CommandKind::ExitEpr as u8 => Some(Command::ExitEpr),
+        kind if kind == CommandKind::Status as u8 => Some(Command::Status),
+        kind if kind == CommandKind::Help as u8 => Some(Command::Help),
+        kind if kind == CommandKind::SourceStatus as u8 => Some(Command::RequestSourceStatus),
+        kind if kind == CommandKind::PpsStatus as u8 => Some(Command::RequestPpsStatus),
+        _ => None,
+    };
+    if let Some(command) = no_payload_command {
+        return no_payload(payload_len, command);
+    }
+
+    match (kind, payload_len) {
+        (kind, 9) if kind == CommandKind::RequestVoltage as u8 => decode_voltage_request(payload),
+        (kind, 10) if kind == CommandKind::RequestPdo as u8 => decode_pdo_request(payload),
+        (kind, _) if kind == CommandKind::RequestVoltage as u8 || kind == CommandKind::RequestPdo as u8 => {
+            Err(CommandDecodeError::InvalidLength)
+        }
+        _ => Err(CommandDecodeError::UnknownCommand),
+    }
+}
+
 pub fn encode_event(event: ControlEvent, sequence: u8, output: &mut [u8]) -> Result<usize, FrameError> {
-    let mut payload = [0; MAX_PAYLOAD_LEN];
-    let mut writer = PayloadWriter::new(&mut payload);
+    let mut frame = [0; MAX_FRAME_LEN];
+    let frame_len = encode_event_packet(event, sequence, &mut frame);
+    let destination = output.get_mut(..frame_len).ok_or(FrameError::OutputTooSmall)?;
+    destination.copy_from_slice(&frame[..frame_len]);
+    Ok(frame_len)
+}
+
+/// Encodes an event into a maximum-sized protocol packet.
+///
+/// Every [`ControlEvent`] has a statically bounded payload, so firmware with a
+/// full packet buffer does not need a fallible size check for every field.
+pub fn encode_event_packet(event: ControlEvent, sequence: u8, output: &mut [u8; MAX_FRAME_LEN]) -> usize {
+    let mut writer = PayloadWriter::new(output);
     let kind = match event {
         ControlEvent::CommandResult(status) => {
-            writer.u8(status as u8)?;
+            writer.u8(status as u8);
             EventKind::CommandResult
         }
         ControlEvent::Device(info) => {
-            writer.bytes(&info.uid)?;
-            writer.u8(info.flags)?;
-            writer.u32(info.max_voltage.get())?;
-            writer.u32(info.max_current.get())?;
-            writer.u32(info.max_power.get())?;
+            writer.bytes(&info.uid);
+            writer.u8(info.flags);
+            writer.u32(info.max_voltage.get());
+            writer.u32(info.max_current.get());
+            writer.u32(info.max_power.get());
             EventKind::Device
         }
         ControlEvent::Lifecycle { event, detail, extra } => {
-            writer.u8(event as u8)?;
-            writer.u32(detail)?;
-            writer.u32(extra)?;
+            writer.u8(event as u8);
+            writer.u32(detail);
+            writer.u32(extra);
             EventKind::Lifecycle
         }
         ControlEvent::Capabilities(capabilities) => {
-            writer.u8(capabilities_kind(capabilities.kind()))?;
-            writer.u8(u8::from(capabilities.epr_mode_capable()))?;
-            writer.u8(capabilities.len() as u8)?;
+            writer.u8(capabilities_kind(capabilities.kind()));
+            writer.u8(u8::from(capabilities.epr_mode_capable()));
+            writer.u8(capabilities.len() as u8);
             for &pdo in capabilities.raw_pdos() {
-                writer.u32(pdo)?;
+                writer.u32(pdo);
             }
             EventKind::Capabilities
         }
         ControlEvent::Plan { stage, plan } => {
-            writer.u8(stage as u8)?;
-            writer.u8(u8::from(plan.is_some()))?;
+            writer.u8(stage as u8);
+            writer.u8(u8::from(plan.is_some()));
             if let Some(plan) = plan {
-                encode_plan(plan, &mut writer)?;
+                encode_plan(plan, &mut writer);
             }
             EventKind::Plan
         }
         ControlEvent::ControllerError(error) => {
             let (code, detail, extra) = controller_error_fields(error);
-            writer.u8(code)?;
-            writer.u32(detail)?;
-            writer.u32(extra)?;
+            writer.u8(code);
+            writer.u32(detail);
+            writer.u32(extra);
             EventKind::ControllerError
         }
         ControlEvent::SourceInfo { present_watts, maximum_watts, reported_watts } => {
-            writer.u8(present_watts)?;
-            writer.u8(maximum_watts)?;
-            writer.u8(reported_watts)?;
+            writer.u8(present_watts);
+            writer.u8(maximum_watts);
+            writer.u8(reported_watts);
             EventKind::SourceInfo
         }
         ControlEvent::SourceAlert(alert) => {
-            writer.u32(alert.raw())?;
+            writer.u32(alert.raw());
             EventKind::SourceAlert
         }
         ControlEvent::SourceStatus(status) => {
-            writer.u8(u8::from(status.pps_mode_valid()))?;
-            writer.bytes(&status.raw_bytes())?;
+            writer.u8(u8::from(status.pps_mode_valid()));
+            writer.bytes(&status.raw_bytes());
             EventKind::SourceStatus
         }
         ControlEvent::PpsStatus(status) => {
-            writer.bytes(&status.raw_bytes())?;
+            writer.bytes(&status.raw_bytes());
             EventKind::PpsStatus
         }
         ControlEvent::StatusQueryFailed { query, failure } => {
             writer.u8(match query {
                 StatusQuery::General => 0,
                 StatusQuery::Pps => 1,
-            })?;
+            });
             writer.u8(match failure {
                 StatusQueryFailure::NotSupported => 0,
                 StatusQueryFailure::Rejected => 1,
                 StatusQueryFailure::Deferred => 2,
                 StatusQueryFailure::Timeout => 3,
-            })?;
+            });
             EventKind::StatusQueryFailed
         }
         ControlEvent::RequestResult(result) => {
             writer.u8(match result {
                 RequestResult::Rejected => 0,
                 RequestResult::Deferred => 1,
-            })?;
+            });
             EventKind::RequestResult
         }
         ControlEvent::HardReset { direction, cause, recovery_ms } => {
             writer.u8(match direction {
                 HardResetDirection::Received => 0,
                 HardResetDirection::Sent => 1,
-            })?;
-            writer.u32(recovery_ms)?;
-            writer.u8(cause as u8)?;
+            });
+            writer.u32(recovery_ms);
+            writer.u8(cause as u8);
             EventKind::HardReset
         }
         ControlEvent::Epr { event, detail, extra } => {
-            writer.u8(event as u8)?;
-            writer.u8(detail)?;
-            writer.u8(extra)?;
+            writer.u8(event as u8);
+            writer.u8(detail);
+            writer.u8(extra);
             EventKind::Epr
         }
         ControlEvent::CapabilityPlansStarted { count } => {
-            writer.u8(count)?;
+            writer.u8(count);
             EventKind::CapabilityPlansStarted
         }
         ControlEvent::CapabilityPlanUnavailable { position, validity } => {
-            writer.u8(position)?;
-            writer.u8(validity_code(validity))?;
+            writer.u8(position);
+            writer.u8(validity_code(validity));
             EventKind::CapabilityPlanUnavailable
         }
         ControlEvent::IntegrationError(error) => {
-            writer.u8(error as u8)?;
+            writer.u8(error as u8);
             EventKind::IntegrationError
         }
         ControlEvent::Help => EventKind::Help,
     };
 
-    encode_frame(CONTROL_PROTOCOL_VERSION, kind as u8, sequence, writer.written(), output)
+    let payload_len = writer.len();
+    let frame_len = FRAME_PREFIX_LEN + payload_len + 1;
+    output[0..2].copy_from_slice(&FRAME_MAGIC);
+    output[2] = CONTROL_PROTOCOL_VERSION;
+    output[3] = kind as u8;
+    output[4] = sequence;
+    output[5] = payload_len as u8;
+    output[frame_len - 1] = checksum(&output[2..frame_len - 1]);
+    frame_len
 }
 
-fn no_payload(payload: &[u8], command: Command) -> Result<Command, CommandDecodeError> {
-    if payload.is_empty() {
+fn no_payload(payload_len: usize, command: Command) -> Result<Command, CommandDecodeError> {
+    if payload_len == 0 {
         Ok(command)
     } else {
         Err(CommandDecodeError::InvalidLength)
@@ -515,9 +675,9 @@ fn optional_u32(value: u32) -> Option<u32> {
     (value != NONE_U32).then_some(value)
 }
 
-fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) -> Result<(), FrameError> {
-    writer.u8(plan.object_position)?;
-    writer.u8(supply_kind(plan.supply))?;
+fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) {
+    writer.u8(plan.object_position);
+    writer.u8(supply_kind(plan.supply));
     let mut flags = 0;
     if matches!(plan.message, RequestMessage::EprRequest) {
         flags |= 1 << 0;
@@ -525,35 +685,34 @@ fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) -> Result<(), 
     if plan.capability_mismatch {
         flags |= 1 << 1;
     }
-    writer.u8(flags)?;
+    writer.u8(flags);
 
     match plan.voltage {
         PlannedVoltage::Fixed(voltage) => {
-            writer.u8(0)?;
-            writer.u32(voltage.get())?;
-            writer.u32(voltage.get())?;
-            writer.u16(0)?;
+            writer.u8(0);
+            writer.u32(voltage.get());
+            writer.u32(voltage.get());
+            writer.u16(0);
         }
         PlannedVoltage::Adjustable { requested, encoded, step_mv } => {
-            writer.u8(1)?;
-            writer.u32(requested.get())?;
-            writer.u32(encoded.get())?;
-            writer.u16(step_mv)?;
+            writer.u8(1);
+            writer.u32(requested.get());
+            writer.u32(encoded.get());
+            writer.u16(step_mv);
         }
     }
 
     match plan.operating {
         PlannedOperating::Current { requested, source_limit, operating, confidence, limited_by } => {
-            writer.u32(requested.map_or(NONE_U32, Milliamps::get))?;
-            writer.u32(source_limit.get())?;
-            writer.u32(operating.get())?;
-            writer.u8(confidence_code(confidence))?;
-            writer.u8(limit_code(limited_by))?;
+            writer.u32(requested.map_or(NONE_U32, Milliamps::get));
+            writer.u32(source_limit.get());
+            writer.u32(operating.get());
+            writer.u8(confidence_code(confidence));
+            writer.u8(limit_code(limited_by));
         }
     }
-    writer.u32(plan.rdo)?;
-    writer.u32(plan.pdo_copy.unwrap_or(0))?;
-    Ok(())
+    writer.u32(plan.rdo);
+    writer.u32(plan.pdo_copy.unwrap_or(0));
 }
 
 fn controller_error_fields(error: ControllerError) -> (u8, u32, u32) {
@@ -630,45 +789,50 @@ fn limit_code(limit: LimitReason) -> u8 {
 fn checksum(bytes: &[u8]) -> u8 {
     let mut crc = 0;
     for &byte in bytes {
-        crc ^= byte;
-        for _ in 0..8 {
-            crc = if crc & 0x80 != 0 { (crc << 1) ^ 0x07 } else { crc << 1 };
-        }
+        crc = checksum_byte(crc, byte);
+    }
+    crc
+}
+
+fn checksum_byte(mut crc: u8, byte: u8) -> u8 {
+    crc ^= byte;
+    for _ in 0..8 {
+        crc = if crc & 0x80 != 0 { (crc << 1) ^ 0x07 } else { crc << 1 };
     }
     crc
 }
 
 struct PayloadWriter<'a> {
-    output: &'a mut [u8],
+    output: &'a mut [u8; MAX_FRAME_LEN],
     len: usize,
 }
 
 impl<'a> PayloadWriter<'a> {
-    fn new(output: &'a mut [u8]) -> Self {
+    fn new(output: &'a mut [u8; MAX_FRAME_LEN]) -> Self {
         Self { output, len: 0 }
     }
 
-    fn written(&self) -> &[u8] {
-        &self.output[..self.len]
+    fn len(&self) -> usize {
+        self.len
     }
 
-    fn bytes(&mut self, value: &[u8]) -> Result<(), FrameError> {
-        let end = self.len.checked_add(value.len()).ok_or(FrameError::PayloadTooLong)?;
-        let destination = self.output.get_mut(self.len..end).ok_or(FrameError::PayloadTooLong)?;
-        destination.copy_from_slice(value);
-        self.len = end;
-        Ok(())
+    fn bytes(&mut self, value: &[u8]) {
+        let start = FRAME_PREFIX_LEN + self.len;
+        let end = start + value.len();
+        debug_assert!(end < MAX_FRAME_LEN);
+        self.output[start..end].copy_from_slice(value);
+        self.len += value.len();
     }
 
-    fn u8(&mut self, value: u8) -> Result<(), FrameError> {
+    fn u8(&mut self, value: u8) {
         self.bytes(&[value])
     }
 
-    fn u16(&mut self, value: u16) -> Result<(), FrameError> {
+    fn u16(&mut self, value: u16) {
         self.bytes(&value.to_le_bytes())
     }
 
-    fn u32(&mut self, value: u32) -> Result<(), FrameError> {
+    fn u32(&mut self, value: u32) {
         self.bytes(&value.to_le_bytes())
     }
 }
