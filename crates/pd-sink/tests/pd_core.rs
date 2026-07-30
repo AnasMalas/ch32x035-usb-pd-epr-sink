@@ -1,12 +1,13 @@
 use pd_sink::capabilities::CapabilityListError;
 use pd_sink::request::PlanError;
 use pd_sink::{
-    request_to_stack, CapabilitiesKind, ContractState, ContractTracker, CurrentConfidence, Demand, LimitReason,
-    Milliamps, Millivolts, Milliwatts, PdoError, PdoValidity, PlannedOperating, PlannedVoltage, PortInputs, PortMode,
-    PortState, PortSupervisor, Preference, RequestContext, RequestMessage, RequestPlanner, SafetyTimings, SinkLimits,
-    SourceCapabilities, SourceSupply, SupplyKind,
+    capabilities_from_stack, request_to_stack, CapabilitiesKind, ContractState, ContractTracker, CurrentConfidence,
+    Demand, LimitReason, Milliamps, Millivolts, Milliwatts, PdoError, PdoValidity, PlannedOperating, PlannedVoltage,
+    PortInputs, PortMode, PortState, PortSupervisor, Preference, RequestContext, RequestMessage, RequestPlanner,
+    SafetyTimings, SinkLimits, SourceCapabilities, SourceSupply, SupplyKind,
 };
 use usbpd::protocol_layer::message::data::request::PowerSource;
+use usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities as StackSourceCapabilities;
 
 fn fixed(voltage_mv: u32, current_ma: u32, epr_capable: bool) -> u32 {
     ((voltage_mv / 50) << 10) | (current_ma / 10) | (u32::from(epr_capable) << 23)
@@ -85,6 +86,23 @@ fn capability_parser_retains_unsupported_legacy_source_pdos() {
     assert_eq!(capabilities.pdo(6).unwrap().validity, PdoValidity::ZeroPadding);
     assert!(matches!(capabilities.pdo(8).unwrap().supply, SourceSupply::Fixed(_)));
     assert!(matches!(capabilities.pdo(9).unwrap().supply, SourceSupply::EprAvs(_)));
+}
+
+#[test]
+fn stack_bridge_preserves_raw_padding_and_reserved_pdos_for_one_policy_parse() {
+    let reserved_augmented = 0xf123_4567;
+    let raw = [fixed(5_000, 3_000, true), 0, 0, 0, 0, 0, 0, reserved_augmented];
+    let stack = StackSourceCapabilities::new_with_raw_pdos(heapless::Vec::from_slice(&raw).expect("eight PDOs fit"));
+    let capabilities = capabilities_from_stack(&stack).unwrap();
+
+    assert_eq!(capabilities.kind(), CapabilitiesKind::Epr);
+    assert_eq!(capabilities.raw_pdos(), raw);
+    assert_eq!(capabilities.pdo(2).unwrap().validity, PdoValidity::ZeroPadding);
+    assert_eq!(capabilities.pdo(8).unwrap().validity, PdoValidity::Unsupported);
+    assert!(matches!(
+        capabilities.pdo(8).unwrap().supply,
+        SourceSupply::Unsupported { pdo_type: 0b11, apdo_type: Some(0b11) }
+    ));
 }
 
 #[test]
@@ -283,7 +301,7 @@ fn advertised_fifty_volt_epr_avs_is_compatible_and_explicit() {
     match request_to_stack(plan).unwrap() {
         PowerSource::EprRequest(request) => {
             assert_eq!(request.rdo, plan.rdo);
-            assert_eq!(request.pdo.to_raw(), epr_avs_range(15_000, 50_000, 140_000));
+            assert_eq!(request.pdo, epr_avs_range(15_000, 50_000, 140_000));
         }
         _ => panic!("50 V AVS must remain a two-object EPR Request"),
     }

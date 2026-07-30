@@ -70,14 +70,9 @@ impl SinkDevicePolicyManager for DummySinkEprDevice {
         use crate::sink::device_policy_manager::Event;
 
         // After initial SPR negotiation, enter EPR mode if source is EPR capable
-        if !self.requested_epr_caps {
-            // Check if source advertises EPR capability in first PDO
-            if let Some(PowerDataObject::FixedSupply(fixed)) = source_capabilities.pdos().first()
-                && fixed.epr_mode_capable()
-            {
-                self.requested_epr_caps = true;
-                return Event::EnterEprMode(Power::from_watts(140)); // Dummy 140W PDP
-            }
+        if !self.requested_epr_caps && source_capabilities.epr_mode_capable() {
+            self.requested_epr_caps = true;
+            return Event::EnterEprMode(Power::from_watts(140)); // Dummy 140W PDP
         }
 
         Event::None
@@ -110,7 +105,7 @@ impl SinkDevicePolicyManager for DummySinkEprDevice {
             }
 
             // Create EPR request with RDO and PDO copy
-            PowerSource::EprRequest(EprRequestDataObject { rdo: rdo.0, pdo: *pdo })
+            PowerSource::EprRequest(EprRequestDataObject { rdo: rdo.0, pdo: pdo.to_raw() })
         } else {
             // Fall back to default 5V
             PowerSource::new_fixed(CurrentRequest::Highest, VoltageRequest::Safe5V, source_capabilities).unwrap()
@@ -126,7 +121,9 @@ impl SourceDevicePolicyManager for DummySourceDevice {
     }
 
     fn source_capabilities(&mut self) -> SourceCapabilities {
-        SourceCapabilities(heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap())
+        SourceCapabilities::new_with_pdos(
+            heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap(),
+        )
     }
 }
 
@@ -142,7 +139,9 @@ impl SourceDevicePolicyManager for DummyDualRoleNoSwapsDevice {
     }
 
     fn source_capabilities(&mut self) -> SourceCapabilities {
-        SourceCapabilities(heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap())
+        SourceCapabilities::new_with_pdos(
+            heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap(),
+        )
     }
 }
 
@@ -178,7 +177,9 @@ impl SourceDevicePolicyManager for DummyDualRoleDevice {
     }
 
     fn source_capabilities(&mut self) -> SourceCapabilities {
-        SourceCapabilities(heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap())
+        SourceCapabilities::new_with_pdos(
+            heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap(),
+        )
     }
 }
 
@@ -334,7 +335,7 @@ pub fn get_source_capability_request() -> request::PowerSource {
     request::PowerSource::new_fixed(
         request::CurrentRequest::Highest,
         request::VoltageRequest::Safe5V,
-        &SourceCapabilities(heapless::Vec::from_slice(&get_dummy_source_capabilities()).unwrap()),
+        &SourceCapabilities::new_with_pdos(heapless::Vec::from_slice(&get_dummy_source_capabilities()).unwrap()),
     )
     .unwrap()
 }

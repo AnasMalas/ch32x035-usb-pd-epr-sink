@@ -321,7 +321,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     // The selected PDO, not the RDO's object-position bits,
                     // determines the RDO format. APDO type 01 is EPR AVS and
                     // type 10 is SPR AVS.
-                    let raw_pdo = epr.pdo.to_raw();
+                    let raw_pdo = epr.pdo;
                     let apdo_type = (raw_pdo >> 28) & 0x3;
                     let is_avs = (raw_pdo >> 30) & 0x3 == 0x3 && matches!(apdo_type, 0x1 | 0x2);
                     if is_avs {
@@ -956,7 +956,8 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     ) -> Result<(), ProtocolError> {
         debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Source));
 
-        let pdos: heapless::Vec<_, 16> = source_capabilities.0.iter().cloned().collect();
+        let pdos: heapless::Vec<_, { message::data::source_capabilities::MAX_EPR_SOURCE_PDOS }> =
+            source_capabilities.0.iter().cloned().collect();
         let extended_payload = message::extended::Extended::EprSourceCapabilities(pdos);
 
         let header = Header::new_extended(
@@ -1108,7 +1109,7 @@ mod tests {
 
         if let Some(Payload::Data(Data::SourceCapabilities(SourceCapabilities(caps)))) = message.payload {
             for (cap, dummy_cap) in zip(caps, get_dummy_source_capabilities()) {
-                assert_eq!(cap, dummy_cap);
+                assert_eq!(cap, dummy_cap.to_raw());
             }
         } else {
             panic!()

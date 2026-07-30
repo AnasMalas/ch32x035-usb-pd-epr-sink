@@ -6,7 +6,7 @@ use super::PdoKind;
 use crate::units::{ElectricCurrent, ElectricPotential, Power};
 
 /// Kinds of supplies that can be reported within source capabilities.
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum Kind {
     /// Fixed voltage supply.
@@ -358,20 +358,29 @@ impl EprAdjustableVoltageSupply {
     }
 }
 
-const MAX_CAPABILITIES_LEN: usize = 16;
 /// Maximum number of PDOs in an EPR Source Capabilities message: seven SPR
 /// positions followed by at most four EPR positions.
 pub const MAX_EPR_SOURCE_PDOS: usize = 11;
+const MAX_CAPABILITIES_LEN: usize = MAX_EPR_SOURCE_PDOS;
 
-/// List of `PDOs` that the `Source` lists as capabilities
+/// List of raw `PDOs` that the `Source` advertises.
+///
+/// Keeping the bounded wire representation here avoids eagerly expanding
+/// every four-byte PDO into a larger enum. Applications that need interpreted
+/// fields can parse an individual entry with [`parse_raw_pdo`].
 #[derive(Debug, Clone)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[cfg_attr(feature = "serde", derive(serde::Serialize, serde::Deserialize))]
-pub struct SourceCapabilities(pub(crate) Vec<PowerDataObject, MAX_CAPABILITIES_LEN>);
+pub struct SourceCapabilities(pub(crate) Vec<u32, MAX_CAPABILITIES_LEN>);
 
 impl SourceCapabilities {
     /// Create a new `SourceCapabilities` from a `Vec` of PDOs
     pub fn new_with_pdos(pdos: Vec<PowerDataObject, MAX_CAPABILITIES_LEN>) -> Self {
+        Self(pdos.iter().map(PowerDataObject::to_raw).collect())
+    }
+
+    /// Create `SourceCapabilities` directly from bounded raw wire PDOs.
+    pub fn new_with_raw_pdos(pdos: Vec<u32, MAX_CAPABILITIES_LEN>) -> Self {
         Self(pdos)
     }
 
@@ -379,19 +388,18 @@ impl SourceCapabilities {
     /// `vSafe5V` fixed PDO in the first position.
     pub fn new_vsafe5v_only(maximum_current_10ma: u16) -> Self {
         let mut inner = Vec::new();
-        inner.push(PowerDataObject::FixedSupply(FixedSupply::v_safe_5v(maximum_current_10ma))).ok();
+        inner.push(FixedSupply::v_safe_5v(maximum_current_10ma).0).ok();
         Self(inner)
     }
 
     /// Get the fixed-supply PDO in the required first position. This accessor
     /// does not validate its voltage/current fields; use
     /// [`Self::has_valid_vsafe_5v`] when accepting partner capabilities.
-    pub fn vsafe_5v(&self) -> Option<&FixedSupply> {
-        self.0.first().and_then(
-            |supply| {
-                if let PowerDataObject::FixedSupply(supply) = supply { Some(supply) } else { None }
-            },
-        )
+    pub fn vsafe_5v(&self) -> Option<FixedSupply> {
+        self.0
+            .first()
+            .copied()
+            .and_then(|raw| if RawPowerDataObject(raw).kind() == 0b00 { Some(FixedSupply(raw)) } else { None })
     }
 
     /// Check that the first PDO is the mandatory fixed 5 V offer with a
@@ -403,37 +411,42 @@ impl SourceCapabilities {
 
     /// Determine, whether or not this device is `dual role`.
     pub fn dual_role_power(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::dual_role_power).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.dual_role_power()).unwrap_or_default()
     }
 
     /// Determine, whether or not USB suspends are supported by the source.
     pub fn usb_suspend_supported(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::usb_suspend_supported).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.usb_suspend_supported()).unwrap_or_default()
     }
 
     /// Determine, whether or not this device constrains the power to a certain level.
     pub fn unconstrained_power(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::unconstrained_power).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.unconstrained_power()).unwrap_or_default()
     }
 
     /// Determine, whether dual-role data is supported by the source.
     pub fn dual_role_data(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::dual_role_data).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.dual_role_data()).unwrap_or_default()
     }
 
     /// Determine, whether unchunked extended messages are supported by the source.
     pub fn unchunked_extended_messages_supported(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::unchunked_extended_messages_supported).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.unchunked_extended_messages_supported()).unwrap_or_default()
     }
 
     /// Determine, whether the source is EPR mode capable.
     pub fn epr_mode_capable(&self) -> bool {
-        self.vsafe_5v().map(FixedSupply::epr_mode_capable).unwrap_or_default()
+        self.vsafe_5v().map(|supply| supply.epr_mode_capable()).unwrap_or_default()
     }
 
-    /// Get power data objects (PDOs) from the source.
-    pub fn pdos(&self) -> &[PowerDataObject] {
+    /// Get the bounded raw PDOs exactly as they appeared on the wire.
+    pub fn raw_pdos(&self) -> &[u32] {
         &self.0
+    }
+
+    /// Parse advertised PDOs on demand.
+    pub fn pdos(&self) -> impl ExactSizeIterator<Item = PowerDataObject> + '_ {
+        self.0.iter().copied().map(parse_raw_pdo)
     }
 
     /// Check if this is an EPR capabilities message (has PDOs at position 8+).
@@ -456,8 +469,14 @@ impl SourceCapabilities {
     /// - If fewer than 7 SPR PDOs exist, unused positions are zero-filled
     ///
     /// Returns iterator of (position, PDO) tuples where position is 1-indexed.
-    pub fn spr_pdos(&self) -> impl Iterator<Item = (u8, &PowerDataObject)> {
-        self.0.iter().take(7).enumerate().filter(|(_, pdo)| !pdo.is_zero_padding()).map(|(i, pdo)| ((i + 1) as u8, pdo))
+    pub fn spr_pdos(&self) -> impl Iterator<Item = (u8, PowerDataObject)> + '_ {
+        self.0
+            .iter()
+            .copied()
+            .take(7)
+            .enumerate()
+            .filter(|(_, raw)| *raw != 0)
+            .map(|(i, raw)| ((i + 1) as u8, parse_raw_pdo(raw)))
     }
 
     /// Get EPR PDOs (positions 8+).
@@ -467,8 +486,8 @@ impl SourceCapabilities {
     /// - Only valid in EPR Capabilities Messages
     ///
     /// Returns iterator of (position, PDO) tuples where position is 1-indexed (8, 9, 10, 11).
-    pub fn epr_pdos(&self) -> impl Iterator<Item = (u8, &PowerDataObject)> {
-        self.0.iter().skip(7).enumerate().map(|(i, pdo)| ((i + 8) as u8, pdo))
+    pub fn epr_pdos(&self) -> impl Iterator<Item = (u8, PowerDataObject)> + '_ {
+        self.0.iter().copied().skip(7).enumerate().map(|(i, raw)| ((i + 8) as u8, parse_raw_pdo(raw)))
     }
 
     /// Check if any EPR PDO is in invalid position (1-7).
@@ -481,13 +500,11 @@ impl SourceCapabilities {
     /// - Fixed Supply PDOs offering 28V, 36V, or 48V (voltage > 20V)
     /// - EPR AVS APDOs
     pub fn has_epr_pdo_in_spr_positions(&self) -> bool {
-        let max_spr_voltage = ElectricPotential::from_volts(20);
-        self.0.iter().take(7).any(|pdo| match pdo {
-            // EPR Fixed Supply: voltage > 20V
-            PowerDataObject::FixedSupply(f) => f.voltage() > max_spr_voltage,
-            // EPR AVS APDO
-            PowerDataObject::Augmented(Augmented::Epr(_)) => true,
-            _ => false,
+        self.0.iter().take(7).copied().any(|raw| {
+            let kind = raw >> 30;
+            let augmented_type = (raw >> 28) & 0b11;
+            let fixed_voltage_50mv = (raw >> 10) & 0x03ff;
+            (kind == 0b00 && fixed_voltage_50mv > 400) || (kind == 0b11 && augmented_type == 0b01)
         })
     }
 
@@ -496,8 +513,7 @@ impl SourceCapabilities {
     /// Each PDO is 4 bytes, little-endian.
     pub fn to_bytes(&self, buffer: &mut [u8]) -> usize {
         let mut offset = 0;
-        for pdo in &self.0 {
-            let raw = pdo.to_raw();
+        for raw in &self.0 {
             buffer[offset..offset + 4].copy_from_slice(&raw.to_le_bytes());
             offset += 4;
         }
@@ -507,17 +523,16 @@ impl SourceCapabilities {
 
 impl PdoKind for SourceCapabilities {
     fn at_object_position(&self, position: u8) -> Option<Kind> {
-        self.pdos().get(position.saturating_sub(1) as usize).and_then(|pdo| match pdo {
-            PowerDataObject::FixedSupply(_) => Some(Kind::FixedSupply),
-            PowerDataObject::Battery(_) => Some(Kind::Battery),
-            PowerDataObject::VariableSupply(_) => Some(Kind::VariableSupply),
-            PowerDataObject::Augmented(augmented) => match augmented {
-                Augmented::Spr(_) => Some(Kind::Pps),
-                Augmented::SprAvs(_) => Some(Kind::Avs),
-                Augmented::Epr(_) => Some(Kind::Avs),
-                Augmented::Unknown(_) => None,
+        self.0.get(position.saturating_sub(1) as usize).and_then(|raw| match raw >> 30 {
+            0b00 => Some(Kind::FixedSupply),
+            0b01 => Some(Kind::Battery),
+            0b10 => Some(Kind::VariableSupply),
+            0b11 => match (raw >> 28) & 0b11 {
+                0b00 => Some(Kind::Pps),
+                0b01 | 0b10 => Some(Kind::Avs),
+                _ => None,
             },
-            PowerDataObject::Unknown(_) => None,
+            _ => None,
         })
     }
 }
@@ -609,5 +624,52 @@ mod tests {
         assert_eq!(avs.min_voltage().as_millivolts(), 15_000);
         assert_eq!(avs.max_voltage().as_millivolts(), 48_000);
         assert_eq!(avs.pd_power().as_milliwatts(), 240_000);
+    }
+
+    #[test]
+    fn raw_capabilities_preserve_padding_and_reserved_pdos_exactly() {
+        let fixed_5v = FixedSupply::v_safe_5v(300).with_epr_mode_capable(true).0;
+        let reserved_augmented = 0xf123_4567;
+        let raw = [fixed_5v, 0, reserved_augmented];
+        let capabilities = SourceCapabilities::new_with_raw_pdos(Vec::from_slice(&raw).unwrap());
+
+        assert_eq!(capabilities.raw_pdos(), raw);
+        assert!(capabilities.has_valid_vsafe_5v());
+        assert!(capabilities.epr_mode_capable());
+        assert!(matches!(
+            capabilities.pdos().nth(2),
+            Some(PowerDataObject::Augmented(Augmented::Unknown(value))) if value == reserved_augmented
+        ));
+        assert_eq!(capabilities.at_object_position(3), None);
+
+        let mut encoded = [0u8; 12];
+        assert_eq!(capabilities.to_bytes(&mut encoded), encoded.len());
+        assert_eq!(
+            encoded,
+            [fixed_5v.to_le_bytes(), 0u32.to_le_bytes(), reserved_augmented.to_le_bytes(),].concat().as_slice()
+        );
+    }
+
+    #[test]
+    fn raw_kind_lookup_matches_all_requestable_pdo_families() {
+        let pdos = [
+            FixedSupply::v_safe_5v(300).0,
+            (0b01 << 30) | 1,
+            (0b10 << 30) | 1,
+            (0b11 << 30) | 1,
+            (0b11 << 30) | (0b01 << 28) | 1,
+            (0b11 << 30) | (0b10 << 28) | 1,
+            (0b11 << 30) | (0b11 << 28) | 1,
+        ];
+        let capabilities = SourceCapabilities::new_with_raw_pdos(Vec::from_slice(&pdos).unwrap());
+
+        assert_eq!(capabilities.at_object_position(1), Some(Kind::FixedSupply));
+        assert_eq!(capabilities.at_object_position(2), Some(Kind::Battery));
+        assert_eq!(capabilities.at_object_position(3), Some(Kind::VariableSupply));
+        assert_eq!(capabilities.at_object_position(4), Some(Kind::Pps));
+        assert_eq!(capabilities.at_object_position(5), Some(Kind::Avs));
+        assert_eq!(capabilities.at_object_position(6), Some(Kind::Avs));
+        assert_eq!(capabilities.at_object_position(7), None);
+        assert_eq!(capabilities.at_object_position(8), None);
     }
 }

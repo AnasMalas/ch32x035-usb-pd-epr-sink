@@ -158,7 +158,7 @@ impl Message {
                 )))
             }
             header::ExtendedMessageType::EprSourceCapabilities => {
-                use crate::protocol_layer::message::data::source_capabilities::{MAX_EPR_SOURCE_PDOS, parse_raw_pdo};
+                use crate::protocol_layer::message::data::source_capabilities::MAX_EPR_SOURCE_PDOS;
 
                 if !payload.len().is_multiple_of(4) {
                     return Err(ParseError::Other("EPR Source Capabilities contains a partial PDO"));
@@ -169,7 +169,7 @@ impl Message {
 
                 let mut pdos = heapless::Vec::new();
                 for bytes in payload.chunks_exact(4) {
-                    pdos.push(parse_raw_pdo(LittleEndian::read_u32(bytes)))
+                    pdos.push(LittleEndian::read_u32(bytes))
                         .map_err(|_| ParseError::Other("too many EPR Source Capability PDOs"))?;
                 }
                 Ok(extended::Extended::EprSourceCapabilities(pdos))

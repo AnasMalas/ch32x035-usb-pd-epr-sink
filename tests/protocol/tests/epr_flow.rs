@@ -7,7 +7,6 @@ use std::task::{Context, Poll, Waker};
 use usbpd::protocol_layer::message::data::request::{
     CurrentRequest, EprRequestDataObject, PowerSource, VoltageRequest,
 };
-use usbpd::protocol_layer::message::data::source_capabilities::parse_raw_pdo;
 use usbpd::protocol_layer::message::extended::Extended;
 use usbpd::protocol_layer::message::extended::ExtendedHeader;
 use usbpd::protocol_layer::message::extended::extended_control::{ExtendedControl, ExtendedControlMessageType};
@@ -204,14 +203,14 @@ struct EprDpm {
 
 fn epr_fixed_request(position: u8, pdo: u32) -> PowerSource {
     let rdo = (u32::from(position) << 28) | (1 << 24) | (1 << 22) | (300 << 10) | 300;
-    PowerSource::EprRequest(EprRequestDataObject { rdo, pdo: parse_raw_pdo(pdo) })
+    PowerSource::EprRequest(EprRequestDataObject { rdo, pdo })
 }
 
 fn epr_avs_request(position: u8, voltage_mv: u32, current_ma: u32, pdo: u32) -> PowerSource {
     let raw_voltage_25mv = voltage_mv / 25;
     assert_eq!(raw_voltage_25mv & 0x3, 0, "AVS voltage must land on a 100 mV boundary");
     let rdo = (u32::from(position) << 28) | (1 << 24) | (1 << 22) | (raw_voltage_25mv << 9) | (current_ma / 50);
-    PowerSource::EprRequest(EprRequestDataObject { rdo, pdo: parse_raw_pdo(pdo) })
+    PowerSource::EprRequest(EprRequestDataObject { rdo, pdo })
 }
 
 impl DevicePolicyManager for EprDpm {

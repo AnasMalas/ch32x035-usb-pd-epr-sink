@@ -292,7 +292,7 @@ impl DevicePolicyManager for WaitRetryDpm {
 
 impl DevicePolicyManager for SprAvsDpm {
     fn inform(&mut self, source_capabilities: &SourceCapabilities) {
-        assert!(matches!(source_capabilities.pdos().get(1), Some(PowerDataObject::Augmented(Augmented::SprAvs(_)))));
+        assert!(matches!(source_capabilities.pdos().nth(1), Some(PowerDataObject::Augmented(Augmented::SprAvs(_)))));
         self.typed_offer_seen.store(true, Ordering::SeqCst);
     }
 

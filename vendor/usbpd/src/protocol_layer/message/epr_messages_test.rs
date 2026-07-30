@@ -92,17 +92,11 @@ fn test_chunked_epr_source_caps_assembly() {
                 assert_eq!(pdos.len(), 10, "Expected 10 PDOs (6 SPR + 1 separator + 3 EPR)");
 
                 // Verify separator at PDO[6]
-                if let crate::protocol_layer::message::data::source_capabilities::PowerDataObject::FixedSupply(pdo) =
-                    &pdos[6]
-                {
-                    assert_eq!(pdo.0, 0, "PDO[6] should be separator (0x00000000)");
-                } else {
-                    panic!("PDO[6] should be separator");
-                }
+                assert_eq!(pdos[6], 0, "PDO[6] should be separator (0x00000000)");
 
                 // Verify EPR PDO exists at position 7 (28V)
                 if let crate::protocol_layer::message::data::source_capabilities::PowerDataObject::FixedSupply(pdo) =
-                    &pdos[7]
+                    crate::protocol_layer::message::data::source_capabilities::parse_raw_pdo(pdos[7])
                 {
                     assert_eq!(pdo.voltage().as_millivolts(), 28_000);
                 } else {
@@ -128,8 +122,8 @@ fn test_epr_request_parsing() {
         assert_eq!(epr.object_position(), 8, "Should request PDO#8");
 
         // Verify PDO is 28V
-        use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
-        if let PowerDataObject::FixedSupply(fixed) = epr.pdo {
+        use crate::protocol_layer::message::data::source_capabilities::{PowerDataObject, parse_raw_pdo};
+        if let PowerDataObject::FixedSupply(fixed) = parse_raw_pdo(epr.pdo) {
             assert_eq!(fixed.voltage().as_millivolts(), 28_000);
         } else {
             panic!("Expected FixedSupply PDO in EprRequest");

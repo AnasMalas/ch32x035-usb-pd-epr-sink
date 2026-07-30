@@ -41,8 +41,9 @@ fn get_sink_header_template() -> Header {
 }
 
 fn request_capability_message(message_id: u8, highest_power: bool) -> Message {
-    let source_capabilities =
-        SourceCapabilities(heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap());
+    let source_capabilities = SourceCapabilities::new_with_pdos(
+        heapless::Vec::from_slice(get_dummy_source_capabilities().as_slice()).unwrap(),
+    );
     let header = Header::new_data(
         get_sink_header_template(),
         Counter::new_from_value(CounterType::MessageId, message_id),

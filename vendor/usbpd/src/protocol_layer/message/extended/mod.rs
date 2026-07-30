@@ -12,7 +12,7 @@ use heapless::Vec;
 use proc_bitfield::bitfield;
 
 use crate::protocol_layer::message::data::sink_capabilities::SinkPowerDataObject;
-use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
+use crate::protocol_layer::message::data::source_capabilities::MAX_EPR_SOURCE_PDOS;
 
 /// Types of extended messages.
 ///
@@ -32,7 +32,7 @@ pub enum Extended {
     /// Extended control message payload.
     ExtendedControl(extended_control::ExtendedControl),
     /// EPR source capabilities list.
-    EprSourceCapabilities(Vec<PowerDataObject, 16>),
+    EprSourceCapabilities(Vec<u32, MAX_EPR_SOURCE_PDOS>),
     /// EPR sink capabilities list.
     EprSinkCapabilities(Vec<SinkPowerDataObject, 7>),
     /// Sink Capabilities Extended Data Block.
@@ -66,20 +66,8 @@ impl Extended {
             Self::ExtendedControl(control) => control.to_bytes(payload),
             Self::EprSourceCapabilities(pdos) => {
                 let mut written = 0;
-                for pdo in pdos {
-                    let raw = match pdo {
-                        PowerDataObject::FixedSupply(p) => p.0,
-                        PowerDataObject::Battery(p) => p.0,
-                        PowerDataObject::VariableSupply(p) => p.0,
-                        PowerDataObject::Augmented(a) => match a {
-                            crate::protocol_layer::message::data::source_capabilities::Augmented::Spr(p) => p.0,
-                            crate::protocol_layer::message::data::source_capabilities::Augmented::SprAvs(p) => p.0,
-                            crate::protocol_layer::message::data::source_capabilities::Augmented::Epr(p) => p.0,
-                            crate::protocol_layer::message::data::source_capabilities::Augmented::Unknown(p) => *p,
-                        },
-                        PowerDataObject::Unknown(p) => p.0,
-                    };
-                    LittleEndian::write_u32(&mut payload[written..written + 4], raw);
+                for raw in pdos {
+                    LittleEndian::write_u32(&mut payload[written..written + 4], *raw);
                     written += 4;
                 }
                 written

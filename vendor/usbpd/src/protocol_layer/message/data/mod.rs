@@ -83,11 +83,7 @@ impl Data {
         let len = payload.len();
         message.payload = Some(Payload::Data(match message_type {
             DataMessageType::SourceCapabilities => Data::SourceCapabilities(source_capabilities::SourceCapabilities(
-                payload
-                    .chunks_exact(PDO_SIZE)
-                    .take(message.header.num_objects())
-                    .map(|buf| source_capabilities::parse_raw_pdo(LittleEndian::read_u32(buf)))
-                    .collect(),
+                payload.chunks_exact(PDO_SIZE).take(message.header.num_objects()).map(LittleEndian::read_u32).collect(),
             )),
             DataMessageType::Request => {
                 if len != 4 {
@@ -119,10 +115,7 @@ impl Data {
                     let raw_pdo = LittleEndian::read_u32(&payload[PDO_SIZE..2 * PDO_SIZE]);
                     trace!("EprRequest: rdo=0x{:08X}, pdo=0x{:08X}", rdo, raw_pdo);
 
-                    // Parse the PDO (second object) using the standard PDO parser
-                    let pdo = source_capabilities::parse_raw_pdo(raw_pdo);
-
-                    Data::Request(request::PowerSource::EprRequest(request::EprRequestDataObject { rdo, pdo }))
+                    Data::Request(request::PowerSource::EprRequest(request::EprRequestDataObject { rdo, pdo: raw_pdo }))
                 } else {
                     warn!("Invalid EPR_Request: expected 2 data objects, got {}", num_objects);
                     Data::Unknown
@@ -171,19 +164,7 @@ impl Data {
                 // Write RDO (raw u32)
                 LittleEndian::write_u32(payload, epr.rdo);
                 // Write PDO copy as raw u32
-                let raw_pdo = match &epr.pdo {
-                    source_capabilities::PowerDataObject::FixedSupply(p) => p.0,
-                    source_capabilities::PowerDataObject::Battery(p) => p.0,
-                    source_capabilities::PowerDataObject::VariableSupply(p) => p.0,
-                    source_capabilities::PowerDataObject::Augmented(a) => match a {
-                        source_capabilities::Augmented::Spr(p) => p.0,
-                        source_capabilities::Augmented::SprAvs(p) => p.0,
-                        source_capabilities::Augmented::Epr(p) => p.0,
-                        source_capabilities::Augmented::Unknown(p) => *p,
-                    },
-                    source_capabilities::PowerDataObject::Unknown(p) => p.0,
-                };
-                LittleEndian::write_u32(&mut payload[PDO_SIZE..], raw_pdo);
+                LittleEndian::write_u32(&mut payload[PDO_SIZE..], epr.pdo);
                 2 * PDO_SIZE
             }
             Self::Request(_) => unimplemented!(),

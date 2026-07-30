@@ -515,7 +515,9 @@ async fn test_epr_negotiation() {
         assert_eq!(object_pos, 8, "Should request PDO#8 (28V) to match real capture");
 
         // Verify it's the 28V PDO
-        if let PowerDataObject::FixedSupply(fixed) = epr.pdo {
+        if let PowerDataObject::FixedSupply(fixed) =
+            crate::protocol_layer::message::data::source_capabilities::parse_raw_pdo(epr.pdo)
+        {
             assert_eq!(fixed.raw_voltage(), 560, "28V = 560 * 50mV");
             assert_eq!(fixed.raw_max_current(), 500, "5A = 500 * 10mA");
         }

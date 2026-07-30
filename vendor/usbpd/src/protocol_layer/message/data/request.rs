@@ -189,8 +189,8 @@ pub struct EprRequestDataObject {
     /// The raw Request Data Object (format depends on PDO type being requested).
     /// This could be a FixedVariableSupply RDO, Avs RDO, or other EPR RDO type.
     pub rdo: u32,
-    /// Copy of the PDO being requested (for source verification)
-    pub pdo: source_capabilities::PowerDataObject,
+    /// Raw copy of the PDO being requested (for source verification).
+    pub pdo: u32,
 }
 
 impl EprRequestDataObject {
@@ -244,10 +244,10 @@ pub enum CurrentRequest {
 }
 
 /// A fixed supply PDO, alongside its index in the PDO table.
-pub struct IndexedFixedSupply<'d>(pub &'d source_capabilities::FixedSupply, usize);
+pub struct IndexedFixedSupply(pub source_capabilities::FixedSupply, usize);
 
 /// An augmented PDO, alongside its index in the PDO table.
-pub struct IndexedAugmented<'d>(pub &'d source_capabilities::Augmented, usize);
+pub struct IndexedAugmented(pub source_capabilities::Augmented, usize);
 
 impl PowerSource {
     pub fn object_position(&self) -> u8 {
@@ -282,10 +282,10 @@ impl PowerSource {
     /// Reports the index of the found PDO, and the fixed supply instance, or `None` if there is no fixed supply PDO.
     pub fn find_highest_fixed_voltage(
         source_capabilities: &source_capabilities::SourceCapabilities,
-    ) -> Option<IndexedFixedSupply<'_>> {
+    ) -> Option<IndexedFixedSupply> {
         let mut selected_pdo = None;
 
-        for (index, cap) in source_capabilities.pdos().iter().enumerate() {
+        for (index, cap) in source_capabilities.pdos().enumerate() {
             if let source_capabilities::PowerDataObject::FixedSupply(fixed_supply) = cap {
                 selected_pdo = match selected_pdo {
                     None => Some(IndexedFixedSupply(fixed_supply, index)),
@@ -309,8 +309,8 @@ impl PowerSource {
     pub fn find_specific_fixed_voltage(
         source_capabilities: &source_capabilities::SourceCapabilities,
         voltage: ElectricPotential,
-    ) -> Option<IndexedFixedSupply<'_>> {
-        for (index, cap) in source_capabilities.pdos().iter().enumerate() {
+    ) -> Option<IndexedFixedSupply> {
+        for (index, cap) in source_capabilities.pdos().enumerate() {
             if let source_capabilities::PowerDataObject::FixedSupply(fixed_supply) = cap
                 && (fixed_supply.voltage() == voltage)
             {
@@ -330,8 +330,8 @@ impl PowerSource {
     pub fn find_augmented_pdo(
         source_capabilities: &source_capabilities::SourceCapabilities,
         voltage: ElectricPotential,
-    ) -> Option<IndexedAugmented<'_>> {
-        for (index, cap) in source_capabilities.pdos().iter().enumerate() {
+    ) -> Option<IndexedAugmented> {
+        for (index, cap) in source_capabilities.pdos().enumerate() {
             let source_capabilities::PowerDataObject::Augmented(augmented) = cap else {
                 trace!("Skip non-augmented PDO {:?}", cap);
                 continue;
@@ -527,7 +527,7 @@ impl PowerSource {
             .0;
 
         // Copy of the PDO being requested
-        let pdo_copy = source_capabilities::PowerDataObject::Augmented(*pdo);
+        let pdo_copy = source_capabilities::PowerDataObject::Augmented(pdo).to_raw();
 
         Ok(Self::EprRequest(EprRequestDataObject { rdo, pdo: pdo_copy }))
     }
@@ -572,7 +572,7 @@ mod tests {
 
     #[test]
     fn epr_power_to_current_floor_matches_the_previous_wire_value() {
-        let mut pdos: Vec<PowerDataObject, 16> = Vec::new();
+        let mut pdos: Vec<PowerDataObject, MAX_EPR_SOURCE_PDOS> = Vec::new();
         for _ in 0..(MAX_EPR_SOURCE_PDOS - 1) {
             pdos.push(parse_raw_pdo(0)).unwrap();
         }
@@ -589,7 +589,7 @@ mod tests {
         // 140 W / 48 V floors to 2916 mA; the RDO then floors that to
         // 58 current units of 50 mA, exactly as the former uom path did.
         assert_eq!(request.rdo, 0xb34f_003a);
-        assert_eq!(request.pdo.to_raw(), 0xd7c0_968c);
+        assert_eq!(request.pdo, 0xd7c0_968c);
     }
 
     #[test]
@@ -632,7 +632,7 @@ mod tests {
 
     #[test]
     fn avs_request_current_saturates_at_the_wire_field_maximum() {
-        let mut pdos: Vec<PowerDataObject, 16> = Vec::new();
+        let mut pdos: Vec<PowerDataObject, MAX_EPR_SOURCE_PDOS> = Vec::new();
         for _ in 0..(MAX_EPR_SOURCE_PDOS - 1) {
             pdos.push(parse_raw_pdo(0)).unwrap();
         }

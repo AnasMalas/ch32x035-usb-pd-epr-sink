@@ -469,7 +469,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         match power_source {
             PowerSource::Pps(_) => true,
             PowerSource::EprRequest(epr) => {
-                let raw = epr.pdo.to_raw();
+                let raw = epr.pdo;
                 (raw >> 30) & 0x3 == 0x3 && (raw >> 28) & 0x3 == 0
             }
             _ => false,

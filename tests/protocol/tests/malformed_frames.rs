@@ -105,6 +105,15 @@ fn reserved_epr_values_parse_without_panicking() {
     };
     assert_eq!(mode.action(), Action::Unknown);
     assert!(matches!(DataEnterFailed::from(0xff), DataEnterFailed::UnknownValue));
+
+    let reserved_pdo = 0xf123_4567;
+    let raw_pdos = [(100_u32 << 10) | 300 | (1 << 23), 0, 0, 0, 0, 0, 0, reserved_pdo];
+    let payload: Vec<u8> = raw_pdos.iter().flat_map(|pdo| pdo.to_le_bytes()).collect();
+    let parsed = Message::parse_extended_payload(ExtendedMessageType::EprSourceCapabilities, &payload).unwrap();
+    let Extended::EprSourceCapabilities(pdos) = parsed else {
+        panic!("expected EPR Source Capabilities payload");
+    };
+    assert_eq!(pdos.as_slice(), raw_pdos);
 }
 
 struct MalformedDriver {
