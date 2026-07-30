@@ -268,14 +268,12 @@ async fn test_negotiation() {
 
 #[tokio::test]
 async fn test_reserved_epr_mode_entry_response_sends_soft_reset() {
-    use uom::si::power::watt;
-
     use crate::dummy::{DummySinkEprDevice, get_source_capability_request};
     use crate::units::Power;
 
     let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DummySinkEprDevice> =
         Sink::new(DummyDriver::new(), DummySinkEprDevice::new());
-    policy_engine.state = State::EprModeEntry(get_source_capability_request(), Power::new::<watt>(140));
+    policy_engine.state = State::EprModeEntry(get_source_capability_request(), Power::from_watts(140));
 
     // The EPR_Mode Enter transmission starts with MessageID 0 in a fresh
     // protocol layer. A reserved action from the Source must be recovered via

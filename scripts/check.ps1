@@ -101,6 +101,9 @@ try {
     cargo clippy -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --all-targets --target $HostTarget --locked -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "host clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $usbControlEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "USB-control EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
@@ -109,6 +112,9 @@ try {
 
     cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --target $HostTarget --locked
     if ($LASTEXITCODE -ne 0) { throw "host tests failed with exit code $LASTEXITCODE" }
+
+    cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd tests failed with exit code $LASTEXITCODE" }
 
     cargo build -p $firmwarePackage --release --locked
     if ($LASTEXITCODE -ne 0) { throw "safe 5 V firmware build failed with exit code $LASTEXITCODE" }

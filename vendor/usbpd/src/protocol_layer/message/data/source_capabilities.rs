@@ -1,14 +1,8 @@
 //! Definitions of source capabilities data message content.
 use heapless::Vec;
 use proc_bitfield::bitfield;
-use uom::si::electric_current::centiampere;
-use uom::si::electric_potential::{decivolt, volt};
-use uom::si::power::watt;
 
 use super::PdoKind;
-use crate::_50milliamperes_mod::_50milliamperes;
-use crate::_50millivolts_mod::_50millivolts;
-use crate::_250milliwatts_mod::_250milliwatts;
 use crate::units::{ElectricCurrent, ElectricPotential, Power};
 
 /// Kinds of supplies that can be reported within source capabilities.
@@ -124,12 +118,12 @@ impl Default for FixedSupply {
 impl FixedSupply {
     /// Voltage of the Fixed Supply
     pub fn voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_50millivolts>(self.raw_voltage().into())
+        ElectricPotential::from_50mv_units(self.raw_voltage())
     }
 
     /// Maximum current of the Fixed Supply
     pub fn max_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<centiampere>(self.raw_max_current().into())
+        ElectricCurrent::from_10ma_units(self.raw_max_current())
     }
 
     /// Create a new Fixed Supply at vSafe5V with the rated current
@@ -161,17 +155,17 @@ bitfield! {
 impl Battery {
     /// The maximum voltage the battery can supply
     pub fn max_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_50millivolts>(self.raw_max_voltage().into())
+        ElectricPotential::from_50mv_units(self.raw_max_voltage())
     }
 
     /// The minimum voltage the battery can supply
     pub fn min_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_50millivolts>(self.raw_min_voltage().into())
+        ElectricPotential::from_50mv_units(self.raw_min_voltage())
     }
 
     /// The maximum power the battery can supply
     pub fn max_power(&self) -> Power {
-        Power::new::<_250milliwatts>(self.raw_max_power().into())
+        Power::from_250mw_units(self.raw_max_power())
     }
 }
 
@@ -195,17 +189,17 @@ bitfield! {
 impl VariableSupply {
     /// The maximum voltage the variable supply is capable of
     pub fn max_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_50millivolts>(self.raw_max_voltage().into())
+        ElectricPotential::from_50mv_units(self.raw_max_voltage())
     }
 
     /// The minimum voltage the variable supply is capable of
     pub fn min_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_50millivolts>(self.raw_min_voltage().into())
+        ElectricPotential::from_50mv_units(self.raw_min_voltage())
     }
 
     /// The maximum current the variable supply can offer
     pub fn max_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<centiampere>(self.raw_max_current().into())
+        ElectricCurrent::from_10ma_units(self.raw_max_current())
     }
 }
 
@@ -269,17 +263,17 @@ impl Default for SprProgrammablePowerSupply {
 impl SprProgrammablePowerSupply {
     /// The maximum voltage the PPS can be requested to supply
     pub fn max_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<decivolt>(self.raw_max_voltage().into())
+        ElectricPotential::from_100mv_units(self.raw_max_voltage().into())
     }
 
     /// The minimum voltage the PPS can be requested to supply
     pub fn min_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<decivolt>(self.raw_min_voltage().into())
+        ElectricPotential::from_100mv_units(self.raw_min_voltage().into())
     }
 
     /// The maximum current the PPS can supply.
     pub fn max_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<_50milliamperes>(self.raw_max_current().into())
+        ElectricCurrent::from_50ma_units(self.raw_max_current().into())
     }
 }
 
@@ -305,23 +299,23 @@ bitfield! {
 impl SprAdjustableVoltageSupply {
     /// Minimum requestable SPR AVS voltage, fixed by the PDO format at 9 V.
     pub fn min_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<volt>(9)
+        ElectricPotential::from_volts(9)
     }
 
     /// Maximum requestable voltage: 15 V when the 20 V current field is zero,
     /// otherwise 20 V.
     pub fn max_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<volt>(if self.raw_max_current_20v() == 0 { 15 } else { 20 })
+        ElectricPotential::from_volts(if self.raw_max_current_20v() == 0 { 15 } else { 20 })
     }
 
     /// Advertised current at a voltage inside the APDO's 9-15/20 V range.
     pub fn max_current_at(&self, voltage: ElectricPotential) -> Option<ElectricCurrent> {
         if voltage < self.min_voltage() || voltage > self.max_voltage() {
             None
-        } else if voltage <= ElectricPotential::new::<volt>(15) {
-            Some(ElectricCurrent::new::<centiampere>(self.raw_max_current_15v().into()))
+        } else if voltage <= ElectricPotential::from_volts(15) {
+            Some(ElectricCurrent::from_10ma_units(self.raw_max_current_15v()))
         } else {
-            Some(ElectricCurrent::new::<centiampere>(self.raw_max_current_20v().into()))
+            Some(ElectricCurrent::from_10ma_units(self.raw_max_current_20v()))
         }
     }
 }
@@ -350,17 +344,17 @@ bitfield! {
 impl EprAdjustableVoltageSupply {
     /// The maximum voltage the PPS can be requested to supply
     pub fn max_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<decivolt>(self.raw_max_voltage().into())
+        ElectricPotential::from_100mv_units(self.raw_max_voltage())
     }
 
     /// The minimum voltage the PPS can be requested to supply
     pub fn min_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<decivolt>(self.raw_min_voltage().into())
+        ElectricPotential::from_100mv_units(self.raw_min_voltage().into())
     }
 
     /// Rated power the PPS can supply
     pub fn pd_power(&self) -> Power {
-        Power::new::<watt>(self.raw_pd_power().into())
+        Power::from_watts(self.raw_pd_power())
     }
 }
 
@@ -487,7 +481,7 @@ impl SourceCapabilities {
     /// - Fixed Supply PDOs offering 28V, 36V, or 48V (voltage > 20V)
     /// - EPR AVS APDOs
     pub fn has_epr_pdo_in_spr_positions(&self) -> bool {
-        let max_spr_voltage = ElectricPotential::new::<volt>(20);
+        let max_spr_voltage = ElectricPotential::from_volts(20);
         self.0.iter().take(7).any(|pdo| match pdo {
             // EPR Fixed Supply: voltage > 20V
             PowerDataObject::FixedSupply(f) => f.voltage() > max_spr_voltage,
@@ -582,21 +576,38 @@ mod tests {
         };
 
         assert_eq!(avs.0, raw);
-        assert_eq!(avs.min_voltage(), ElectricPotential::new::<volt>(9));
-        assert_eq!(avs.max_voltage(), ElectricPotential::new::<volt>(20));
-        assert_eq!(
-            avs.max_current_at(ElectricPotential::new::<volt>(15)),
-            Some(ElectricCurrent::new::<centiampere>(400))
-        );
-        assert_eq!(
-            avs.max_current_at(ElectricPotential::new::<volt>(20)),
-            Some(ElectricCurrent::new::<centiampere>(300))
-        );
-        assert_eq!(avs.max_current_at(ElectricPotential::new::<volt>(8)), None);
+        assert_eq!(avs.min_voltage(), ElectricPotential::from_volts(9));
+        assert_eq!(avs.max_voltage(), ElectricPotential::from_volts(20));
+        assert_eq!(avs.max_current_at(ElectricPotential::from_volts(15)), Some(ElectricCurrent::from_milliamps(4_000)));
+        assert_eq!(avs.max_current_at(ElectricPotential::from_volts(20)), Some(ElectricCurrent::from_milliamps(3_000)));
+        assert_eq!(avs.max_current_at(ElectricPotential::from_volts(8)), None);
 
         let PowerDataObject::Augmented(Augmented::SprAvs(fifteen_volt_only)) = parse_raw_pdo(spr_avs(400, 0)) else {
             panic!("SPR AVS must stay typed")
         };
-        assert_eq!(fifteen_volt_only.max_voltage(), ElectricPotential::new::<volt>(15));
+        assert_eq!(fifteen_volt_only.max_voltage(), ElectricPotential::from_volts(15));
+    }
+
+    #[test]
+    fn captured_pdos_decode_to_the_same_integer_quantities() {
+        let PowerDataObject::FixedSupply(fixed) = parse_raw_pdo(0x001f_01f4) else {
+            panic!("captured PDO10 must be a fixed supply")
+        };
+        assert_eq!(fixed.voltage().as_millivolts(), 48_000);
+        assert_eq!(fixed.max_current().as_milliamps(), 5_000);
+
+        let PowerDataObject::Augmented(Augmented::Spr(pps)) = parse_raw_pdo(0xc9a4_3264) else {
+            panic!("captured PDO6 must be PPS")
+        };
+        assert_eq!(pps.min_voltage().as_millivolts(), 5_000);
+        assert_eq!(pps.max_voltage().as_millivolts(), 21_000);
+        assert_eq!(pps.max_current().as_milliamps(), 5_000);
+
+        let PowerDataObject::Augmented(Augmented::Epr(avs)) = parse_raw_pdo(0xd7c0_96f0) else {
+            panic!("captured PDO11 must be EPR AVS")
+        };
+        assert_eq!(avs.min_voltage().as_millivolts(), 15_000);
+        assert_eq!(avs.max_voltage().as_millivolts(), 48_000);
+        assert_eq!(avs.pd_power().as_milliwatts(), 240_000);
     }
 }

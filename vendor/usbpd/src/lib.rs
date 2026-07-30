@@ -17,9 +17,6 @@
 #![cfg_attr(not(test), no_std)]
 #![warn(missing_docs)]
 
-#[macro_use]
-extern crate uom;
-
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
 
@@ -28,69 +25,11 @@ pub mod protocol_layer;
 pub mod sink;
 pub mod source;
 pub mod timers;
+pub mod units;
 
 #[cfg(test)]
 #[allow(missing_docs)] // FIXME: Docs for the dummy?
 pub mod dummy;
-
-/// This module defines the CGS (centimeter-gram-second) unit system
-/// for use in the USB Power Delivery Protocol layer. These units are
-/// defined using the `uom` (units of measurement) library and are
-/// expressed as `u32` values for milliamps, millivolts, and microwatts.
-pub mod units {
-    ISQ!(uom::si, u32, (millimeter, kilogram, second, milliampere, kelvin, mole, candela));
-}
-
-/// Defines a unit for electric current in 50 mA steps.
-pub mod _50milliamperes_mod {
-    unit! {
-        system: uom::si;
-        quantity: uom::si::electric_current;
-
-        @_50milliamperes: 0.05; "_50mA", "_50milliamps", "_50milliamps";
-    }
-}
-
-/// Defines a unit for electric potential in 50 mV steps.
-pub mod _50millivolts_mod {
-    unit! {
-        system: uom::si;
-        quantity: uom::si::electric_potential;
-
-        @_50millivolts: 0.05; "_50mV", "_50millivolts", "_50millivolts";
-    }
-}
-
-/// Defines a unit for electric potential in 20 mV steps.
-pub mod _20millivolts_mod {
-    unit! {
-        system: uom::si;
-        quantity: uom::si::electric_potential;
-
-        @_20millivolts: 0.02; "_20mV", "_20millivolts", "_20millivolts";
-    }
-}
-
-/// Defines a unit for electric potential in 25 mV steps.
-/// Used by AVS (Adjustable Voltage Supply) per USB PD 3.2 Table 6.26.
-pub mod _25millivolts_mod {
-    unit! {
-        system: uom::si;
-        quantity: uom::si::electric_potential;
-
-        @_25millivolts: 0.025; "_25mV", "_25millivolts", "_25millivolts";
-    }
-}
-
-/// Defines a unit for power in 250 mW steps.
-pub mod _250milliwatts_mod {
-    unit! {
-        system: uom::si;
-        quantity: uom::si::power;
-
-        @_250milliwatts: 0.25; "_250mW", "_250milliwatts", "_250milliwatts";
-    }
-}
 
 use core::fmt::Debug;
 
@@ -152,19 +91,15 @@ impl From<DataRole> for bool {
 
 #[cfg(test)]
 mod tests {
-    use uom::si::electric_current::milliampere;
-    use uom::si::electric_potential::millivolt;
-
-    use crate::_20millivolts_mod::_20millivolts;
-    use crate::units;
+    use crate::units::{ElectricCurrent, ElectricPotential};
 
     #[test]
     fn test_units() {
-        let current = units::ElectricCurrent::new::<milliampere>(123);
-        let potential = units::ElectricPotential::new::<millivolt>(4560);
+        let current = ElectricCurrent::from_milliamps(123);
+        let potential = ElectricPotential::from_millivolts(4560);
 
-        assert_eq!(current.get::<milliampere>(), 123);
-        assert_eq!(potential.get::<millivolt>(), 4560);
-        assert_eq!(potential.get::<_20millivolts>(), 228);
+        assert_eq!(current.as_milliamps(), 123);
+        assert_eq!(potential.as_millivolts(), 4560);
+        assert_eq!(potential.as_millivolts() / 20, 228);
     }
 }

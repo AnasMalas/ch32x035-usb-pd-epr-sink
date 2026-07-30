@@ -2,7 +2,6 @@
 use core::marker::PhantomData;
 
 use embassy_futures::select::{Either, Either3, select, select3};
-use uom::si::power::watt;
 use usbpd_traits::Driver;
 
 #[cfg(feature = "hard-reset-reasons")]
@@ -1182,11 +1181,13 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // SinkEPREnterTimer (500ms) in EprEntryWaitForResponse. This means the total
                 // timeout could be ~530ms instead of 500ms in edge cases. However, this is
                 // within the spec's allowed range (tEnterEPR max = 550ms per Table 6.71).
-                let pdp_watts = operational_pdp.get::<watt>();
+                let Some(pdp_watts) = operational_pdp.as_watts_floor() else {
+                    return Err(Error::InvalidEprOperationalPdp);
+                };
                 if !(1..=240).contains(&pdp_watts) {
                     return Err(Error::InvalidEprOperationalPdp);
                 }
-                self.protocol_layer.transmit_epr_mode(Action::Enter, pdp_watts as u8).await?;
+                self.protocol_layer.transmit_epr_mode(Action::Enter, pdp_watts).await?;
 
                 // Wait for EnterAcknowledged with SenderResponseTimer (spec step 9-14)
                 let message = self

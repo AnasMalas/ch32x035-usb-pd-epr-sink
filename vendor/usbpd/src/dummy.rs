@@ -2,7 +2,6 @@
 use std::future::pending;
 use std::vec::Vec;
 
-use uom::si::power::watt;
 use usbpd_traits::Driver;
 
 use crate::protocol_layer::message::data::request::{self, EprRequestDataObject};
@@ -77,7 +76,7 @@ impl SinkDevicePolicyManager for DummySinkEprDevice {
                 && fixed.epr_mode_capable()
             {
                 self.requested_epr_caps = true;
-                return Event::EnterEprMode(Power::new::<watt>(140)); // Dummy 140W PDP
+                return Event::EnterEprMode(Power::from_watts(140)); // Dummy 140W PDP
             }
         }
 

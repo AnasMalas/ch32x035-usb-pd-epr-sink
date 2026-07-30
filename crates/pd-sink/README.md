@@ -69,7 +69,7 @@ cumulative cost.
 These paths construct and retain requests; they do not include the on-wire
 policy engine, PD PHY, executor, console, or application. The complete
 reference sink, including those runtime pieces and its safety supervisor, is
-about 47 KiB without a console or 57 KiB with compact USB control. Fixed, PPS,
+about 40 KiB without a console or 51 KiB with compact USB control. Fixed, PPS,
 and EPR configurations are broadly the same size because they are selected at
 runtime.
 

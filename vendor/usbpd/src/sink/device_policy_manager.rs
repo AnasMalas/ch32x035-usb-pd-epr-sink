@@ -54,7 +54,7 @@ impl Event {
     /// Construct an EPR entry event from the exact whole-watt value encoded in
     /// the EPR Mode data object.
     pub fn enter_epr_mode_watts(watts: u8) -> Self {
-        Self::EnterEprMode(Power::new::<uom::si::power::watt>(u32::from(watts)))
+        Self::EnterEprMode(Power::from_watts(watts))
     }
 }
 

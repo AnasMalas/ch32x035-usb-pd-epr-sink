@@ -1,15 +1,9 @@
 //! Definitions of request data message content.
 use byteorder::{ByteOrder, LittleEndian};
 use proc_bitfield::bitfield;
-use uom::si::electric_current::{self, centiampere};
-use uom::si::{self};
 
 use super::source_capabilities;
-use crate::_20millivolts_mod::_20millivolts;
-use crate::_25millivolts_mod::_25millivolts;
-use crate::_50milliamperes_mod::_50milliamperes;
-use crate::_250milliwatts_mod::_250milliwatts;
-use crate::units::{ElectricCurrent, ElectricPotential};
+use crate::units::{ElectricCurrent, ElectricPotential, Power};
 
 bitfield! {
     #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,11 +43,11 @@ impl FixedVariableSupply {
     }
 
     pub fn operating_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<centiampere>(self.raw_operating_current().into())
+        ElectricCurrent::from_10ma_units(self.raw_operating_current())
     }
 
     pub fn max_operating_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<centiampere>(self.raw_max_operating_current().into())
+        ElectricCurrent::from_10ma_units(self.raw_max_operating_current())
     }
 }
 
@@ -90,12 +84,12 @@ impl Battery {
         LittleEndian::write_u32(buf, self.0);
     }
 
-    pub fn operating_power(&self) -> si::u32::Power {
-        si::u32::Power::new::<_250milliwatts>(self.raw_operating_power().into())
+    pub fn operating_power(&self) -> Power {
+        Power::from_250mw_units(self.raw_operating_power())
     }
 
-    pub fn max_operating_power(&self) -> si::u32::Power {
-        si::u32::Power::new::<_250milliwatts>(self.raw_max_operating_power().into())
+    pub fn max_operating_power(&self) -> Power {
+        Power::from_250mw_units(self.raw_max_operating_power())
     }
 }
 
@@ -132,11 +126,11 @@ impl Pps {
     }
 
     pub fn output_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_20millivolts>(self.raw_output_voltage().into())
+        ElectricPotential::from_20mv_units(self.raw_output_voltage())
     }
 
     pub fn operating_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<_50milliamperes>(self.raw_operating_current().into())
+        ElectricCurrent::from_50ma_units(self.raw_operating_current())
     }
 }
 
@@ -175,11 +169,11 @@ impl Avs {
     }
 
     pub fn output_voltage(&self) -> ElectricPotential {
-        ElectricPotential::new::<_25millivolts>(self.raw_output_voltage().into())
+        ElectricPotential::from_25mv_units(self.raw_output_voltage())
     }
 
     pub fn operating_current(&self) -> ElectricCurrent {
-        ElectricCurrent::new::<_50milliamperes>(self.raw_operating_current().into())
+        ElectricCurrent::from_50ma_units(self.raw_operating_current())
     }
 }
 
@@ -387,11 +381,11 @@ impl PowerSource {
             CurrentRequest::Specific(x) => (x, x > pdo.max_current()),
         };
 
-        let mut raw_current = current.get::<electric_current::centiampere>() as u16;
+        let raw_current_unclamped = current.as_milliamps() / 10;
+        let raw_current = raw_current_unclamped.min(0x3ff) as u16;
 
-        if raw_current > 0x3ff {
-            error!("Clamping invalid current: {} mA", 10 * raw_current);
-            raw_current = 0x3ff;
+        if raw_current_unclamped > 0x3ff {
+            error!("Clamping invalid current: {} mA", current.as_milliamps());
         }
 
         let object_position = index + 1;
@@ -455,14 +449,14 @@ impl PowerSource {
             CurrentRequest::Specific(x) => (x, x > max_current),
         };
 
-        let mut raw_current = current.get::<_50milliamperes>() as u16;
+        let raw_current_unclamped = current.as_milliamps() / 50;
+        let raw_current = raw_current_unclamped.min(0x7f) as u16;
 
-        if raw_current > 0x3ff {
-            error!("Clamping invalid current: {} mA", 10 * raw_current);
-            raw_current = 0x3ff;
+        if raw_current_unclamped > 0x7f {
+            error!("Clamping invalid PPS current: {} mA", current.as_milliamps());
         }
 
-        let raw_voltage = voltage.get::<_20millivolts>() as u16;
+        let raw_voltage = (voltage.as_millivolts() / 20).min(0xfff) as u16;
 
         let object_position = index + 1;
         assert!(object_position > 0b0000 && object_position <= 0b1110);
@@ -495,7 +489,9 @@ impl PowerSource {
 
         let IndexedAugmented(pdo, index) = selected.unwrap();
         let max_current = match pdo {
-            source_capabilities::Augmented::Epr(avs) => avs.pd_power() / voltage,
+            source_capabilities::Augmented::Epr(avs) => {
+                avs.pd_power().checked_current_at(voltage).ok_or(Error::VoltageMismatch)?
+            }
             _ => return Err(Error::VoltageMismatch),
         };
 
@@ -504,17 +500,17 @@ impl PowerSource {
             CurrentRequest::Specific(x) => (x, x > max_current),
         };
 
-        let mut raw_current = current.get::<_50milliamperes>() as u16;
+        let raw_current_unclamped = current.as_milliamps() / 50;
+        let raw_current = raw_current_unclamped.min(0x7f) as u16;
 
-        if raw_current > 0x7f {
-            error!("Clamping invalid AVS current: {} mA", 50 * raw_current);
-            raw_current = 0x7f;
+        if raw_current_unclamped > 0x7f {
+            error!("Clamping invalid AVS current: {} mA", current.as_milliamps());
         }
 
         // AVS voltage is in 25 mV units with LSB 2 bits = 0 (effective 100 mV steps)
         // Per USB PD 3.2 Table 6.26: "Output voltage in 25 mV units,
         // the least two significant bits Shall be set to zero"
-        let raw_voltage = (voltage.get::<_25millivolts>() as u16) & !0x3;
+        let raw_voltage = ((voltage.as_millivolts() / 25).min(0xfff) as u16) & !0x3;
 
         let object_position = index + 1;
         assert!(object_position > 0b0000 && object_position <= 0b1110);
@@ -534,5 +530,124 @@ impl PowerSource {
         let pdo_copy = source_capabilities::PowerDataObject::Augmented(*pdo);
 
         Ok(Self::EprRequest(EprRequestDataObject { rdo, pdo: pdo_copy }))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use heapless::Vec;
+
+    use super::{Avs, CurrentRequest, PowerSource, Pps, VoltageRequest};
+    use crate::protocol_layer::message::data::source_capabilities::{
+        MAX_EPR_SOURCE_PDOS, PowerDataObject, SourceCapabilities, parse_raw_pdo,
+    };
+    use crate::units::{ElectricCurrent, ElectricPotential};
+
+    #[test]
+    fn captured_adjustable_rdos_decode_to_the_same_quantities() {
+        let pps = Pps(0x6148_3464);
+        assert_eq!(pps.output_voltage().as_millivolts(), 21_000);
+        assert_eq!(pps.operating_current().as_milliamps(), 5_000);
+
+        let avs = Avs(0xb14f_0064);
+        assert_eq!(avs.output_voltage().as_millivolts(), 48_000);
+        assert_eq!(avs.operating_current().as_milliamps(), 5_000);
+    }
+
+    #[test]
+    fn pps_request_encoding_matches_the_previous_wire_value() {
+        let mut pdos = Vec::new();
+        pdos.push(parse_raw_pdo(0x0a91_912c)).unwrap();
+        pdos.push(parse_raw_pdo(0xc9a4_3264)).unwrap();
+        let caps = SourceCapabilities::new_with_pdos(pdos);
+
+        let PowerSource::Pps(request) =
+            PowerSource::new_pps(CurrentRequest::Highest, ElectricPotential::from_millivolts(19_400), &caps).unwrap()
+        else {
+            panic!("PPS APDO must produce a PPS request")
+        };
+
+        assert_eq!(request.0, 0x2307_9464);
+    }
+
+    #[test]
+    fn epr_power_to_current_floor_matches_the_previous_wire_value() {
+        let mut pdos: Vec<PowerDataObject, 16> = Vec::new();
+        for _ in 0..(MAX_EPR_SOURCE_PDOS - 1) {
+            pdos.push(parse_raw_pdo(0)).unwrap();
+        }
+        // Captured 15-48 V, 140 W EPR AVS PDO.
+        pdos.push(parse_raw_pdo(0xd7c0_968c)).unwrap();
+        let caps = SourceCapabilities::new_with_pdos(pdos);
+
+        let PowerSource::EprRequest(request) =
+            PowerSource::new_epr_avs(CurrentRequest::Highest, ElectricPotential::from_volts(48), &caps).unwrap()
+        else {
+            panic!("EPR AVS APDO must produce an EPR request")
+        };
+
+        // 140 W / 48 V floors to 2916 mA; the RDO then floors that to
+        // 58 current units of 50 mA, exactly as the former uom path did.
+        assert_eq!(request.rdo, 0xb34f_003a);
+        assert_eq!(request.pdo.to_raw(), 0xd7c0_968c);
+    }
+
+    #[test]
+    fn fixed_request_current_saturates_at_the_wire_field_maximum() {
+        let mut pdos = Vec::new();
+        pdos.push(parse_raw_pdo(0x0a91_912c)).unwrap();
+        let caps = SourceCapabilities::new_with_pdos(pdos);
+
+        let PowerSource::FixedVariableSupply(request) = PowerSource::new_fixed(
+            CurrentRequest::Specific(ElectricCurrent::from_milliamps(20_000)),
+            VoltageRequest::Safe5V,
+            &caps,
+        )
+        .unwrap() else {
+            panic!("fixed PDO must produce a fixed request")
+        };
+
+        assert_eq!(request.raw_operating_current(), 0x3ff);
+        assert_eq!(request.raw_max_operating_current(), 0x3ff);
+    }
+
+    #[test]
+    fn pps_request_current_saturates_at_the_wire_field_maximum() {
+        let mut pdos = Vec::new();
+        pdos.push(parse_raw_pdo(0x0a91_912c)).unwrap();
+        pdos.push(parse_raw_pdo(0xc9a4_3264)).unwrap();
+        let caps = SourceCapabilities::new_with_pdos(pdos);
+
+        let PowerSource::Pps(request) = PowerSource::new_pps(
+            CurrentRequest::Specific(ElectricCurrent::from_milliamps(6_400)),
+            ElectricPotential::from_millivolts(19_400),
+            &caps,
+        )
+        .unwrap() else {
+            panic!("PPS APDO must produce a PPS request")
+        };
+
+        assert_eq!(request.raw_operating_current(), 0x7f);
+    }
+
+    #[test]
+    fn avs_request_current_saturates_at_the_wire_field_maximum() {
+        let mut pdos: Vec<PowerDataObject, 16> = Vec::new();
+        for _ in 0..(MAX_EPR_SOURCE_PDOS - 1) {
+            pdos.push(parse_raw_pdo(0)).unwrap();
+        }
+        pdos.push(parse_raw_pdo(0xd7c0_968c)).unwrap();
+        let caps = SourceCapabilities::new_with_pdos(pdos);
+
+        let PowerSource::EprRequest(request) = PowerSource::new_epr_avs(
+            CurrentRequest::Specific(ElectricCurrent::from_milliamps(6_400)),
+            ElectricPotential::from_volts(48),
+            &caps,
+        )
+        .unwrap() else {
+            panic!("EPR AVS APDO must produce an EPR request")
+        };
+
+        assert_eq!(Avs(request.rdo).raw_operating_current(), 0x7f);
     }
 }

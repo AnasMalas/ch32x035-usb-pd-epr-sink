@@ -6,9 +6,11 @@ This directory is an in-tree fork of `elagil/usbpd`, crate `usbpd` 2.0.0:
 - commit: `3c9d3953a156793c52685be56dc70732abc84b7d`
 - license declared by upstream: MIT
 
-The descendant is intentionally local because this project needs sink policy,
-EPR, recovery, and real-source interoperability changes that have not all
-landed upstream. The supported behavior is covered by the host-side tests in
+The descendant is intentionally internal and non-publishable because this
+project needs sink policy, EPR, recovery, and real-source interoperability
+changes that have not all landed upstream. Its API is allowed to diverge from
+upstream without preserving semantic-version compatibility. Supported behavior
+is covered by this crate's unit tests and the repository's host-side tests in
 `tests/protocol`.
 
 Local change groups:
@@ -29,7 +31,11 @@ Local change groups:
    keepalive, capability retrieval, and Hard Reset recovery;
 8. preserve deferred requests across source-owned traffic, report rejection
    reasons, distinguish sent versus received Hard Reset, and provide bounded
-   compatibility behavior for observed noncanonical source offers.
+   compatibility behavior for observed noncanonical source offers;
+9. represent USB-PD voltage, current, and power with explicit integer
+   millivolt, milliamp, and milliwatt newtypes instead of general-purpose
+   dimensional-analysis conversions. Captured PDO/RDO vectors verify the
+   resulting wire values.
 
 The fork keeps generally applicable protocol corrections separable from
 project-specific sink policy so reusable fixes can be proposed upstream
