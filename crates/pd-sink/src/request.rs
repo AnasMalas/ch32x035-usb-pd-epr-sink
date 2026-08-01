@@ -133,6 +133,13 @@ impl RequestPlan {
             PlannedOperating::Current { operating, .. } => Some(operating),
         }
     }
+
+    /// Voltage that is actually encoded in this request.
+    pub const fn encoded_voltage(self) -> Millivolts {
+        match self.voltage {
+            PlannedVoltage::Fixed(voltage) | PlannedVoltage::Adjustable { encoded: voltage, .. } => voltage,
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

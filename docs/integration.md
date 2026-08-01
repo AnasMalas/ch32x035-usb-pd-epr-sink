@@ -150,3 +150,13 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 VBUS removal must turn the load path off without relying on the executor, the
 PD stack, or a functioning MCU. The reference implementation is documented in
 [`examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md`](../examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md).
+
+Before each Request, `ContractTracker` classifies the wire transition against
+the confirmed RDO. Identical maintenance and a same-encoded-voltage request
+with known, nondecreasing operating current can retain load permission. A
+voltage change, reduced or uncertain current, or missing confirmed contract
+causes an immediate load-disable request before the PD Request is returned.
+`SinkRuntime::on_contract_transition_started` receives the library-owned
+classification for diagnostics; telemetry delivery is not part of the cutoff
+path. Current comparisons use the limited current actually encoded in the RDO,
+not the Source PDO maximum or an unbounded user demand.

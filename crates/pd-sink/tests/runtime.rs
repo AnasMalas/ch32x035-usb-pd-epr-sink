@@ -1,15 +1,18 @@
 use core::future::Future;
 use core::pin::pin;
 use core::task::{Context, Poll, Waker};
+use std::collections::VecDeque;
 
 use pd_sink::{
-    CapabilitiesKind, Command, ContractState, ControllerConfig, HardResetCause, HardResetDirection, Milliamps,
-    Milliwatts, RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor,
-    SinkRuntime,
+    CapabilitiesKind, Command, ContractState, ContractTransitionKind, ControllerConfig, HardResetCause,
+    HardResetDirection, Milliamps, Millivolts, Milliwatts, Preference, RequestContext, RequestFlags, SinkConfig,
+    SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime, UserRequest,
 };
 use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::request::PowerSource;
-use usbpd::protocol_layer::message::data::source_capabilities::{FixedSupply, PowerDataObject, SourceCapabilities};
+use usbpd::protocol_layer::message::data::source_capabilities::{
+    Augmented, FixedSupply, PowerDataObject, SourceCapabilities, SprProgrammablePowerSupply,
+};
 use usbpd::protocol_layer::message::extended::pps_status::PpsStatus as StackPpsStatus;
 use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, HardResetOrigin, HardResetReason};
 
@@ -29,6 +32,7 @@ fn block_on<F: Future>(future: F) -> F::Output {
 struct TestRuntime {
     events: Vec<SinkEvent>,
     load_states: Vec<bool>,
+    commands: VecDeque<Command>,
     clear_count: usize,
     delays: Vec<u64>,
 }
@@ -47,7 +51,7 @@ impl SinkRuntime for TestRuntime {
     }
 
     async fn wait_for_command(&mut self) -> Command {
-        panic!("this test does not drive the command future")
+        self.commands.pop_front().expect("test must queue every command before polling")
     }
 
     async fn delay_millis(&mut self, milliseconds: u64) {
@@ -139,6 +143,55 @@ fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
         .events
         .iter()
         .any(|event| matches!(event, SinkEvent::ContractRefreshed(plan) if plan.object_position == 1)));
+}
+
+#[test]
+fn same_voltage_candidate_with_sufficient_current_preserves_load_permission() {
+    let mut pdos = heapless::Vec::new();
+    pdos.push(PowerDataObject::FixedSupply(FixedSupply::v_safe_5v(500))).unwrap();
+    pdos.push(PowerDataObject::Augmented(Augmented::Spr(
+        SprProgrammablePowerSupply::default()
+            .with_raw_max_current(60)
+            .with_raw_min_voltage(50)
+            .with_raw_max_voltage(110),
+    )))
+    .unwrap();
+    let source = SourceCapabilities::new_with_pdos(pdos);
+    let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
+
+    device.inform(&source);
+    let initial = device.request(&source);
+    device.transition_power(&initial);
+    assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
+
+    device.runtime_mut().commands.push_back(Command::Request(UserRequest::Voltage {
+        voltage: Millivolts(5_000),
+        current: Some(Milliamps(2_000)),
+        preference: Preference::Fixed,
+    }));
+    let Event::RequestPower(lowered) = block_on(device.get_event(&source)) else {
+        panic!("expected the 2 A fixed request")
+    };
+    device.transition_power(&lowered);
+    assert_eq!(device.contract().confirmed_current(), Some(Milliamps(2_000)));
+
+    let load_events_before = device.runtime_mut().load_states.len();
+    device.runtime_mut().commands.push_back(Command::Request(UserRequest::Voltage {
+        voltage: Millivolts(5_000),
+        current: Some(Milliamps(3_000)),
+        preference: Preference::Pps,
+    }));
+    assert!(matches!(block_on(device.get_event(&source)), Event::RequestPower(_)));
+
+    let runtime = device.runtime_mut();
+    assert_eq!(runtime.load_states.len(), load_events_before, "safe handover must not issue load-disable");
+    assert!(runtime.events.iter().any(|event| matches!(
+        event,
+        SinkEvent::ContractTransitionStarted(transition)
+            if transition.kind == ContractTransitionKind::SameVoltageSufficientCurrent
+                && transition.from.is_some_and(|point| point.current == Milliamps(2_000))
+                && transition.to.current == Milliamps(3_000)
+    )));
 }
 
 #[test]

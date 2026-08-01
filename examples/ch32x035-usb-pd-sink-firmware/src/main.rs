@@ -30,11 +30,11 @@ use embassy_time::{Instant, Timer};
 use panic_halt as _;
 use pd_sink::PlanError;
 use pd_sink::{
-    CapabilitiesKind, Ch32x035Port, Ch32x035UsbPdDriver, Command, ControllerConfig, ControllerError, CurrentConfidence,
-    HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PhyEvent, PlannedOperating, PlannedVoltage,
-    PpsStatus, RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestResult, SinkConfig, SinkDevice,
-    SinkLimits, SinkPowerDescriptor, SinkRuntime, SourceAlert, SourceCapabilities as ProductSourceCapabilities,
-    SourceStatus, StatusQuery, StatusQueryFailure,
+    CapabilitiesKind, Ch32x035Port, Ch32x035UsbPdDriver, Command, ContractTransition, ControllerConfig,
+    ControllerError, CurrentConfidence, HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PhyEvent,
+    PlannedOperating, PlannedVoltage, PpsStatus, RequestContext, RequestFlags, RequestMessage, RequestPlan,
+    RequestResult, SinkConfig, SinkDevice, SinkLimits, SinkPowerDescriptor, SinkRuntime, SourceAlert,
+    SourceCapabilities as ProductSourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure,
 };
 #[cfg(not(feature = "dev-text-console"))]
 use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
@@ -759,6 +759,18 @@ impl SinkRuntime for FirmwareRuntime {
     fn on_capability_plans_unavailable(&mut self) {
         control_event!(ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable));
         logln!("Plans unavailable");
+    }
+
+    fn on_contract_transition_started(&mut self, transition: ContractTransition) {
+        control_event!(ControlEvent::ContractTransition(transition));
+        logln!(
+            "Transition={} {}mV/{}mA -> {}mV/{}mA",
+            transition.kind as u8,
+            transition.from.map_or(0, |point| point.voltage.get()),
+            transition.from.map_or(0, |point| point.current.get()),
+            transition.to.voltage.get(),
+            transition.to.current.get()
+        );
     }
 
     #[cfg(not(feature = "dev-text-console"))]

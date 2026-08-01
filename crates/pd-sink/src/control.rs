@@ -6,6 +6,7 @@
 
 use crate::capabilities::{CapabilitiesKind, PdoValidity, SourceCapabilities, SupplyKind};
 use crate::command::Command;
+use crate::contract::ContractTransition;
 use crate::controller::{ControllerError, UserRequest};
 use crate::request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, Preference, RequestMessage,
@@ -62,6 +63,7 @@ pub enum EventKind {
     SourceStatus = 0x8f,
     PpsStatus = 0x90,
     StatusQueryFailed = 0x91,
+    ContractTransition = 0x92,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -152,6 +154,7 @@ pub enum ControlEvent {
     Epr { event: EprEvent, detail: u8, extra: u8 },
     CapabilityPlansStarted { count: u8 },
     CapabilityPlanUnavailable { position: u8, validity: PdoValidity },
+    ContractTransition(ContractTransition),
     IntegrationError(IntegrationError),
     Help,
 }
@@ -592,6 +595,14 @@ pub fn encode_event_packet(event: ControlEvent, sequence: u8, output: &mut [u8; 
             writer.u8(position);
             writer.u8(validity_code(validity));
             EventKind::CapabilityPlanUnavailable
+        }
+        ControlEvent::ContractTransition(transition) => {
+            writer.u8(transition.kind as u8);
+            writer.u32(transition.from.map_or(NONE_U32, |point| point.voltage.get()));
+            writer.u32(transition.from.map_or(NONE_U32, |point| point.current.get()));
+            writer.u32(transition.to.voltage.get());
+            writer.u32(transition.to.current.get());
+            EventKind::ContractTransition
         }
         ControlEvent::IntegrationError(error) => {
             writer.u8(error as u8);

@@ -153,6 +153,14 @@ assert.deepEqual(eventLines(0x91, [1, 3]), [
   "PPS_Status query failed: timeout",
 ]);
 
+assert.deepEqual(eventLines(0x92, [2, ...u32(5000), ...u32(2000), ...u32(5000), ...u32(3000)]), [
+  "Contract transition: same-voltage-sufficient-current 5000mV/2000mA -> 5000mV/3000mA load=continuous",
+]);
+
+assert.deepEqual(eventLines(0x92, [0, ...u32(0xffffffff), ...u32(0xffffffff), ...u32(5000), ...u32(3000)]), [
+  "Contract transition: initial/no-confirmed-contract none -> 5000mV/3000mA load=inhibited",
+]);
+
 assert.deepEqual(eventLines(0x88, [1, ...u32(2000), 8]), [
   "Hard reset sent; cause=epr-keepalive-failed; load off; recovery=2000ms",
 ]);

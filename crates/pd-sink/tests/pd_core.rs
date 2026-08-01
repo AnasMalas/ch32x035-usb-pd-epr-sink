@@ -1,10 +1,11 @@
 use pd_sink::capabilities::CapabilityListError;
 use pd_sink::request::PlanError;
 use pd_sink::{
-    capabilities_from_stack, request_to_stack, CapabilitiesKind, ContractState, ContractTracker, CurrentConfidence,
-    Demand, LimitReason, Milliamps, Millivolts, Milliwatts, PdoError, PdoValidity, PlannedOperating, PlannedVoltage,
-    PortInputs, PortMode, PortState, PortSupervisor, Preference, RequestContext, RequestMessage, RequestPlanner,
-    SafetyTimings, SinkLimits, SourceCapabilities, SourceSupply, SupplyKind,
+    capabilities_from_stack, request_to_stack, CapabilitiesKind, ContractState, ContractTracker,
+    ContractTransitionKind, CurrentConfidence, Demand, LimitReason, Milliamps, Millivolts, Milliwatts, PdoError,
+    PdoValidity, PlannedOperating, PlannedVoltage, PortInputs, PortMode, PortState, PortSupervisor, Preference,
+    RequestContext, RequestMessage, RequestPlanner, SafetyTimings, SinkLimits, SourceCapabilities, SourceSupply,
+    SupplyKind,
 };
 use usbpd::protocol_layer::message::data::request::PowerSource;
 use usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities as StackSourceCapabilities;
@@ -815,8 +816,8 @@ fn rejected_renegotiation_restores_the_previous_ready_contract() {
     contract.on_accept().unwrap();
     contract.on_ps_ready().unwrap();
     assert_eq!(contract.active_plan(), Some(initial));
-    assert!(!contract.request_changes_power(initial));
-    assert!(contract.request_changes_power(renegotiation));
+    assert_eq!(contract.classify_transition(initial).kind, ContractTransitionKind::IdenticalRefresh);
+    assert_eq!(contract.classify_transition(renegotiation).kind, ContractTransitionKind::VoltageChange);
 
     contract.on_request(renegotiation).unwrap();
     assert_eq!(contract.confirmed_current(), None);
@@ -834,7 +835,92 @@ fn rejected_renegotiation_restores_the_previous_ready_contract() {
         .unwrap();
     assert_ne!(renegotiation, same_wire, "reported request metadata should retain the user's exact voltage");
     assert_eq!(renegotiation.rdo, same_wire.rdo, "both voltages quantize to the same PPS RDO");
-    assert!(!contract.request_changes_power(same_wire), "wire-identical maintenance must keep the load stable");
+    assert_eq!(
+        contract.classify_transition(same_wire).kind,
+        ContractTransitionKind::IdenticalRefresh,
+        "wire-identical maintenance must keep the load stable"
+    );
+}
+
+#[test]
+fn transition_classification_uses_the_confirmed_rdo_current() {
+    let capabilities = spr_capabilities(&[
+        fixed(5_000, 5_000, true),
+        fixed(9_000, 5_000, false),
+        pps(5_000, 11_000, 3_000, false),
+        pps(5_000, 11_000, 1_500, false),
+        pps(5_000, 11_000, 4_000, true),
+    ]);
+    let planner = RequestPlanner::new();
+    let context = RequestContext::default();
+    let active = planner
+        .for_voltage(
+            &capabilities,
+            PortMode::Spr,
+            Millivolts(5_000),
+            Some(Milliamps(2_000)),
+            Preference::Fixed,
+            context,
+        )
+        .unwrap();
+    let mut contract = ContractTracker::new();
+    assert_eq!(contract.classify_transition(active).kind, ContractTransitionKind::NoConfirmedContract);
+    contract.on_attach();
+    contract.on_capabilities().unwrap();
+    contract.on_request(active).unwrap();
+    contract.on_accept().unwrap();
+    contract.on_ps_ready().unwrap();
+
+    let sufficient = planner
+        .for_pdo(
+            &capabilities,
+            PortMode::Spr,
+            3,
+            Demand::Adjustable { voltage: Millivolts(5_000), current: Some(Milliamps(3_000)) },
+            context,
+        )
+        .unwrap();
+    let reduced = planner
+        .for_pdo(
+            &capabilities,
+            PortMode::Spr,
+            4,
+            Demand::Adjustable { voltage: Millivolts(5_000), current: Some(Milliamps(1_500)) },
+            context,
+        )
+        .unwrap();
+    let unknown = planner
+        .for_pdo(
+            &capabilities,
+            PortMode::Spr,
+            5,
+            Demand::Adjustable { voltage: Millivolts(5_000), current: Some(Milliamps(3_000)) },
+            context,
+        )
+        .unwrap();
+    let voltage_change = planner
+        .for_voltage(
+            &capabilities,
+            PortMode::Spr,
+            Millivolts(9_000),
+            Some(Milliamps(2_000)),
+            Preference::Fixed,
+            context,
+        )
+        .unwrap();
+
+    assert_eq!(
+        contract.classify_transition(sufficient).kind,
+        ContractTransitionKind::SameVoltageSufficientCurrent,
+        "a 3 A candidate is sufficient for the 2 A encoded active RDO even though its PDO advertised 5 A"
+    );
+    assert!(!contract.classify_transition(sufficient).inhibits_load());
+    assert_eq!(contract.classify_transition(reduced).kind, ContractTransitionKind::SameVoltageReducedCurrent);
+    assert!(contract.classify_transition(reduced).inhibits_load());
+    assert_eq!(contract.classify_transition(unknown).kind, ContractTransitionKind::SameVoltageUnknownCurrent);
+    assert!(contract.classify_transition(unknown).inhibits_load());
+    assert_eq!(contract.classify_transition(voltage_change).kind, ContractTransitionKind::VoltageChange);
+    assert!(contract.classify_transition(voltage_change).inhibits_load());
 }
 
 #[test]

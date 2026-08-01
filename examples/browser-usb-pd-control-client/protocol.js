@@ -42,6 +42,7 @@
     sourceStatus: 0x8f,
     ppsStatus: 0x90,
     statusQueryFailed: 0x91,
+    contractTransition: 0x92,
   });
 
   const PREFERENCE = Object.freeze({
@@ -340,6 +341,25 @@
     return `${query} query failed: ${reason}`;
   }
 
+  function contractTransitionLine(payload) {
+    expectLength(payload, 17);
+    const kinds = [
+      "initial/no-confirmed-contract",
+      "identical-refresh",
+      "same-voltage-sufficient-current",
+      "same-voltage-reduced-current",
+      "same-voltage-unknown-current",
+      "voltage-change",
+    ];
+    const fromVoltage = readU32(payload, 1);
+    const fromCurrent = readU32(payload, 5);
+    const from = fromVoltage === NONE_U32 || fromCurrent === NONE_U32
+      ? "none"
+      : `${fromVoltage}mV/${fromCurrent}mA`;
+    const inhibited = [0, 3, 4, 5].includes(payload[0]);
+    return `Contract transition: ${kinds[payload[0]] ?? `kind-${payload[0]}`} ${from} -> ${readU32(payload, 9)}mV/${readU32(payload, 13)}mA load=${inhibited ? "inhibited" : "continuous"}`;
+  }
+
   function validityName(validity) {
     return ["valid", "compatible", "padding", "malformed", "unsupported"][validity] ?? "malformed";
   }
@@ -627,6 +647,8 @@
         return [ppsStatusLine(payload)];
       case EVENT.statusQueryFailed:
         return [statusQueryFailureLine(payload)];
+      case EVENT.contractTransition:
+        return [contractTransitionLine(payload)];
       default:
         return [`Unknown USB-control event kind ${frame.kind}`];
     }
@@ -645,6 +667,7 @@
     sourceAlertLine,
     sourceStatusLine,
     statusQueryFailureLine,
+    contractTransitionLine,
     translateFrame,
   });
 

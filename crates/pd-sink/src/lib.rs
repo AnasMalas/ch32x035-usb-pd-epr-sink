@@ -29,7 +29,9 @@ pub use capabilities::{
 #[cfg(feature = "ch32x035")]
 pub use ch32x035::{Ch32x035Port, Ch32x035UsbPdDriver, PhyEvent};
 pub use command::{parse_command, Command, CommandError};
-pub use contract::{ContractError, ContractState, ContractTracker};
+pub use contract::{
+    ContractError, ContractOperatingPoint, ContractState, ContractTracker, ContractTransition, ContractTransitionKind,
+};
 pub use control::{
     decode_command as decode_control_command, encode_event as encode_control_event,
     encode_event_packet as encode_control_event_packet, encode_frame as encode_control_frame,

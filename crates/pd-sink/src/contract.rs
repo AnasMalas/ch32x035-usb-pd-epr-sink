@@ -1,5 +1,55 @@
-use crate::request::{PlannedOperating, RequestPlan};
-use crate::units::Milliamps;
+use crate::request::{CurrentConfidence, PlannedOperating, RequestPlan};
+use crate::units::{Milliamps, Millivolts};
+
+/// Wire-level operating point used to explain a contract transition without
+/// making applications retain or compare complete PDO/RDO plans.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractOperatingPoint {
+    pub voltage: Millivolts,
+    pub current: Milliamps,
+}
+
+/// Conservative local classification made before a PD Request is sent.
+///
+/// The Source does not provide an application-load safety classification.
+/// This library compares the new request with the confirmed RDO so firmware
+/// can inhibit its external load before an electrical transition starts.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum ContractTransitionKind {
+    NoConfirmedContract = 0,
+    IdenticalRefresh = 1,
+    SameVoltageSufficientCurrent = 2,
+    SameVoltageReducedCurrent = 3,
+    SameVoltageUnknownCurrent = 4,
+    VoltageChange = 5,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ContractTransition {
+    pub kind: ContractTransitionKind,
+    pub from: Option<ContractOperatingPoint>,
+    pub to: ContractOperatingPoint,
+}
+
+impl ContractTransition {
+    /// Whether the application load must be inhibited before sending the
+    /// Request. Observation/telemetry of this decision is never on the safety
+    /// path.
+    pub const fn inhibits_load(self) -> bool {
+        matches!(
+            self.kind,
+            ContractTransitionKind::NoConfirmedContract
+                | ContractTransitionKind::SameVoltageReducedCurrent
+                | ContractTransitionKind::SameVoltageUnknownCurrent
+                | ContractTransitionKind::VoltageChange
+        )
+    }
+
+    pub const fn is_identical_refresh(self) -> bool {
+        matches!(self.kind, ContractTransitionKind::IdenticalRefresh)
+    }
+}
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum ContractState {
@@ -48,16 +98,41 @@ impl ContractTracker {
         self.active
     }
 
-    /// Whether starting this request changes any wire-encoded operating
-    /// parameter from the confirmed contract. Identical PPS maintenance
-    /// requests do not require the product load to be interrupted.
-    pub fn request_changes_power(&self, plan: RequestPlan) -> bool {
-        match self.active {
-            Some(active) => {
-                active.message != plan.message || active.rdo != plan.rdo || active.pdo_copy != plan.pdo_copy
-            }
-            None => true,
-        }
+    /// Classify a request against the current confirmed RDO.
+    ///
+    /// Current comparisons use the limited, wire-encoded operating current,
+    /// not the Source PDO maximum or the user's pre-limit demand. A
+    /// power-limited upper bound is not a confirmed current capability and is
+    /// therefore treated conservatively as unknown.
+    pub fn classify_transition(&self, plan: RequestPlan) -> ContractTransition {
+        let to = ContractOperatingPoint {
+            voltage: plan.encoded_voltage(),
+            current: plan.operating_current().expect("all maintained sink requests encode operating current"),
+        };
+        let Some(active) = self.active else {
+            return ContractTransition { kind: ContractTransitionKind::NoConfirmedContract, from: None, to };
+        };
+        let from = ContractOperatingPoint {
+            voltage: active.encoded_voltage(),
+            current: active.operating_current().expect("confirmed sink contract must encode operating current"),
+        };
+
+        let kind = if active.message == plan.message && active.rdo == plan.rdo && active.pdo_copy == plan.pdo_copy {
+            ContractTransitionKind::IdenticalRefresh
+        } else if from.voltage != to.voltage {
+            ContractTransitionKind::VoltageChange
+        } else if matches!(
+            plan.operating,
+            PlannedOperating::Current { confidence: CurrentConfidence::PowerLimitedUpperBound, .. }
+        ) {
+            ContractTransitionKind::SameVoltageUnknownCurrent
+        } else if to.current >= from.current {
+            ContractTransitionKind::SameVoltageSufficientCurrent
+        } else {
+            ContractTransitionKind::SameVoltageReducedCurrent
+        };
+
+        ContractTransition { kind, from: Some(from), to }
     }
 
     pub fn on_attach(&mut self) {

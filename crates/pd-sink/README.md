@@ -112,6 +112,7 @@ is the canonical end-to-end implementation.
 | Decode source offers | `SourceCapabilities`, `AdvertisedPdo`, `SourceSupply` |
 | Plan a request | `RequestPlanner`, `RequestContext`, `SinkLimits`, `Demand` |
 | Track a contract | `ContractTracker`, `ContractState` |
+| Classify a renegotiation | `ContractTransition`, `ContractTransitionKind` |
 | Run the reusable DPM | `SinkConfig`, `SinkDevice`, `SinkRuntime`, `SinkEvent` |
 | Connect the CH32 PHY | `Ch32x035UsbPdDriver`, `Ch32x035Port`, `PhyEvent` |
 | Exchange compact host frames | `control` module and `CONTROL_PROTOCOL_VERSION` |

@@ -1,11 +1,12 @@
 use pd_sink::{
     decode_control_command, encode_control_event, encode_control_event_packet, encode_control_frame, CapabilitiesKind,
-    Command, CommandStatus, ControlCommandKind, ControlCommandStreamDecoder, ControlEprEvent, ControlEvent,
-    ControlEventKind, ControlFrameDecoder, ControlFrameError, ControlIntegrationError, ControlLifecycleEvent,
-    ControlPlanStage, ControllerError, CurrentConfidence, Demand, DeviceInfo, HardResetCause, HardResetDirection,
-    LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus,
-    Preference, RequestMessage, RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery,
-    StatusQueryFailure, SupplyKind, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
+    Command, CommandStatus, ContractOperatingPoint, ContractTransition, ContractTransitionKind, ControlCommandKind,
+    ControlCommandStreamDecoder, ControlEprEvent, ControlEvent, ControlEventKind, ControlFrameDecoder,
+    ControlFrameError, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, ControllerError,
+    CurrentConfidence, Demand, DeviceInfo, HardResetCause, HardResetDirection, LimitReason, Milliamps, Millivolts,
+    Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus, Preference, RequestMessage, RequestPlan,
+    RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure, SupplyKind,
+    UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -357,6 +358,15 @@ fn packet_event_encoder_keeps_protocol_v1_payloads() {
             ControlEvent::CapabilityPlanUnavailable { position: 7, validity: PdoValidity::Compatible },
             ControlEventKind::CapabilityPlanUnavailable,
             &[7, 1],
+        ),
+        (
+            ControlEvent::ContractTransition(ContractTransition {
+                kind: ContractTransitionKind::SameVoltageSufficientCurrent,
+                from: Some(ContractOperatingPoint { voltage: Millivolts(5_000), current: Milliamps(2_000) }),
+                to: ContractOperatingPoint { voltage: Millivolts(5_000), current: Milliamps(3_000) },
+            }),
+            ControlEventKind::ContractTransition,
+            &[2, 0x88, 0x13, 0, 0, 0xd0, 0x07, 0, 0, 0x88, 0x13, 0, 0, 0xb8, 0x0b, 0, 0],
         ),
         (
             ControlEvent::IntegrationError(ControlIntegrationError::CapabilityPlansUnavailable),

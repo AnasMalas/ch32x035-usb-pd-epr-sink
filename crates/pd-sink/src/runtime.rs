@@ -25,8 +25,8 @@ use usbpd::sink::device_policy_manager::{
 
 use crate::{
     capabilities_from_stack, request_to_stack, CapabilityListError, Command, ContractState, ContractTracker,
-    ControllerAction, ControllerConfig, ControllerError, Demand, EprState, Milliamps, Milliwatts, PdoValidity,
-    PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus, StackConversionError, StatusQuery,
+    ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprState, Milliamps, Milliwatts,
+    PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus, StackConversionError, StatusQuery,
     StatusQueryFailure, SupplyKind, UserRequest,
 };
 
@@ -148,6 +148,7 @@ pub enum SinkEvent {
     },
     CapabilityPlansUnavailable,
     CapabilityPlan(CapabilityPlan),
+    ContractTransitionStarted(ContractTransition),
     Requesting(RequestPlan),
     ContractReady(Option<RequestPlan>),
     ContractRefreshStarted(RequestPlan),
@@ -220,6 +221,11 @@ pub trait SinkRuntime {
     }
     fn on_capability_plan(&mut self, plan: CapabilityPlan) {
         self.observe(SinkEvent::CapabilityPlan(plan));
+    }
+    /// A Request is about to start. Load inhibition, when required, has
+    /// already been issued independently of this observation hook.
+    fn on_contract_transition_started(&mut self, transition: ContractTransition) {
+        self.observe(SinkEvent::ContractTransitionStarted(transition));
     }
     fn on_requesting(&mut self, plan: RequestPlan) {
         self.observe(SinkEvent::Requesting(plan));
@@ -360,13 +366,14 @@ impl<R: SinkRuntime> SinkDevice<R> {
     }
 
     fn begin_request(&mut self, plan: RequestPlan) -> bool {
-        let is_refresh = !self.contract.request_changes_power(plan);
-        if !is_refresh {
+        let transition = self.contract.classify_transition(plan);
+        if transition.inhibits_load() {
             self.runtime.set_load_enabled(false);
         }
+        self.runtime.on_contract_transition_started(transition);
         self.contract.on_request(plan).expect("request must follow advertised capabilities");
-        self.pending_contract_refresh = is_refresh;
-        is_refresh
+        self.pending_contract_refresh = transition.is_identical_refresh();
+        self.pending_contract_refresh
     }
 
     fn report_contract(&mut self) {
