@@ -169,3 +169,21 @@ detach/re-attach and defaults it on after an MCU reset to preserve the original
 automatic-load behavior; private products can choose a different reset policy.
 Its USB and text transports apply Output Off before sending an acknowledgement
 instead of waiting for the PD policy engine to reach `Ready`.
+
+## EPR exit policy
+
+The direct controller API requires an `EprExitPolicy` and the confirmed plan
+from `ContractTracker::active_plan()`. `PreserveVoltage` validates only SPR
+objects in positions 1-7 from the latest EPR capability list. Its candidate
+must encode the same voltage and at least the active RDO's limited operating
+current; an uncertain power-limited current is not sufficient. A valid
+candidate is requested with `EPR_Request`, and EPR Mode Exit is sent only after
+Accept and PS_RDY. If the confirmed contract already uses a valid SPR object,
+Exit can be sent directly.
+
+`EprExitFallback::Refuse` leaves the confirmed EPR contract and load permission
+untouched when no continuity candidate exists. `Safe5V` explicitly establishes
+the fixed 5 V SPR object before Exit, unless that contract is already active.
+The reference compact/text `exit-epr` command deliberately selects `Safe5V`
+for conservative backward compatibility; exposing another policy does not
+require changing compact control protocol v1.

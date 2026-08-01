@@ -33,6 +33,37 @@ pub struct ContractTransition {
 }
 
 impl ContractTransition {
+    pub fn classify(active: Option<RequestPlan>, plan: RequestPlan) -> Self {
+        let to = ContractOperatingPoint {
+            voltage: plan.encoded_voltage(),
+            current: plan.operating_current().expect("all maintained sink requests encode operating current"),
+        };
+        let Some(active) = active else {
+            return Self { kind: ContractTransitionKind::NoConfirmedContract, from: None, to };
+        };
+        let from = ContractOperatingPoint {
+            voltage: active.encoded_voltage(),
+            current: active.operating_current().expect("confirmed sink contract must encode operating current"),
+        };
+
+        let kind = if active.message == plan.message && active.rdo == plan.rdo && active.pdo_copy == plan.pdo_copy {
+            ContractTransitionKind::IdenticalRefresh
+        } else if from.voltage != to.voltage {
+            ContractTransitionKind::VoltageChange
+        } else if matches!(
+            plan.operating,
+            PlannedOperating::Current { confidence: CurrentConfidence::PowerLimitedUpperBound, .. }
+        ) {
+            ContractTransitionKind::SameVoltageUnknownCurrent
+        } else if to.current >= from.current {
+            ContractTransitionKind::SameVoltageSufficientCurrent
+        } else {
+            ContractTransitionKind::SameVoltageReducedCurrent
+        };
+
+        Self { kind, from: Some(from), to }
+    }
+
     /// Whether the application load must be inhibited before sending the
     /// Request. Observation/telemetry of this decision is never on the safety
     /// path.
@@ -105,34 +136,7 @@ impl ContractTracker {
     /// power-limited upper bound is not a confirmed current capability and is
     /// therefore treated conservatively as unknown.
     pub fn classify_transition(&self, plan: RequestPlan) -> ContractTransition {
-        let to = ContractOperatingPoint {
-            voltage: plan.encoded_voltage(),
-            current: plan.operating_current().expect("all maintained sink requests encode operating current"),
-        };
-        let Some(active) = self.active else {
-            return ContractTransition { kind: ContractTransitionKind::NoConfirmedContract, from: None, to };
-        };
-        let from = ContractOperatingPoint {
-            voltage: active.encoded_voltage(),
-            current: active.operating_current().expect("confirmed sink contract must encode operating current"),
-        };
-
-        let kind = if active.message == plan.message && active.rdo == plan.rdo && active.pdo_copy == plan.pdo_copy {
-            ContractTransitionKind::IdenticalRefresh
-        } else if from.voltage != to.voltage {
-            ContractTransitionKind::VoltageChange
-        } else if matches!(
-            plan.operating,
-            PlannedOperating::Current { confidence: CurrentConfidence::PowerLimitedUpperBound, .. }
-        ) {
-            ContractTransitionKind::SameVoltageUnknownCurrent
-        } else if to.current >= from.current {
-            ContractTransitionKind::SameVoltageSufficientCurrent
-        } else {
-            ContractTransitionKind::SameVoltageReducedCurrent
-        };
-
-        ContractTransition { kind, from: Some(from), to }
+        ContractTransition::classify(self.active, plan)
     }
 
     pub fn on_attach(&mut self) {

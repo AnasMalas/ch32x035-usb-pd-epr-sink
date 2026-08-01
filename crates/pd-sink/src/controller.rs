@@ -1,5 +1,8 @@
-use crate::capabilities::{CapabilitiesKind, SourceCapabilities};
-use crate::request::{Demand, PlanError, PortMode, Preference, RequestContext, RequestPlan, RequestPlanner};
+use crate::capabilities::{CapabilitiesKind, SourceCapabilities, SupplyKind};
+use crate::contract::{ContractTransition, ContractTransitionKind};
+use crate::request::{
+    Demand, PlanError, PortMode, Preference, RequestContext, RequestMessage, RequestPlan, RequestPlanner,
+};
 use crate::units::{Milliamps, Millivolts, Milliwatts};
 
 /// A user-visible request. Keeping this independent of any command transport
@@ -27,6 +30,27 @@ pub enum EprState {
     Exiting,
 }
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub enum EprExitFallback {
+    Safe5V,
+    #[default]
+    Refuse,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum EprExitPolicy {
+    PreserveVoltage { fallback: EprExitFallback },
+    Safe5V,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum EprExitRefusal {
+    NoConfirmedContract = 0,
+    NoSuitableSprContract = 1,
+    CapabilitiesChanged = 2,
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum ControllerAction {
     Request(RequestPlan),
@@ -44,6 +68,7 @@ pub enum ControllerError {
     EprNotConfigured,
     InvalidEprOperationalPdp(Milliwatts),
     NotInEprMode,
+    EprExitRefused(EprExitRefusal),
     Plan(PlanError),
 }
 
@@ -65,6 +90,9 @@ pub struct SinkController {
     epr_capabilities: Option<SourceCapabilities>,
     epr_state: EprState,
     epr_exit_ready: bool,
+    epr_exit_fallback: EprExitFallback,
+    epr_exit_preserves_voltage: bool,
+    pending_error: Option<ControllerError>,
     desired: Option<UserRequest>,
 }
 
@@ -77,6 +105,9 @@ impl SinkController {
             epr_capabilities: None,
             epr_state: EprState::Spr,
             epr_exit_ready: false,
+            epr_exit_fallback: EprExitFallback::Refuse,
+            epr_exit_preserves_voltage: false,
+            pending_error: None,
             desired: None,
         }
     }
@@ -87,6 +118,10 @@ impl SinkController {
 
     pub const fn desired(&self) -> Option<UserRequest> {
         self.desired
+    }
+
+    pub fn take_pending_error(&mut self) -> Option<ControllerError> {
+        self.pending_error.take()
     }
 
     /// Update the Source's presently available power. This refines the usable
@@ -114,6 +149,8 @@ impl SinkController {
                 if matches!(self.epr_state, EprState::Entering | EprState::Exiting) {
                     self.epr_state = EprState::Spr;
                     self.epr_capabilities = None;
+                    self.desired = None;
+                    self.epr_exit_ready = false;
                 }
             }
             CapabilitiesKind::Epr => {
@@ -133,6 +170,17 @@ impl SinkController {
         &mut self,
         capabilities: SourceCapabilities,
     ) -> Result<RequestPlan, ControllerError> {
+        self.request_for_capabilities_with_contract(capabilities, None)
+    }
+
+    /// Evaluate capabilities with the still-confirmed contract supplied by
+    /// `ContractTracker`. The controller retains policy, not duplicate
+    /// contract truth.
+    pub fn request_for_capabilities_with_contract(
+        &mut self,
+        capabilities: SourceCapabilities,
+        active: Option<RequestPlan>,
+    ) -> Result<RequestPlan, ControllerError> {
         self.observe_capabilities(capabilities);
         let mode = match capabilities.kind() {
             CapabilitiesKind::Spr => PortMode::Spr,
@@ -141,6 +189,32 @@ impl SinkController {
 
         if let Some(request) = self.desired {
             if let Ok(plan) = self.plan(request, &capabilities, mode) {
+                let continuity_valid = !matches!(self.epr_state, EprState::Exiting)
+                    || !self.epr_exit_preserves_voltage
+                    || active.is_some_and(|active| {
+                        matches!(
+                            ContractTransition::classify(Some(active), plan).kind,
+                            ContractTransitionKind::IdenticalRefresh
+                                | ContractTransitionKind::SameVoltageSufficientCurrent
+                        )
+                    });
+                if continuity_valid {
+                    return Ok(plan);
+                }
+            }
+            if matches!(self.epr_state, EprState::Exiting) {
+                let safe_5v =
+                    UserRequest::Voltage { voltage: Millivolts(5_000), current: None, preference: Preference::Fixed };
+                let plan = self.plan(safe_5v, &capabilities, mode)?;
+                if matches!(self.epr_exit_fallback, EprExitFallback::Safe5V) {
+                    self.desired = Some(safe_5v);
+                    self.epr_exit_preserves_voltage = false;
+                } else {
+                    self.epr_state = EprState::Epr;
+                    self.desired = None;
+                    self.epr_exit_preserves_voltage = false;
+                    self.pending_error = Some(ControllerError::EprExitRefused(EprExitRefusal::CapabilitiesChanged));
+                }
                 return Ok(plan);
             }
             self.desired = None;
@@ -220,30 +294,63 @@ impl SinkController {
         self.begin_epr(None)
     }
 
-    /// Begin the required two-step EPR exit sequence.
-    ///
-    /// A Sink first establishes an SPR PDO contract while still using an
-    /// EPR_Request message. Only after that request reaches PS_RDY may it send
-    /// EPR_Mode Exit. The returned request deliberately selects fixed 5 V.
-    pub fn exit_epr(&mut self) -> Result<ControllerAction, ControllerError> {
+    /// Begin EPR exit using an explicit application policy and the confirmed
+    /// contract owned by `ContractTracker`.
+    pub fn exit_epr(
+        &mut self,
+        policy: EprExitPolicy,
+        active: Option<RequestPlan>,
+    ) -> Result<ControllerAction, ControllerError> {
         if !matches!(self.epr_state, EprState::Epr) {
             return Err(ControllerError::NotInEprMode);
         }
 
         let capabilities =
             self.epr_capabilities.as_ref().ok_or(ControllerError::NoCapabilities(CapabilitiesKind::Epr))?;
-        let plan = self.planner.for_voltage(
-            capabilities,
-            PortMode::Epr,
-            Millivolts(5_000),
-            None,
-            Preference::Fixed,
-            self.config.request_context,
-        )?;
+        let active_is_spr = active.is_some_and(|plan| {
+            plan.message == RequestMessage::EprRequest
+                && plan.object_position <= 7
+                && matches!(plan.supply, SupplyKind::Fixed | SupplyKind::Pps | SupplyKind::SprAvs)
+                && self.continuity_request_at(capabilities, plan, plan.object_position).is_some()
+        });
+
+        let (plan, request, fallback, preserves_voltage) = match policy {
+            EprExitPolicy::PreserveVoltage { fallback } => {
+                let active = active.ok_or(ControllerError::EprExitRefused(EprExitRefusal::NoConfirmedContract))?;
+                if active_is_spr {
+                    self.start_direct_epr_exit();
+                    return Ok(ControllerAction::ExitEprMode);
+                }
+                match self.continuity_request(capabilities, active) {
+                    Some((plan, request)) => (plan, request, fallback, true),
+                    None if matches!(fallback, EprExitFallback::Refuse) => {
+                        return Err(ControllerError::EprExitRefused(EprExitRefusal::NoSuitableSprContract));
+                    }
+                    None => {
+                        let request = Self::safe_5v_request();
+                        (self.plan(request, capabilities, PortMode::Epr)?, request, fallback, false)
+                    }
+                }
+            }
+            EprExitPolicy::Safe5V => {
+                if active_is_spr
+                    && active.is_some_and(|plan| {
+                        plan.supply == SupplyKind::Fixed && plan.encoded_voltage() == Millivolts(5_000)
+                    })
+                {
+                    self.start_direct_epr_exit();
+                    return Ok(ControllerAction::ExitEprMode);
+                }
+                let request = Self::safe_5v_request();
+                (self.plan(request, capabilities, PortMode::Epr)?, request, EprExitFallback::Safe5V, false)
+            }
+        };
 
         self.epr_state = EprState::Exiting;
         self.epr_exit_ready = false;
-        self.desired = None;
+        self.epr_exit_fallback = fallback;
+        self.epr_exit_preserves_voltage = preserves_voltage;
+        self.desired = Some(request);
         Ok(ControllerAction::Request(plan))
     }
 
@@ -259,6 +366,8 @@ impl SinkController {
     pub fn take_ready_action(&mut self) -> Option<ControllerAction> {
         if matches!(self.epr_state, EprState::Exiting) && self.epr_exit_ready {
             self.epr_exit_ready = false;
+            self.desired = None;
+            self.epr_exit_preserves_voltage = false;
             Some(ControllerAction::ExitEprMode)
         } else {
             None
@@ -271,6 +380,8 @@ impl SinkController {
         if matches!(self.epr_state, EprState::Exiting) {
             self.epr_state = EprState::Epr;
             self.epr_exit_ready = false;
+            self.desired = None;
+            self.epr_exit_preserves_voltage = false;
         }
     }
 
@@ -285,6 +396,9 @@ impl SinkController {
     pub fn epr_entry_failed(&mut self) {
         self.epr_state = EprState::Spr;
         self.epr_exit_ready = false;
+        self.epr_exit_fallback = EprExitFallback::Refuse;
+        self.epr_exit_preserves_voltage = false;
+        self.pending_error = None;
         self.epr_capabilities = None;
         self.desired = None;
     }
@@ -294,6 +408,9 @@ impl SinkController {
         self.epr_capabilities = None;
         self.epr_state = EprState::Spr;
         self.epr_exit_ready = false;
+        self.epr_exit_fallback = EprExitFallback::Refuse;
+        self.epr_exit_preserves_voltage = false;
+        self.pending_error = None;
         self.desired = None;
         self.config.request_context.source_present_pdp = None;
     }
@@ -342,5 +459,48 @@ impl SinkController {
         self.desired = desired;
         self.epr_state = EprState::Entering;
         Ok(ControllerAction::EnterEprMode { operational_pdp: pdp })
+    }
+
+    fn safe_5v_request() -> UserRequest {
+        UserRequest::Voltage { voltage: Millivolts(5_000), current: None, preference: Preference::Fixed }
+    }
+
+    fn start_direct_epr_exit(&mut self) {
+        self.epr_state = EprState::Exiting;
+        self.epr_exit_ready = false;
+        self.epr_exit_preserves_voltage = false;
+        self.desired = None;
+    }
+
+    fn continuity_request(
+        &self,
+        capabilities: &SourceCapabilities,
+        active: RequestPlan,
+    ) -> Option<(RequestPlan, UserRequest)> {
+        for position in 1..=7 {
+            if let Some(candidate) = self.continuity_request_at(capabilities, active, position) {
+                return Some(candidate);
+            }
+        }
+        None
+    }
+
+    fn continuity_request_at(
+        &self,
+        capabilities: &SourceCapabilities,
+        active: RequestPlan,
+        position: u8,
+    ) -> Option<(RequestPlan, UserRequest)> {
+        let request = UserRequest::Voltage {
+            voltage: active.encoded_voltage(),
+            current: active.operating_current(),
+            preference: Preference::Position(position),
+        };
+        let plan = self.plan(request, capabilities, PortMode::Epr).ok()?;
+        matches!(
+            ContractTransition::classify(Some(active), plan).kind,
+            ContractTransitionKind::IdenticalRefresh | ContractTransitionKind::SameVoltageSufficientCurrent
+        )
+        .then_some((plan, request))
     }
 }

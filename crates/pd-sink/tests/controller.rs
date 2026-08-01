@@ -1,7 +1,8 @@
 use pd_sink::{
-    CapabilitiesKind, ControllerAction, ControllerConfig, ControllerError, Demand, EprState, Milliamps, Millivolts,
-    Milliwatts, PlanError, Preference, RequestContext, RequestFlags, RequestMessage, SinkController,
-    SourceCapabilities, SupplyKind, UserRequest,
+    CapabilitiesKind, ContractTransition, ContractTransitionKind, ControllerAction, ControllerConfig, ControllerError,
+    Demand, EprExitFallback, EprExitPolicy, EprExitRefusal, EprState, Milliamps, Millivolts, Milliwatts, PlanError,
+    Preference, RequestContext, RequestFlags, RequestMessage, SinkController, SourceCapabilities, SupplyKind,
+    UserRequest,
 };
 
 fn fixed(voltage_mv: u32, current_ma: u32, epr_capable: bool) -> u32 {
@@ -316,9 +317,9 @@ fn epr_exit_first_establishes_a_five_volt_spr_contract() {
     controller
         .submit(UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed })
         .unwrap();
-    controller.request_for_capabilities(epr()).unwrap();
+    let active = controller.request_for_capabilities(epr()).unwrap();
 
-    let ControllerAction::Request(plan) = controller.exit_epr().unwrap() else {
+    let ControllerAction::Request(plan) = controller.exit_epr(EprExitPolicy::Safe5V, Some(active)).unwrap() else {
         panic!("expected the pre-exit SPR request")
     };
     assert_eq!(controller.epr_state(), EprState::Exiting);
@@ -342,14 +343,14 @@ fn rejected_pre_exit_request_keeps_the_controller_in_epr() {
     controller
         .submit(UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed })
         .unwrap();
-    controller.request_for_capabilities(epr()).unwrap();
-    controller.exit_epr().unwrap();
+    let active = controller.request_for_capabilities(epr()).unwrap();
+    controller.exit_epr(EprExitPolicy::Safe5V, Some(active)).unwrap();
 
     controller.request_rejected();
 
     assert_eq!(controller.epr_state(), EprState::Epr);
     assert_eq!(controller.take_ready_action(), None);
-    assert!(matches!(controller.exit_epr(), Ok(ControllerAction::Request(_))));
+    assert!(matches!(controller.exit_epr(EprExitPolicy::Safe5V, Some(active)), Ok(ControllerAction::Request(_))));
 }
 
 #[test]
@@ -359,8 +360,8 @@ fn deferred_pre_exit_request_remains_armed_until_the_retry_reaches_ps_rdy() {
     controller
         .submit(UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed })
         .unwrap();
-    controller.request_for_capabilities(epr()).unwrap();
-    controller.exit_epr().unwrap();
+    let active = controller.request_for_capabilities(epr()).unwrap();
+    controller.exit_epr(EprExitPolicy::Safe5V, Some(active)).unwrap();
 
     controller.request_deferred();
     assert_eq!(controller.epr_state(), EprState::Exiting);
@@ -373,6 +374,239 @@ fn deferred_pre_exit_request_remains_armed_until_the_retry_reaches_ps_rdy() {
 
     controller.on_ps_ready();
     assert_eq!(controller.take_ready_action(), Some(ControllerAction::ExitEprMode));
+}
+
+#[test]
+fn epr_exit_is_direct_when_the_confirmed_contract_already_uses_an_spr_object() {
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(epr()).unwrap();
+    let ControllerAction::Request(active) =
+        controller.submit(UserRequest::Pdo { position: 2, demand: Demand::Current(Milliamps(2_000)) }).unwrap()
+    else {
+        panic!("expected EPR_Request using SPR object 2")
+    };
+
+    assert_eq!(active.message, RequestMessage::EprRequest);
+    assert_eq!(active.object_position, 2);
+    assert_eq!(
+        controller
+            .exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active))
+            .unwrap(),
+        ControllerAction::ExitEprMode
+    );
+    assert_eq!(controller.epr_state(), EprState::Exiting);
+}
+
+#[test]
+fn safe_five_volt_exit_is_direct_when_fixed_five_volts_is_already_confirmed() {
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    let active = controller.request_for_capabilities(epr()).unwrap();
+    assert_eq!(active.object_position, 1);
+    assert_eq!(active.message, RequestMessage::EprRequest);
+
+    assert_eq!(controller.exit_epr(EprExitPolicy::Safe5V, Some(active)).unwrap(), ControllerAction::ExitEprMode);
+}
+
+#[test]
+fn preserve_voltage_hands_an_epr_only_contract_to_a_sufficient_spr_object_before_exit() {
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(epr()).unwrap();
+    let ControllerAction::Request(active) = controller
+        .submit(UserRequest::Voltage {
+            voltage: Millivolts(20_000),
+            current: Some(Milliamps(2_000)),
+            preference: Preference::EprAvs,
+        })
+        .unwrap()
+    else {
+        panic!("expected EPR-only AVS request")
+    };
+    assert_eq!(active.object_position, 9);
+
+    let ControllerAction::Request(handover) = controller
+        .exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active))
+        .unwrap()
+    else {
+        panic!("expected same-voltage SPR handover")
+    };
+    assert_eq!(handover.object_position, 2);
+    assert_eq!(handover.message, RequestMessage::EprRequest);
+    assert_eq!(handover.encoded_voltage(), Millivolts(20_000));
+    assert_eq!(handover.operating_current(), Some(Milliamps(2_000)));
+    let transition = ContractTransition::classify(Some(active), handover);
+    assert_eq!(transition.kind, ContractTransitionKind::SameVoltageSufficientCurrent);
+    assert!(!transition.inhibits_load(), "same-voltage handover must preserve external load permission");
+    assert_eq!(controller.take_ready_action(), None);
+    controller.on_ps_ready();
+    assert_eq!(controller.take_ready_action(), Some(ControllerAction::ExitEprMode));
+}
+
+#[test]
+fn preserve_voltage_refuses_insufficient_spr_current_without_changing_epr_state() {
+    let limited = SourceCapabilities::new(
+        CapabilitiesKind::Epr,
+        &[
+            fixed(5_000, 3_000, true),
+            fixed(20_000, 1_000, false),
+            pps(5_000, 21_000, 1_000),
+            0,
+            0,
+            0,
+            0,
+            fixed(48_000, 5_000, false),
+            epr_avs(48_000, 140_000),
+        ],
+    )
+    .unwrap();
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(limited).unwrap();
+    let ControllerAction::Request(active) = controller
+        .submit(UserRequest::Voltage {
+            voltage: Millivolts(20_000),
+            current: Some(Milliamps(2_000)),
+            preference: Preference::EprAvs,
+        })
+        .unwrap()
+    else {
+        panic!("expected EPR-only AVS request")
+    };
+    let desired = controller.desired();
+
+    assert_eq!(
+        controller.exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active)),
+        Err(ControllerError::EprExitRefused(EprExitRefusal::NoSuitableSprContract))
+    );
+    assert_eq!(controller.epr_state(), EprState::Epr);
+    assert_eq!(controller.desired(), desired);
+}
+
+#[test]
+fn preserve_voltage_treats_power_limited_unknown_current_as_unsafe() {
+    let uncertain = SourceCapabilities::new(
+        CapabilitiesKind::Epr,
+        &[
+            fixed(5_000, 3_000, true),
+            pps(5_000, 21_000, 3_000) | (1 << 27),
+            0,
+            0,
+            0,
+            0,
+            0,
+            fixed(48_000, 5_000, false),
+            epr_avs(48_000, 140_000),
+        ],
+    )
+    .unwrap();
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(uncertain).unwrap();
+    let ControllerAction::Request(active) = controller
+        .submit(UserRequest::Voltage {
+            voltage: Millivolts(20_000),
+            current: Some(Milliamps(2_000)),
+            preference: Preference::EprAvs,
+        })
+        .unwrap()
+    else {
+        panic!("expected EPR-only AVS request")
+    };
+
+    assert_eq!(
+        controller.exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active)),
+        Err(ControllerError::EprExitRefused(EprExitRefusal::NoSuitableSprContract))
+    );
+}
+
+#[test]
+fn changed_capabilities_cancel_a_refuse_policy_exit_without_sending_epr_exit() {
+    let changed = SourceCapabilities::new(
+        CapabilitiesKind::Epr,
+        &[
+            fixed(5_000, 3_000, true),
+            fixed(20_000, 1_000, false),
+            pps(5_000, 21_000, 1_000),
+            0,
+            0,
+            0,
+            0,
+            fixed(48_000, 5_000, false),
+            epr_avs(48_000, 140_000),
+        ],
+    )
+    .unwrap();
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(epr()).unwrap();
+    let ControllerAction::Request(active) = controller
+        .submit(UserRequest::Voltage {
+            voltage: Millivolts(20_000),
+            current: Some(Milliamps(2_000)),
+            preference: Preference::EprAvs,
+        })
+        .unwrap()
+    else {
+        panic!("expected EPR-only AVS request")
+    };
+    assert!(matches!(
+        controller.exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active)),
+        Ok(ControllerAction::Request(_))
+    ));
+    controller.request_deferred();
+
+    let recovery = controller.request_for_capabilities_with_contract(changed, Some(active)).unwrap();
+    assert_eq!(recovery.encoded_voltage(), Millivolts(5_000));
+    assert_eq!(controller.epr_state(), EprState::Epr);
+    assert_eq!(
+        controller.take_pending_error(),
+        Some(ControllerError::EprExitRefused(EprExitRefusal::CapabilitiesChanged))
+    );
+    controller.on_ps_ready();
+    assert_eq!(controller.take_ready_action(), None, "refusal recovery must remain in EPR mode");
+}
+
+#[test]
+fn preserve_voltage_safe_fallback_establishes_fixed_five_volts_before_exit() {
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller
+        .submit(UserRequest::Voltage { voltage: Millivolts(48_000), current: None, preference: Preference::Fixed })
+        .unwrap();
+    let active = controller.request_for_capabilities(epr()).unwrap();
+
+    let ControllerAction::Request(fallback) = controller
+        .exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Safe5V }, Some(active))
+        .unwrap()
+    else {
+        panic!("expected fixed 5 V fallback")
+    };
+    assert_eq!(fallback.object_position, 1);
+    assert_eq!(fallback.supply, SupplyKind::Fixed);
+    assert_eq!(fallback.encoded_voltage(), Millivolts(5_000));
+    assert_eq!(controller.take_ready_action(), None);
+}
+
+#[test]
+fn preserve_voltage_requires_a_confirmed_contract() {
+    let mut controller = configured_controller();
+    controller.request_for_capabilities(spr(true)).unwrap();
+    controller.begin_epr_discovery().unwrap();
+    controller.request_for_capabilities(epr()).unwrap();
+
+    assert_eq!(
+        controller.exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, None),
+        Err(ControllerError::EprExitRefused(EprExitRefusal::NoConfirmedContract))
+    );
+    assert_eq!(controller.epr_state(), EprState::Epr);
 }
 
 #[test]

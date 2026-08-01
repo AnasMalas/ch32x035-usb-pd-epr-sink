@@ -25,9 +25,9 @@ use usbpd::sink::device_policy_manager::{
 
 use crate::{
     capabilities_from_stack, request_to_stack, CapabilityListError, Command, ContractState, ContractTracker,
-    ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprState, Milliamps, Milliwatts,
-    PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus, StackConversionError, StatusQuery,
-    StatusQueryFailure, SupplyKind, UserRequest,
+    ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprExitPolicy, EprState,
+    Milliamps, Milliwatts, PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus,
+    StackConversionError, StatusQuery, StatusQueryFailure, SupplyKind, UserRequest,
 };
 
 /// Static power and identity data advertised by the sink.
@@ -474,8 +474,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             self.capabilities_or_report(source_capabilities).expect("policy engine must bound Source PDO count");
         let plan = self
             .controller
-            .request_for_capabilities(capabilities)
+            .request_for_capabilities_with_contract(capabilities, self.contract.active_plan())
             .expect("every accepted source must advertise a valid fixed 5 V PDO");
+        if let Some(error) = self.controller.take_pending_error() {
+            self.runtime.on_controller_rejected(error);
+        }
 
         if self.begin_request(plan) {
             self.runtime.on_contract_refresh_started(plan);
@@ -743,7 +746,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                     action
                 }
                 Command::RequestEprCapabilities => self.controller.request_epr_capabilities(),
-                Command::ExitEpr => self.controller.exit_epr(),
+                Command::ExitEpr => self.controller.exit_epr(EprExitPolicy::Safe5V, self.contract.active_plan()),
                 Command::Status => {
                     self.report_contract();
                     continue;

@@ -543,6 +543,7 @@
       3: "epr-not-configured",
       4: "epr-pdp",
       5: "not-in-epr",
+      6: "epr-exit-refused",
       16: "pdo-missing",
       17: "pdo-malformed",
       18: "pdo-unsupported",

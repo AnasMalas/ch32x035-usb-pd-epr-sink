@@ -43,7 +43,10 @@ pub use control::{
     CONTROL_PROTOCOL_VERSION, FRAME_MAGIC as CONTROL_FRAME_MAGIC, MAX_FRAME_LEN as CONTROL_MAX_FRAME_LEN,
     MAX_PAYLOAD_LEN as CONTROL_MAX_PAYLOAD_LEN,
 };
-pub use controller::{ControllerAction, ControllerConfig, ControllerError, EprState, SinkController, UserRequest};
+pub use controller::{
+    ControllerAction, ControllerConfig, ControllerError, EprExitFallback, EprExitPolicy, EprExitRefusal, EprState,
+    SinkController, UserRequest,
+};
 pub use request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, PortMode, Preference,
     RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestPlanner, SinkLimits,

@@ -3,10 +3,10 @@ use pd_sink::{
     Command, CommandStatus, ContractOperatingPoint, ContractTransition, ContractTransitionKind, ControlCommandKind,
     ControlCommandStreamDecoder, ControlEprEvent, ControlEvent, ControlEventKind, ControlFrameDecoder,
     ControlFrameError, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, ControllerError,
-    CurrentConfidence, Demand, DeviceInfo, HardResetCause, HardResetDirection, LimitReason, Milliamps, Millivolts,
-    Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus, Preference, RequestMessage, RequestPlan,
-    RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure, SupplyKind,
-    UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
+    CurrentConfidence, Demand, DeviceInfo, EprExitRefusal, HardResetCause, HardResetDirection, LimitReason, Milliamps,
+    Millivolts, Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus, Preference, RequestMessage,
+    RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure,
+    SupplyKind, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -355,6 +355,11 @@ fn packet_event_encoder_keeps_protocol_v1_payloads() {
             })),
             ControlEventKind::ControllerError,
             &[22, 0x50, 0xc3, 0, 0, 0x80, 0xbb, 0, 0],
+        ),
+        (
+            ControlEvent::ControllerError(ControllerError::EprExitRefused(EprExitRefusal::NoSuitableSprContract)),
+            ControlEventKind::ControllerError,
+            &[6, 1, 0, 0, 0, 0, 0, 0, 0],
         ),
         (
             ControlEvent::SourceInfo { present_watts: 240, maximum_watts: 240, reported_watts: 1 },

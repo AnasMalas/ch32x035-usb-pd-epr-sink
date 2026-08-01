@@ -465,6 +465,7 @@ fn log_controller_error(error: ControllerError) {
         ControllerError::EprNotConfigured => ("epr-not-configured", 0, 0),
         ControllerError::InvalidEprOperationalPdp(pdp) => ("epr-pdp", pdp.get(), 0),
         ControllerError::NotInEprMode => ("not-in-epr", 0, 0),
+        ControllerError::EprExitRefused(reason) => ("epr-exit-refused", reason as u32, 0),
         ControllerError::Plan(plan) => match plan {
             PlanError::PositionUnavailable(position) => ("pdo-missing", u32::from(position), 0),
             PlanError::MalformedPdo { position, .. } => ("pdo-malformed", u32::from(position), 0),
