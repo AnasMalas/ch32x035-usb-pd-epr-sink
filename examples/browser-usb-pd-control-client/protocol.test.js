@@ -44,10 +44,16 @@ function eventLines(kind, payload, sequence = 0) {
   const decoder = new protocol.FrameDecoder();
   const sourceStatus = decoder.push(protocol.encodeCommand("pd-status", 7)).frames[0];
   const ppsStatus = decoder.push(protocol.encodeCommand("pps-status", 8)).frames[0];
+  const outputOn = decoder.push(protocol.encodeCommand("output-on", 9)).frames[0];
+  const outputOff = decoder.push(protocol.encodeCommand("output-off", 10)).frames[0];
   assert.equal(sourceStatus.kind, 0x0a);
   assert.equal(ppsStatus.kind, 0x0b);
+  assert.equal(outputOn.kind, 0x0c);
+  assert.equal(outputOff.kind, 0x0d);
   assert.equal(sourceStatus.payload.length, 0);
   assert.equal(ppsStatus.payload.length, 0);
+  assert.equal(outputOn.payload.length, 0);
+  assert.equal(outputOff.payload.length, 0);
 }
 
 {

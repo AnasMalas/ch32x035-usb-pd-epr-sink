@@ -19,6 +19,8 @@
     help: 0x09,
     "source-status": 0x0a,
     "pps-status": 0x0b,
+    "output-on": 0x0c,
+    "output-off": 0x0d,
     request: 0x10,
     pdo: 0x11,
   });
@@ -633,6 +635,7 @@
         return [
           "Commands:",
           "device caps plans source-info status source-status pps-status",
+          "output-on output-off (external application load only)",
           "enter-epr epr-caps exit-epr help",
           "request mV [mA|max] [auto|fixed|pps|spr-avs|epr-avs]",
           "request mV [mA|max] epr-avs-nonstandard (explicit opt-in)",

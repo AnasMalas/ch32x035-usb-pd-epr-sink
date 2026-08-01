@@ -21,7 +21,7 @@ use ch32_hal::{bind_interrupts, peripherals};
 use embassy_executor::Spawner;
 #[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 use embassy_futures::join::join3;
-use embassy_futures::select::{select, Either};
+use embassy_futures::select::{select, select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -108,12 +108,6 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
     let _ = CONSOLE_LINES.try_send(line);
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum LoadCommand {
-    Disable,
-    Enable,
-}
-
 const ATTACH_DEBOUNCE_MS: u64 = 100;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const PROTOCOL_RESTART_COOLDOWN_MS: u64 = 2_000;
@@ -124,7 +118,8 @@ const EPR_OPERATIONAL_PDP_WATTS: u8 = 240;
 static VBUS_PRESENT: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
 static VBUS_ATTACHED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
 static VBUS_DETACHED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
-static LOAD_COMMAND: Signal<CriticalSectionRawMutex, LoadCommand> = Signal::new();
+static PD_LOAD_PERMISSION: Signal<CriticalSectionRawMutex, bool> = Signal::new();
+static USER_OUTPUT_REQUEST: Signal<CriticalSectionRawMutex, bool> = Signal::new();
 
 fn vbus_is_present() -> bool {
     VBUS_PRESENT.lock(Cell::get)
@@ -146,8 +141,12 @@ fn publish_vbus_state(present: bool) {
     }
 }
 
-fn request_load(command: LoadCommand) {
-    LOAD_COMMAND.signal(command);
+fn set_pd_load_permitted(permitted: bool) {
+    PD_LOAD_PERMISSION.signal(permitted);
+}
+
+fn set_user_output_enabled(enabled: bool) {
+    USER_OUTPUT_REQUEST.signal(enabled);
 }
 
 fn board_limits() -> SinkLimits {
@@ -274,13 +273,18 @@ macro_rules! control_event {
 async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_enable: Output<'static>) {
     load_enable.set_low();
     let mut needs_attach_debounce = true;
+    let mut pd_load_permitted = false;
+    // Preserve the reference firmware's historical behavior: a confirmed
+    // contract enables the output unless the user explicitly latches it off.
+    let mut user_output_enabled = true;
 
     loop {
         if vbus_present.is_low() {
             // This is the latency-critical path. Cut the MCU request before
             // doing any debounce, logging, or policy-engine work.
             load_enable.set_low();
-            LOAD_COMMAND.reset();
+            pd_load_permitted = false;
+            PD_LOAD_PERMISSION.reset();
             publish_vbus_state(false);
             vbus_present.wait_for_rising_edge().await;
             needs_attach_debounce = true;
@@ -296,27 +300,31 @@ async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_ena
             needs_attach_debounce = false;
         }
 
-        match select(vbus_present.wait_for_falling_edge(), LOAD_COMMAND.wait()).await {
-            Either::First(()) => {
+        match select3(vbus_present.wait_for_falling_edge(), PD_LOAD_PERMISSION.wait(), USER_OUTPUT_REQUEST.wait()).await
+        {
+            Either3::First(()) => {
                 load_enable.set_low();
+                pd_load_permitted = false;
+                PD_LOAD_PERMISSION.reset();
                 publish_vbus_state(false);
                 needs_attach_debounce = true;
             }
-            Either::Second(LoadCommand::Disable) => load_enable.set_low(),
-            Either::Second(LoadCommand::Enable) => {
-                if vbus_present.is_high() && vbus_is_present() {
-                    load_enable.set_high();
-                    // Close the edge race where VBUS fell just before the
-                    // output instruction and its EXTI future has not run yet.
-                    if vbus_present.is_low() {
-                        load_enable.set_low();
-                        publish_vbus_state(false);
-                        needs_attach_debounce = true;
-                    }
-                } else {
-                    load_enable.set_low();
-                }
+            Either3::Second(permitted) => pd_load_permitted = permitted,
+            Either3::Third(enabled) => user_output_enabled = enabled,
+        }
+
+        if pd_load_permitted && user_output_enabled && vbus_present.is_high() && vbus_is_present() {
+            load_enable.set_high();
+            // Close the edge race where VBUS fell just before the output
+            // instruction and its EXTI future has not run yet.
+            if vbus_present.is_low() {
+                load_enable.set_low();
+                pd_load_permitted = false;
+                publish_vbus_state(false);
+                needs_attach_debounce = true;
             }
+        } else {
+            load_enable.set_low();
         }
     }
 }
@@ -389,6 +397,8 @@ async fn dev_text_console_rx(mut receiver: CdcReceiver<'static>) -> ! {
                             {
                                 Some(Command::Help) => log_console_help(),
                                 Some(Command::Identity) => log_device_identity(),
+                                Some(Command::OutputOn) => set_user_output_enabled(true),
+                                Some(Command::OutputOff) => set_user_output_enabled(false),
                                 Some(parsed) => match COMMANDS.try_send(parsed) {
                                     Ok(()) => {}
                                     Err(_) => logln!("Busy"),
@@ -686,8 +696,8 @@ impl Ch32x035Port for FirmwarePort {
     }
 
     #[inline(always)]
-    fn set_load_enabled(&self, enabled: bool) {
-        request_load(if enabled { LoadCommand::Enable } else { LoadCommand::Disable });
+    fn set_pd_load_permitted(&self, permitted: bool) {
+        set_pd_load_permitted(permitted);
     }
 
     #[inline(always)]
@@ -723,8 +733,13 @@ struct FirmwareRuntime;
 
 impl SinkRuntime for FirmwareRuntime {
     #[inline(always)]
-    fn set_load_enabled(&mut self, enabled: bool) {
-        request_load(if enabled { LoadCommand::Enable } else { LoadCommand::Disable });
+    fn set_pd_load_permitted(&mut self, permitted: bool) {
+        set_pd_load_permitted(permitted);
+    }
+
+    #[inline(always)]
+    fn set_user_output_enabled(&mut self, enabled: bool) {
+        set_user_output_enabled(enabled);
     }
 
     #[inline(always)]

@@ -32,9 +32,9 @@ pub trait Ch32x035Port {
     /// Clear any stale detach notification and report the start of a fresh
     /// session. The physical VBUS level has already been checked as present.
     fn begin_session(&self);
-    /// This is the firmware request for the load gate. Hardware should still
-    /// gate the power path directly with VBUS-present and hardware-health.
-    fn set_load_enabled(&self, enabled: bool);
+    /// This is the PD policy's permission for the application load. Hardware
+    /// should still combine it with the user latch, VBUS-present, and health.
+    fn set_pd_load_permitted(&self, permitted: bool);
     fn observe_phy(&self, event: PhyEvent);
 }
 
@@ -58,12 +58,12 @@ impl<'d, P: Ch32x035Port> Ch32x035UsbPdDriver<'d, P> {
     }
 
     fn detached_rx(&self) -> DriverRxError {
-        self.port.set_load_enabled(false);
+        self.port.set_pd_load_permitted(false);
         DriverRxError::Detached
     }
 
     fn detached_tx(&self) -> DriverTxError {
-        self.port.set_load_enabled(false);
+        self.port.set_pd_load_permitted(false);
         DriverTxError::Detached
     }
 }
@@ -104,7 +104,7 @@ impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
             Ok((Sop::Sop, size)) => Ok(size),
             Ok(_) => Err(DriverRxError::Discarded),
             Err(Error::HardReset) => {
-                self.port.set_load_enabled(false);
+                self.port.set_pd_load_permitted(false);
                 Err(DriverRxError::HardReset)
             }
             Err(_) => Err(DriverRxError::Discarded),
@@ -127,7 +127,7 @@ impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
 
         transmitted.map_err(|error| match error {
             Error::HardReset => {
-                self.port.set_load_enabled(false);
+                self.port.set_pd_load_permitted(false);
                 DriverTxError::HardReset
             }
             _ => DriverTxError::Discarded,
@@ -135,7 +135,7 @@ impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
     }
 
     async fn transmit_hard_reset(&mut self) -> Result<(), DriverTxError> {
-        self.port.set_load_enabled(false);
+        self.port.set_pd_load_permitted(false);
         if !self.port.vbus_present() {
             return Err(DriverTxError::Detached);
         }

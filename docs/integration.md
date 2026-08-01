@@ -140,11 +140,12 @@ application's own later policy asks for one.
 
 ## Load safety
 
-`SinkRuntime::set_load_enabled(true)` is only a firmware request after PS_RDY.
-It must not be the sole safety path. The board should enforce:
+`SinkRuntime::set_pd_load_permitted(true)` is only PD-policy permission after
+PS_RDY. It must not be the sole safety path. The application owns the separate
+user output latch. The board should enforce:
 
 ```text
-LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
+LOAD_ON = PD_LOAD_PERMITTED AND USER_OUTPUT_ENABLED AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 VBUS removal must turn the load path off without relying on the executor, the
@@ -160,3 +161,11 @@ causes an immediate load-disable request before the PD Request is returned.
 classification for diagnostics; telemetry delivery is not part of the cutoff
 path. Current comparisons use the limited current actually encoded in the RDO,
 not the Source PDO maximum or an unbounded user demand.
+
+`output-on` and `output-off` update only the runtime's user latch through
+`SinkRuntime::set_user_output_enabled`. They do not submit a PD Request, alter
+the desired contract, or enter/exit EPR. The reference keeps that latch across
+detach/re-attach and defaults it on after an MCU reset to preserve the original
+automatic-load behavior; private products can choose a different reset policy.
+Its USB and text transports apply Output Off before sending an acknowledgement
+instead of waiting for the PD policy engine to reach `Ready`.

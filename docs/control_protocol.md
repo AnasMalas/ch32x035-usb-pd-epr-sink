@@ -19,7 +19,10 @@ used for unsolicited events; command responses copy the command sequence.
 Commands are typed forms of the stable command surface: identity,
 capabilities, plans, Source_Info, EPR entry/capability retrieval/exit, status,
 general Source Status, PPS_Status, help, voltage requests, and direct-PDO
-requests. Events cover command status, device limits and UID, lifecycle and
+requests. Protocol v1 also assigns new, backward-compatible command IDs for
+`output-on` and `output-off`; existing IDs are unchanged. Those commands alter
+only the application load latch, not the PD contract or EPR state. Events cover
+command status, device limits and UID, lifecycle and
 reset state, raw Source PDO words, request plans and contracts, controller
 errors, Source_Info, Source Alert, general/PPS status and optional-query
 failure, request disposition, EPR state, and integration errors.

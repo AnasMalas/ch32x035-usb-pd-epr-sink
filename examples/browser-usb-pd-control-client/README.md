@@ -85,6 +85,11 @@ The Start telemetry button controls optional PPS_Status polling only. PPS
 contract maintenance is required to keep a PPS contract alive and cannot be
 disabled by the GUI; its latest confirmation time is shown separately.
 
+Output On and Output Off control only the firmware application's external load
+latch. They do not request another USB-PD voltage, change the desired contract,
+or enter/exit EPR. PD safety permission, VBUS presence, and hardware health
+still override Output On.
+
 ## Transport selection
 
 The page waits for device output before sending a command. A valid `PD`,

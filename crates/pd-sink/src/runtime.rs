@@ -205,7 +205,12 @@ pub enum SinkEvent {
 /// `wait_for_command` must be cancellation-safe because the policy engine may
 /// temporarily abandon the future to service a source-initiated message.
 pub trait SinkRuntime {
-    fn set_load_enabled(&mut self, enabled: bool);
+    /// Update the PD policy's permission for the application load. This is the
+    /// immediate safety-control path and must not wait for telemetry.
+    fn set_pd_load_permitted(&mut self, permitted: bool);
+    /// Update the application-owned user output latch. This must not submit a
+    /// PD request, alter desired contract state, or enter/exit EPR.
+    fn set_user_output_enabled(&mut self, enabled: bool);
     fn clear_pending_commands(&mut self);
     /// Catch-all observation hook. Applications that care about code size can
     /// override the typed `on_*` methods below; their defaults forward here.
@@ -368,7 +373,7 @@ impl<R: SinkRuntime> SinkDevice<R> {
     fn begin_request(&mut self, plan: RequestPlan) -> bool {
         let transition = self.contract.classify_transition(plan);
         if transition.inhibits_load() {
-            self.runtime.set_load_enabled(false);
+            self.runtime.set_pd_load_permitted(false);
         }
         self.runtime.on_contract_transition_started(transition);
         self.contract.on_request(plan).expect("request must follow advertised capabilities");
@@ -484,7 +489,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.contract.on_accept().expect("PS_RDY must correspond to a pending request");
         self.contract.on_ps_ready().expect("accepted request must become the active contract");
         self.controller.on_ps_ready();
-        self.runtime.set_load_enabled(true);
+        self.runtime.set_pd_load_permitted(true);
         if self.pending_contract_refresh {
             self.pending_contract_refresh = false;
             self.runtime.on_contract_refreshed(
@@ -509,7 +514,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             }
         };
         if self.contract.load_may_enable() {
-            self.runtime.set_load_enabled(true);
+            self.runtime.set_pd_load_permitted(true);
         }
         self.runtime.on_request_result(result);
     }
@@ -557,7 +562,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     #[cfg(feature = "hard-reset-reasons")]
     fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetCause) {
-        self.runtime.set_load_enabled(false);
+        self.runtime.set_pd_load_permitted(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
@@ -573,7 +578,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     #[cfg(not(feature = "hard-reset-reasons"))]
     fn hard_reset(&mut self, origin: HardResetOrigin) {
-        self.runtime.set_load_enabled(false);
+        self.runtime.set_pd_load_permitted(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
@@ -596,7 +601,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     fn detached(&mut self) {
-        self.runtime.set_load_enabled(false);
+        self.runtime.set_pd_load_permitted(false);
         self.runtime.clear_pending_commands();
         self.contract.on_detach();
         self.pending_contract_refresh = false;
@@ -609,7 +614,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     fn protocol_lost(&mut self) {
-        self.runtime.set_load_enabled(false);
+        self.runtime.set_pd_load_permitted(false);
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
@@ -722,6 +727,14 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                 }
                 Command::RequestSourceStatus => return Event::RequestStatus,
                 Command::RequestPpsStatus => return Event::RequestPpsStatus,
+                Command::OutputOn => {
+                    self.runtime.set_user_output_enabled(true);
+                    continue;
+                }
+                Command::OutputOff => {
+                    self.runtime.set_user_output_enabled(false);
+                    continue;
+                }
                 Command::EnterEpr => {
                     let action = self.controller.begin_epr_discovery();
                     if action.is_ok() {

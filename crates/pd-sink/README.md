@@ -119,14 +119,18 @@ is the canonical end-to-end implementation.
 
 ## Safety boundary
 
-`SinkRuntime::set_load_enabled(true)` and
-`Ch32x035Port::set_load_enabled(true)` are firmware requests after a confirmed
-contract. Neither is an independent safety mechanism. Hardware must enforce:
+`SinkRuntime::set_pd_load_permitted(true)` and
+`Ch32x035Port::set_pd_load_permitted(true)` are PD-policy permissions after a
+confirmed contract. The application owns a separate user output latch. None is
+an independent safety mechanism. Hardware must enforce:
 
 ```text
-LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
+LOAD_ON = PD_LOAD_PERMITTED AND USER_OUTPUT_ENABLED AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 Detach, Hard Reset, protocol loss, and invalid state must disable the load.
 Negotiated current is a permitted ceiling, not guaranteed source-side
 electronic current limiting.
+
+The `output-on` and `output-off` commands call the runtime's application-owned
+user latch only. They never change the requested PD contract or EPR mode.

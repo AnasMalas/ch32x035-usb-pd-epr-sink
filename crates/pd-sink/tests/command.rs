@@ -65,6 +65,8 @@ fn parses_control_and_diagnostic_commands() {
     assert_eq!(parse_command("source-status"), Ok(Command::RequestSourceStatus));
     assert_eq!(parse_command("pd-status"), Ok(Command::RequestSourceStatus));
     assert_eq!(parse_command("pps-status"), Ok(Command::RequestPpsStatus));
+    assert_eq!(parse_command("output-on"), Ok(Command::OutputOn));
+    assert_eq!(parse_command("output-off"), Ok(Command::OutputOff));
     assert_eq!(parse_command("enter-epr"), Ok(Command::EnterEpr));
     assert_eq!(parse_command("epr-caps"), Ok(Command::RequestEprCapabilities));
     assert_eq!(parse_command("exit-epr"), Ok(Command::ExitEpr));

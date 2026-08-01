@@ -87,6 +87,20 @@ fn pdo_adjustable_command_preserves_optional_current() {
 }
 
 #[test]
+fn output_latch_commands_extend_protocol_v1_without_changing_existing_ids() {
+    assert_eq!(ControlCommandKind::PpsStatus as u8, 0x0b);
+    assert_eq!(ControlCommandKind::RequestVoltage as u8, 0x10);
+    for (kind, expected) in
+        [(ControlCommandKind::OutputOn, Command::OutputOn), (ControlCommandKind::OutputOff, Command::OutputOff)]
+    {
+        let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+        let len = encode_control_frame(CONTROL_PROTOCOL_VERSION, kind as u8, 9, &[], &mut bytes).unwrap();
+        assert_eq!(decode_control_command(&decode_one(&bytes[..len])).unwrap().command, expected);
+        assert_eq!(decode_stream_command(&bytes[..len]).command, Ok(expected));
+    }
+}
+
+#[test]
 fn decoder_rejects_corruption_and_recovers_for_the_next_frame() {
     let mut first = [0; CONTROL_MAX_FRAME_LEN];
     let first_len =

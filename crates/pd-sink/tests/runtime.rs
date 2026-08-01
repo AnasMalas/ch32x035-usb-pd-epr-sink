@@ -32,14 +32,19 @@ fn block_on<F: Future>(future: F) -> F::Output {
 struct TestRuntime {
     events: Vec<SinkEvent>,
     load_states: Vec<bool>,
+    user_output_states: Vec<bool>,
     commands: VecDeque<Command>,
     clear_count: usize,
     delays: Vec<u64>,
 }
 
 impl SinkRuntime for TestRuntime {
-    fn set_load_enabled(&mut self, enabled: bool) {
-        self.load_states.push(enabled);
+    fn set_pd_load_permitted(&mut self, permitted: bool) {
+        self.load_states.push(permitted);
+    }
+
+    fn set_user_output_enabled(&mut self, enabled: bool) {
+        self.user_output_states.push(enabled);
     }
 
     fn clear_pending_commands(&mut self) {
@@ -192,6 +197,22 @@ fn same_voltage_candidate_with_sufficient_current_preserves_load_permission() {
                 && transition.from.is_some_and(|point| point.current == Milliamps(2_000))
                 && transition.to.current == Milliamps(3_000)
     )));
+}
+
+#[test]
+fn output_off_changes_only_the_application_latch() {
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+    let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
+    device.runtime_mut().commands.push_back(Command::OutputOff);
+    device.runtime_mut().commands.push_back(Command::RequestSourceStatus);
+
+    assert!(matches!(block_on(device.get_event(&source)), Event::RequestStatus));
+    assert_eq!(device.contract().state(), ContractState::Detached);
+    assert_eq!(device.contract().active_plan(), None);
+    let runtime = device.runtime_mut();
+    assert_eq!(runtime.user_output_states, [false]);
+    assert!(runtime.load_states.is_empty(), "user latch must not alter PD permission");
+    assert!(runtime.events.is_empty(), "output command must not masquerade as a PD transition");
 }
 
 #[test]

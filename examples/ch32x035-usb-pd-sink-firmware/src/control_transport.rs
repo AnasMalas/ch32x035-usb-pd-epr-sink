@@ -6,7 +6,7 @@ use pd_sink::{
     ControlEvent, ControlLifecycleEvent, CONTROL_MAX_FRAME_LEN,
 };
 
-use crate::{device_info, COMMANDS};
+use crate::{device_info, set_user_output_enabled, COMMANDS};
 
 const CONTROL_QUEUE_DEPTH: usize = 16;
 const USB_CDC_PACKET_LEN: usize = 64;
@@ -86,6 +86,14 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
                 };
 
                 match command {
+                    Command::OutputOn => {
+                        set_user_output_enabled(true);
+                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                    }
+                    Command::OutputOff => {
+                        set_user_output_enabled(false);
+                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                    }
                     Command::Identity => {
                         emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
                         emit(ControlEvent::Device(device_info()), sequence).await;

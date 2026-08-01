@@ -38,6 +38,8 @@ pub enum CommandKind {
     Help = 0x09,
     SourceStatus = 0x0a,
     PpsStatus = 0x0b,
+    OutputOn = 0x0c,
+    OutputOff = 0x0d,
     RequestVoltage = 0x10,
     RequestPdo = 0x11,
 }
@@ -460,6 +462,8 @@ fn decode_command_fields(
         kind if kind == CommandKind::Help as u8 => Some(Command::Help),
         kind if kind == CommandKind::SourceStatus as u8 => Some(Command::RequestSourceStatus),
         kind if kind == CommandKind::PpsStatus as u8 => Some(Command::RequestPpsStatus),
+        kind if kind == CommandKind::OutputOn as u8 => Some(Command::OutputOn),
+        kind if kind == CommandKind::OutputOff as u8 => Some(Command::OutputOff),
         _ => None,
     };
     if let Some(command) = no_payload_command {
