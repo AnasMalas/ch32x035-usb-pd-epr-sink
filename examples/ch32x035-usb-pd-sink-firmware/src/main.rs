@@ -466,6 +466,7 @@ fn log_controller_error(error: ControllerError) {
         ControllerError::InvalidEprOperationalPdp(pdp) => ("epr-pdp", pdp.get(), 0),
         ControllerError::NotInEprMode => ("not-in-epr", 0, 0),
         ControllerError::EprExitRefused(reason) => ("epr-exit-refused", reason as u32, 0),
+        ControllerError::EprEntryRefused(reason) => ("epr-entry-refused", reason as u32, 0),
         ControllerError::Plan(plan) => match plan {
             PlanError::PositionUnavailable(position) => ("pdo-missing", u32::from(position), 0),
             PlanError::MalformedPdo { position, .. } => ("pdo-malformed", u32::from(position), 0),
@@ -946,7 +947,7 @@ impl SinkRuntime for FirmwareRuntime {
             detail: attempt,
             extra: maximum_attempts,
         });
-        logln!("EPR enter={}/{}; 5 V", attempt, maximum_attempts);
+        logln!("EPR enter={}/{}; preserve contract", attempt, maximum_attempts);
     }
 
     fn on_epr_discovery_unavailable(&mut self) {
@@ -962,7 +963,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     fn on_epr_manual_entry_started(&mut self) {
         control_event!(ControlEvent::Epr { event: ControlEprEvent::ManualEntryStarted, detail: 0, extra: 0 });
-        logln!("EPR manual; 5 V");
+        logln!("EPR manual; preserve contract");
     }
 
     fn on_identity_requested(&mut self) {

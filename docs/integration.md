@@ -170,7 +170,25 @@ automatic-load behavior; private products can choose a different reset policy.
 Its USB and text transports apply Output Off before sending an acknowledgement
 instead of waiting for the PD policy engine to reach `Ready`.
 
-## EPR exit policy
+## EPR entry and exit policy
+
+Target-driven entry retains the requested EPR contract throughout mode entry;
+it does not insert an intermediate 5 V Request. Targetless manual or automatic
+discovery instead requires an `EprEntryPolicy` and the confirmed plan. With
+`PreserveVoltage`, the EPR capability response is re-expressed through a
+requestable SPR object in positions 1-7 only when its encoded voltage is equal
+and its known encoded operating-current capability is not lower. Fixed, PPS,
+and SPR AVS contracts use the same rule. This `EPR_Request` does not interrupt
+load permission. An eventual voltage-changing EPR target is still classified
+separately and inhibits the load before its Request.
+
+`EprEntryFallback::Safe5V` explicitly selects fixed 5 V if continuity cannot
+be established. `Refuse` rejects before entry when the latest SPR capabilities
+already prove continuity impossible. If the EPR capability response changes
+during entry, Refuse reports a typed refusal and conservatively establishes
+fixed 5 V before exiting back to SPR; it never claims continuity through an
+insufficient or unknown-current candidate. Initial automatic discovery after
+the normal 5 V boot contract remains at 5 V naturally.
 
 The direct controller API requires an `EprExitPolicy` and the confirmed plan
 from `ContractTracker::active_plan()`. `PreserveVoltage` validates only SPR

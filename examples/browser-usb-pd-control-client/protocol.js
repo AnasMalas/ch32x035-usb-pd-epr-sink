@@ -544,6 +544,7 @@
       4: "epr-pdp",
       5: "not-in-epr",
       6: "epr-exit-refused",
+      7: "epr-entry-refused",
       16: "pdo-missing",
       17: "pdo-malformed",
       18: "pdo-unsupported",
@@ -566,10 +567,10 @@
     const extra = payload[2];
     const lines = {
       0: `EPR entry failed reason=${detail}; auto off`,
-      1: `EPR discovery: enter attempt=${detail}/${extra}; hold 5 V`,
+      1: `EPR discovery: enter attempt=${detail}/${extra}; preserve confirmed contract`,
       2: "EPR discovery unavailable; auto off",
       3: "EPR auto off; staying SPR; manual retry available",
-      4: "EPR manual enter; hold 5 V",
+      4: "EPR manual enter; preserve confirmed contract",
     };
     return [lines[code] ?? `EPR event=${code} detail=${detail} extra=${extra}`];
   }

@@ -739,6 +739,7 @@ fn controller_error_fields(error: ControllerError) -> (u8, u32, u32) {
         ControllerError::InvalidEprOperationalPdp(pdp) => (4, pdp.get(), 0),
         ControllerError::NotInEprMode => (5, 0, 0),
         ControllerError::EprExitRefused(reason) => (6, reason as u32, 0),
+        ControllerError::EprEntryRefused(reason) => (7, reason as u32, 0),
         ControllerError::Plan(plan) => match plan {
             PlanError::PositionUnavailable(position) => (16, u32::from(position), 0),
             PlanError::MalformedPdo { position, .. } => (17, u32::from(position), 0),

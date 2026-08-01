@@ -25,9 +25,9 @@ use usbpd::sink::device_policy_manager::{
 
 use crate::{
     capabilities_from_stack, request_to_stack, CapabilityListError, Command, ContractState, ContractTracker,
-    ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprExitPolicy, EprState,
-    Milliamps, Milliwatts, PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert, SourceStatus,
-    StackConversionError, StatusQuery, StatusQueryFailure, SupplyKind, UserRequest,
+    ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprEntryFallback, EprEntryPolicy,
+    EprExitPolicy, EprState, Milliamps, Milliwatts, PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert,
+    SourceStatus, StackConversionError, StatusQuery, StatusQueryFailure, SupplyKind, UserRequest,
 };
 
 /// Static power and identity data advertised by the sink.
@@ -659,7 +659,10 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                 && source_capabilities.epr_mode_capable()
                 && self.epr_discovery_attempts < self.config.max_auto_epr_attempts
             {
-                match self.controller.begin_epr_discovery() {
+                match self.controller.begin_epr_discovery(
+                    EprEntryPolicy::PreserveVoltage { fallback: EprEntryFallback::Safe5V },
+                    self.contract.active_plan(),
+                ) {
                     Ok(action) => {
                         self.epr_discovery_attempts += 1;
                         self.epr_exhaustion_reported = false;
@@ -739,7 +742,10 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                     continue;
                 }
                 Command::EnterEpr => {
-                    let action = self.controller.begin_epr_discovery();
+                    let action = self.controller.begin_epr_discovery(
+                        EprEntryPolicy::PreserveVoltage { fallback: EprEntryFallback::Safe5V },
+                        self.contract.active_plan(),
+                    );
                     if action.is_ok() {
                         self.runtime.on_epr_manual_entry_started();
                     }

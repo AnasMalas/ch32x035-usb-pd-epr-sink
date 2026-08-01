@@ -171,6 +171,10 @@ assert.deepEqual(eventLines(0x85, [6, ...u32(1), ...u32(0)]), [
   "Rejected epr-exit-refused detail=1 extra=0",
 ]);
 
+assert.deepEqual(eventLines(0x85, [7, ...u32(2), ...u32(0)]), [
+  "Rejected epr-entry-refused detail=2 extra=0",
+]);
+
 assert.deepEqual(eventLines(0x88, [1, ...u32(2000), 8]), [
   "Hard reset sent; cause=epr-keepalive-failed; load off; recovery=2000ms",
 ]);

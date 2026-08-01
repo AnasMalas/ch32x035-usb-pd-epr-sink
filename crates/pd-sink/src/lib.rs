@@ -44,8 +44,8 @@ pub use control::{
     MAX_PAYLOAD_LEN as CONTROL_MAX_PAYLOAD_LEN,
 };
 pub use controller::{
-    ControllerAction, ControllerConfig, ControllerError, EprExitFallback, EprExitPolicy, EprExitRefusal, EprState,
-    SinkController, UserRequest,
+    ControllerAction, ControllerConfig, ControllerError, EprEntryFallback, EprEntryPolicy, EprEntryRefusal,
+    EprExitFallback, EprExitPolicy, EprExitRefusal, EprState, SinkController, UserRequest,
 };
 pub use request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, PortMode, Preference,
