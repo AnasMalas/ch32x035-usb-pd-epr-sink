@@ -160,6 +160,11 @@ pub use crate::_generated::interrupt;
 
 pub struct Config {
     pub rcc: rcc::Config,
+    /// Initialize the general-purpose DMA/BDMA controller and its interrupts.
+    ///
+    /// This does not control peripheral-local DMA engines such as USBFS
+    /// endpoint DMA or the USB-PD packet buffer DMA.
+    pub enable_dma: bool,
     pub dma_interrupt_priority: interrupt::Priority,
 }
 
@@ -167,6 +172,7 @@ impl Default for Config {
     fn default() -> Self {
         Self {
             rcc: Default::default(),
+            enable_dma: true,
             dma_interrupt_priority: interrupt::Priority::P0,
         }
     }
@@ -192,7 +198,9 @@ pub fn init(config: Config) -> Peripherals {
 
     ::critical_section::with(|cs| unsafe {
         gpio::init(cs);
-        dma::init(cs, config.dma_interrupt_priority);
+        if config.enable_dma {
+            dma::init(cs, config.dma_interrupt_priority);
+        }
         #[cfg(feature = "exti")]
         exti::init(cs);
     });

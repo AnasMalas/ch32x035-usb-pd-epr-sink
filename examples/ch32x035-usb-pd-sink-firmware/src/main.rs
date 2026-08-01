@@ -1046,7 +1046,14 @@ async fn main(_spawner: Spawner) {
     #[cfg(feature = "sdi-log")]
     hal::debug::SDIPrint::enable();
 
-    let config = hal::Config { rcc: hal::rcc::Config::SYSCLK_FREQ_48MHZ_HSI, ..Default::default() };
+    let config = hal::Config {
+        rcc: hal::rcc::Config::SYSCLK_FREQ_48MHZ_HSI,
+        // This reference does not use general DMA1. USBFS endpoint DMA and
+        // USB-PD packet DMA are peripheral-local and remain enabled by their
+        // respective drivers.
+        enable_dma: false,
+        ..Default::default()
+    };
     let peripherals = hal::init(config);
 
     let vbus_present = ExtiInput::new(peripherals.PA6, peripherals.EXTI6, Pull::Down);

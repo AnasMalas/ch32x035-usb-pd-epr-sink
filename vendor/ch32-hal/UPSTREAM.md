@@ -26,6 +26,8 @@ Local changes relevant to this project:
    its serial identity;
 7. gate unrelated USB driver modules by the peripheral selected for the target
    chip and make small warning-cleanup changes needed by the pinned toolchain.
+8. make general DMA/BDMA initialization optional while leaving it enabled by
+   default; peripheral-local USBFS and USB-PD DMA are unaffected.
 
 The fork keeps broadly reusable RX/TX and USB changes separable from
 sink-specific policy so they can be proposed upstream independently. The local

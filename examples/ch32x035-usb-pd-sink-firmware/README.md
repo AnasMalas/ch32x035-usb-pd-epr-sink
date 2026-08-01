@@ -63,6 +63,13 @@ These profiles are board assertions, not software-only unlocks. Do not select
 one whose voltage, current, or power exceeds the complete connector,
 protection, switch, measurement, and load path.
 
+The compact reference firmware disables initialization of the CH32X035's
+general DMA1 controller because none of its application tasks use DMA1.
+USBFS endpoint DMA and USB-PD packet DMA are separate, peripheral-local
+engines and remain enabled. An application that adds ADC, touch sampling, or
+another general-DMA user should set `hal::Config::enable_dma` to `true` (the
+HAL default).
+
 ## Build profiles
 
 ```powershell
