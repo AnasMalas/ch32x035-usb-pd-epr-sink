@@ -1,5 +1,11 @@
 [build]
 target = "riscv32imc-unknown-none-elf"
 
+[target.riscv32imc-unknown-none-elf]
+# The repository pins the compiler that owns this unstable flag. Level 3
+# enables additional semantics-preserving MIR cleanup before LLVM's
+# size-focused release optimization; level 4 is measurably larger here.
+rustflags = ["-Z", "mir-opt-level=3"]
+
 [term]
 color = "always"

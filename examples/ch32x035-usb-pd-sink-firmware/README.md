@@ -215,6 +215,9 @@ The project currently pins a dated nightly because that is the compiler
 snapshot used to validate this embedded dependency set. Application code does
 not intentionally depend on nightly syntax; moving to stable should be done as
 a tested toolchain change rather than by following a moving channel.
+The RISC-V target also enables `mir-opt-level=3` in `.cargo/config.toml`; this
+size optimization is tied to the pinned compiler and must be remeasured during
+any toolchain update.
 
 ### Updating dependencies or Rust
 
