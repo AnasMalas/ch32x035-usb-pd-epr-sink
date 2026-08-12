@@ -17,7 +17,7 @@ For a nearby reviewed checkout:
 package = "ch32x035-usb-pd-epr-sink"
 path = "../ch32x035-usb-pd-epr-sink/crates/pd-sink"
 default-features = false
-features = ["ch32x035"]
+features = ["ch32x035f8u6"]
 ```
 
 For a remote reproducible build, pin an exact commit:
@@ -28,7 +28,7 @@ package = "ch32x035-usb-pd-epr-sink"
 git = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink"
 rev = "<reviewed commit SHA>"
 default-features = false
-features = ["ch32x035"]
+features = ["ch32x035f8u6"]
 ```
 
 The complete CH32 firmware also uses the maintained `usbpd`,
@@ -42,14 +42,18 @@ duplicate code.
 
 | Feature | Effect |
 |---|---|
-| `ch32x035` | Adds the pin-agnostic CH32X035 PHY driver and `Ch32x035Port` adapter |
+| `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
 
 The default build enables `hard-reset-reasons` but no MCU integration.
 Applications that need the CH32 adapter normally use
-`default-features = false, features = ["ch32x035"]` and enable
+`default-features = false` with exactly one package feature and enable
 `hard-reset-reasons` only when that diagnostic detail is worth the firmware
 space.
+
+All six USB-PD-capable CH32X035 package variants are supported. CH32X033 is
+not: despite sharing much of the family, it has USB but no integrated USB-PD
+peripheral, so the PHY adapter cannot run on it.
 
 ## Flash use
 
@@ -79,7 +83,7 @@ runtime.
    limits. Do not derive safe limits from a charger's label.
 2. Implement `SinkRuntime` for command input, typed observations, delays, and
    the firmware load-enable request.
-3. With the `ch32x035` feature, implement `Ch32x035Port` for real
+3. With one CH32X035 package feature, implement `Ch32x035Port` for real
    VBUS-present state, cancellation-safe attach/detach waits, immediate load
    disable, and optional PHY diagnostics.
 4. Construct `Ch32x035UsbPdDriver`, `SinkDevice`, and the maintained

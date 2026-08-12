@@ -19,7 +19,7 @@ be exercised with a deliberately split cable:
 - assert PA6 from the MCU's own 3.3 V rail through a removable jumper,
   preferably with a 1 kΩ to 4.7 kΩ series resistor; do not drive PA6 from a supply
   that can remain on while MCU VDD is off; and
-- leave PB12 unloaded only when it is not connected to a switch or MOSFET gate.
+- leave PA7 unloaded only when it is not connected to a switch or MOSFET gate.
   Any fitted gate still requires a hardware pull-down and a defined off state.
 
 This is a protocol fixture, not a power-path test. PA6 will remain high after
@@ -34,7 +34,7 @@ remain at the PC's 5 V and must not power a load.
 
 This fixture is sufficient to check CDC control, Source_Capabilities discovery,
 5 V negotiation, request construction, and basic source interoperability. It
-does not verify cable-removal cutoff, PB12 behavior, the load switch, discharge,
+does not verify cable-removal cutoff, PA7 behavior, the load switch, discharge,
 or any 48 V board hardware. Complete sections 1 and 2 before connecting source
 VBUS or a load to the board.
 
@@ -46,7 +46,7 @@ VBUS or a load to the board.
 - Measure the independent CC1 and CC2 Rd terminations and record their actual
   resistance to ground.
 - Confirm PA6 is driven only by 3.3 V-safe VBUS-present logic.
-- Measure PB12 and the actual load-switch gate low with the MCU unpowered and
+- Measure PA7 and the actual load-switch gate low with the MCU unpowered and
   held in reset.
 - Prove with a meter that debug USB VBUS and PD VBUS cannot backfeed each
   other.
@@ -60,11 +60,11 @@ firmware. Scope:
 
 1. connector VBUS;
 2. PA6 `VBUS_PRESENT`;
-3. PB12 `LOAD_ENABLE`;
+3. PA7 `LOAD_ENABLE`;
 4. the actual load-switch gate/output.
 
 Remove the cable repeatedly and save a capture showing that the physical gate
-falls from the hardware term even if PB12 is held high. This is the prerequisite
+falls from the hardware term even if PA7 is held high. This is the prerequisite
 for every later EPR test.
 
 ## 3. Verify both boot paths
@@ -193,7 +193,7 @@ Queue `status`, remove the PD cable at awkward times, and reconnect at least 20
 times. For every removal verify:
 
 - the hardware gate falls immediately;
-- PB12 falls on the first PA6 low observation;
+- PA7 falls on the first PA6 low observation;
 - no previous command executes after reconnect;
 - the next request is PDO 1 at fixed 5 V;
 - the prior confirmed current and EPR state are gone.
@@ -286,7 +286,7 @@ For each source/cable pair, save:
 - EPR Sink Capabilities and Sink Capabilities Extended response frames;
 - the SinkTxNG defer/source-response/SinkTxOK resume analyzer trace;
 - the `Wait`/source-AMS/exact-retry analyzer trace;
-- attach, `PS_RDY`, PB12, and detach scope captures;
+- attach, `PS_RDY`, PA7, and detach scope captures;
 - USB enumeration identifiers and COM-port behavior;
 - firmware Git commit and build profile.
 

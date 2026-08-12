@@ -32,9 +32,9 @@ connected CH32X035 running the compact USB-control firmware.
 
 ### What is included
 
-The repository contains the reusable `no_std` crate, CH32X035F8U6 firmware
-source, Web Serial/WebUSB client source, pinned maintained dependencies, tests,
-and hardware/integration guidance.
+The repository contains the reusable `no_std` crate, package-selectable
+CH32X035 firmware source, Web Serial/WebUSB client source, pinned maintained
+dependencies, tests, and hardware/integration guidance.
 
 This repository does **not** include a schematic, PCB, BOM, finished reference
 board, or production-ready load switch; the firmware example documents only
@@ -90,7 +90,7 @@ package = "ch32x035-usb-pd-epr-sink"
 git = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink"
 rev = "<reviewed commit SHA>"
 default-features = false
-features = ["ch32x035"]
+features = ["ch32x035f8u6"]
 ```
 
 Your application keeps ownership of `main`, the executor, GPIO assignments,
@@ -123,7 +123,7 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 `VBUS_PRESENT` and `HARDWARE_OK` must disable the power path without working
-firmware. The reference firmware's PA6/PB12 assignment is an example, not a
+firmware. The reference firmware's PA6/PA7 assignment is an example, not a
 library requirement.
 
 ### Documentation by task

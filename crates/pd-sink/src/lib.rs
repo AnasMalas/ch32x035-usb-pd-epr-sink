@@ -4,12 +4,19 @@
 //! Reusable USB Power Delivery sink logic for CH32X035 applications.
 //!
 //! The default build contains no executor, allocator, or MCU dependency and is
-//! testable on a desktop host. The optional `ch32x035` feature adds the
-//! pin-agnostic adapter for the MCU's integrated USB-PD PHY; applications still
-//! own their executor, GPIO choices, load gate, commands, and diagnostics.
+//! testable on a desktop host. Selecting one `ch32x035*` package feature adds
+//! the pin-agnostic adapter for the MCU's integrated USB-PD PHY; applications
+//! still own their executor, GPIO choices, load gate, commands, and diagnostics.
 
 pub mod capabilities;
-#[cfg(feature = "ch32x035")]
+#[cfg(any(
+    feature = "ch32x035c8t6",
+    feature = "ch32x035f7p6",
+    feature = "ch32x035f8u6",
+    feature = "ch32x035g8r6",
+    feature = "ch32x035g8u6",
+    feature = "ch32x035r8t6"
+))]
 pub mod ch32x035;
 pub mod command;
 pub mod contract;
@@ -26,7 +33,14 @@ pub use capabilities::{
     AdvertisedPdo, CapabilitiesKind, CapabilityListError, PdoError, PdoValidity, SourceCapabilities, SourceSupply,
     SupplyKind, EPR_AVS_COMPATIBLE_MAX_VOLTAGE, EPR_AVS_STANDARD_MAX_VOLTAGE, EPR_AVS_STANDARD_MIN_VOLTAGE,
 };
-#[cfg(feature = "ch32x035")]
+#[cfg(any(
+    feature = "ch32x035c8t6",
+    feature = "ch32x035f7p6",
+    feature = "ch32x035f8u6",
+    feature = "ch32x035g8r6",
+    feature = "ch32x035g8u6",
+    feature = "ch32x035r8t6"
+))]
 pub use ch32x035::{Ch32x035Port, Ch32x035UsbPdDriver, PhyEvent};
 pub use command::{parse_command, Command, CommandError};
 pub use contract::{

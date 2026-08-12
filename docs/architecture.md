@@ -2,10 +2,10 @@
 
 ## Product objective
 
-The CH32X035F8U6 is a pure USB-C power sink. A user can inspect every source
-offer, select a fixed PDO, or ask for any in-range PPS/AVS voltage. The
-result reports the exact wire-encoded voltage and a conservative usable
-current derived from source and configured product limits.
+The reference CH32X035 application is a pure USB-C power sink. A user can
+inspect every source offer, select a fixed PDO, or ask for any in-range
+PPS/AVS voltage. The result reports the exact wire-encoded voltage and a
+conservative usable current derived from source and configured product limits.
 
 The repository has two intentional ownership domains:
 
@@ -16,7 +16,7 @@ The repository has two intentional ownership domains:
 | Browser host-client example | `examples/browser-usb-pd-control-client` | Desktop Web Serial, Android WebUSB, controls, tables, and host-side diagnostic formatting |
 
 The reference application may demonstrate a policy without making that policy
-a library requirement. In particular, PA6, PB12, USB CDC, LinkE SDI, and the
+a library requirement. In particular, PA6, PA7, USB CDC, LinkE SDI, and the
 browser are not owned by the core crate.
 
 ## Layer boundaries
@@ -24,7 +24,8 @@ browser are not owned by the core crate.
 ### CH32 hardware layer
 
 The vendored `ch32-hal` owns clocks, interrupts, USBFS, and the USB-PD PHY. The
-F8U6's linker map exposes a 62 KiB application region. Local repairs include a
+64 KiB variants expose a 62 KiB application region after the reserved boot
+area. Local repairs include a
 34-byte PD receive buffer, strict transmit lengths, bounded error recovery,
 detach cancellation, and active-CC sampling at the 1.23 V comparator threshold
 for PD 3.x SinkTxOK.
@@ -76,7 +77,7 @@ diagnostics, delays, and their firmware-controlled load request. Avoiding
 floating-point unit conversions saves several kilobytes and makes capability
 reports deterministic.
 
-With the optional `ch32x035` feature, `Ch32x035UsbPdDriver` connects the DPM to
+With one CH32X035 package feature, `Ch32x035UsbPdDriver` connects the DPM to
 the integrated CH32X035 PHY. Its `Ch32x035Port` trait deliberately contains no
 pin assignments: the application supplies VBUS-present waits, immediate load
 disable, and diagnostics.
@@ -100,7 +101,7 @@ use a bounded cooldown instead of creating a reset storm.
 
 ### Port and safety supervisor
 
-The reference application's supervisor owns PA6 attach/detach and PB12 load
+The reference application's supervisor owns PA6 attach/detach and PA7 load
 enable; neither pin is selected by the library. Its invariant is that reset,
 detach, protocol loss, or an unconfirmed transition leaves the load off. The
 separate hardware gate documented in

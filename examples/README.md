@@ -4,8 +4,8 @@ These applications demonstrate the reusable sink crate without expanding the
 crate's ownership:
 
 - [`ch32x035-usb-pd-sink-firmware/`](ch32x035-usb-pd-sink-firmware/) is the
-  embedded device example. It binds the sink to CH32X035F8U6 pins, USB CDC,
-  LinkE diagnostics, safety supervision, and build profiles.
+  package-selectable CH32X035 device example. It binds the sink to common
+  pins, USB CDC, LinkE diagnostics, safety supervision, and build profiles.
 - [`browser-usb-pd-control-client/`](browser-usb-pd-control-client/) is the
   desktop/Android host example. It connects to compatible firmware over CDC
   and presents the compact control protocol in a browser.

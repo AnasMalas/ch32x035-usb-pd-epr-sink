@@ -2,7 +2,7 @@
 
 The two example applications place local build outputs here:
 
-- `ch32x035-usb-pd-epr-sink-reference-<profile>.elf` from the firmware build;
+- `ch32x035-usb-pd-epr-sink-reference-<chip>-<profile>.elf` from the firmware build;
 - `usb-pd-control.html` from the browser-client packager; and
 - optional maps or captures created during local investigation.
 

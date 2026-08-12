@@ -16,11 +16,16 @@ path = "src/lib.rs"
 
 [features]
 default = ["hard-reset-reasons"]
-ch32x035 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits"]
+ch32x035c8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035c8t6"]
+ch32x035f7p6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035f7p6"]
+ch32x035f8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035f8u6"]
+ch32x035g8r6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035g8r6"]
+ch32x035g8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035g8u6"]
+ch32x035r8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035r8t6"]
 hard-reset-reasons = ["usbpd/hard-reset-reasons"]
 
 [dependencies]
-ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["ch32x035f8u6", "embassy"], optional = true }
+ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["embassy"], optional = true }
 embassy-futures = { version = "0.1.2", optional = true }
 usbpd = { path = "../../vendor/usbpd" }
 usbpd-traits = { path = "../../vendor/usbpd-traits", optional = true }

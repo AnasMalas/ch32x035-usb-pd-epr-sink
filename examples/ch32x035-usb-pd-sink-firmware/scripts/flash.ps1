@@ -11,6 +11,17 @@ param(
     )]
     [string]$Profile = 'safe-5v',
 
+    [Parameter(ParameterSetName = 'ByProfile')]
+    [ValidateSet(
+        'ch32x035c8t6',
+        'ch32x035f7p6',
+        'ch32x035f8u6',
+        'ch32x035g8r6',
+        'ch32x035g8u6',
+        'ch32x035r8t6'
+    )]
+    [string]$Chip = 'ch32x035f8u6',
+
     [Parameter(Mandatory, ParameterSetName = 'ByFirmware')]
     [string]$Firmware
 )
@@ -30,7 +41,7 @@ if (-not (Get-Command wchisp -ErrorAction SilentlyContinue)) {
 }
 
 $firmwarePath = if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Join-Path $examples "generated-artifacts\ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
+    Join-Path $examples "generated-artifacts\ch32x035-usb-pd-epr-sink-reference-$Chip-$Profile.elf"
 }
 else {
     Join-Path $workspace $Firmware
@@ -38,7 +49,7 @@ else {
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
     if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-        throw "Firmware profile '$Profile' not found at $firmwarePath. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile $Profile first."
+        throw "Firmware profile '$Profile' for '$Chip' not found at $firmwarePath. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile $Profile -Chip $Chip first."
     }
     throw "Firmware not found at $firmwarePath. Run the reference firmware build script first."
 }
@@ -47,6 +58,7 @@ $firmwareItem = Get-Item -LiteralPath $firmwarePath
 $firmwareHash = (Get-FileHash -LiteralPath $firmwarePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
     Write-Host "Profile:  $Profile"
+    Write-Host "Chip:     $Chip"
 }
 Write-Host "Firmware: $($firmwareItem.FullName)"
 Write-Host "Modified: $($firmwareItem.LastWriteTime.ToString('yyyy-MM-dd HH:mm:ss'))"

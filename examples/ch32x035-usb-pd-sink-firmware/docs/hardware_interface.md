@@ -1,20 +1,31 @@
-# CH32X035F8U6 hardware/firmware interface
+# CH32X035 hardware/firmware interface
 
-This is the schematic contract assumed by the firmware. Pin numbers are for
-the QFN-20-EP CH32X035F8U6.
+This is the schematic contract assumed by the firmware. The GPIO names are
+common to every supported CH32X035 package; physical package pins differ.
+Confirm the package drawing against the current
+[WCH datasheet](https://www.wch-ic.com/downloads/CH32X035DS0_PDF.html) before
+laying out a board.
 
 ## Reserved pins
 
-| MCU pin | Package pin | Direction | Function |
-|---|---:|---|---|
-| PC14 | 19 | USB-PD analog | CC1 |
-| PC15 | 20 | USB-PD analog | CC2 |
-| PC16 | 17 | USB | D- for factory ISP and runtime CDC |
-| PC17 | 18 | USB | D+ for factory ISP and runtime CDC |
-| PC18 | 14 | debug | LinkE SDI data |
-| PC19 | 16 | debug | LinkE clock |
-| PA6 | 8 | input, active high | `VBUS_PRESENT` from external 3.3 V logic |
-| PB12 | 15 | output, active high | `LOAD_ENABLE` firmware request |
+| MCU pin | R8T6 | C8T6 | G8U6 | G8R6 | F8U6 | F7P6 | Direction/function |
+|---|---:|---:|---:|---:|---:|---:|---|
+| PC14 | 54 | 38 | 28 | 4 | 19 | 2 | USB-PD analog, CC1 |
+| PC15 | 55 | 39 | 1 | 5 | 20 | 3 | USB-PD analog, CC2 |
+| PC16 | 44 | 32 | 26 | 2 | 17 | 17 | USB D- for factory ISP and runtime CDC |
+| PC17 | 45 | 33 | 27 | 3 | 18 | 18 | USB D+ for factory ISP and runtime CDC |
+| PC18 | 46 | 34 | 25 | 28 | 14 | 19 | LinkE SDI data |
+| PC19 | 49 | 37 | 24 | 1 | 16 | 20 | LinkE clock |
+| PA6 | 22 | 16 | 11 | 13 | 8 | 12 | input, active-high `VBUS_PRESENT` from external 3.3 V logic |
+| PA7 | 23 | 17 | 12 | 17 | 9 | 13 | output, active-high `LOAD_ENABLE` firmware request |
+
+PA6 and PA7 were selected partly to leave a hardware-assisted cutoff route
+available: PA6 exposes OPA/comparator-related input and TIM1 break alternate
+functions, while PA7 exposes a TIM1 complementary-output alternate function.
+The reference firmware intentionally configures PA6 as an EXTI GPIO and PA7
+as a GPIO output today. Do not claim or depend on the analog-to-break path
+until its remap, polarity, startup state, and fault latency have been verified
+on hardware.
 
 CC1/CC2 and D+/D- are independent interfaces. USB PD negotiation uses only CC;
 the PD stack has no USB 2 dependency. PC16/PC17 may therefore go to a separate
@@ -50,12 +61,12 @@ supply, or MCU supply is absent.
 Do not tie PA6 permanently high in a finished, separately powered controller.
 The present CH32 driver samples CC while resetting the PD peripheral; it does
 not provide an independent continuous CC-detach event. With PA6 high, cable
-removal is discovered only indirectly after policy timeouts, and PB12 can
+removal is discovered only indirectly after policy timeouts, and PA7 can
 remain asserted in the meantime. PA6 may be omitted only if it is replaced by
 a separately verified continuous port/power supervisor and an equivalent
 hardware-default-off load gate.
 
-PB12 requires an external pull-down so the load defaults off during reset,
+PA7 requires an external pull-down so the load defaults off during reset,
 flashing, an unpowered MCU, or crashed firmware. Implement the effective
 load-switch enable in hardware as:
 
@@ -79,9 +90,9 @@ those ratings.
 
 ## Firmware behavior
 
-- PB12 is driven low before attach debounce.
+- PA7 is driven low before attach debounce.
 - PA6 must remain high for 100 ms before attachment is accepted.
-- The first PA6 falling edge drives PB12 low without detach debounce.
+- The first PA6 falling edge drives PA7 low without detach debounce.
 - Every PD receive/transmit operation races against cable removal.
 - A new/changing request disables the load until `Accept` and `PS_RDY`.
 - Hard reset, detach, protocol loss, and unknown state force load-off.
@@ -99,11 +110,11 @@ those ratings.
    is off.
 2. Measure both external CC-to-ground Rd terminations before connecting a
    source.
-3. At 5 V, scope PA6, PB12, and the physical switch gate while repeatedly
+3. At 5 V, scope PA6, PA7, and the physical switch gate while repeatedly
    removing the cable. Confirm the hardware term cuts the gate without MCU
    activity.
-4. Verify PB12 cannot override low `VBUS_PRESENT` or `HARDWARE_OK`.
-5. Flash `usb-safe-5v`; confirm PB12 rises only after `PS_RDY`.
+4. Verify PA7 cannot override low `VBUS_PRESENT` or `HARDWARE_OK`.
+5. Flash `usb-safe-5v`; confirm PA7 rises only after `PS_RDY`.
 6. Verify USB ISP, normal boot CDC enumeration, and LinkE do not back-power or
    contend with the PD input.
 7. Exercise SinkTxNG/SinkTxOK using the procedure in

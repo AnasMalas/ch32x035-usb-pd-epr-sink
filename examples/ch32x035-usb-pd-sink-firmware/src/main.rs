@@ -265,7 +265,7 @@ macro_rules! control_event {
 
 /// Owns the physical load-control output for the lifetime of the firmware.
 ///
-/// `PA6` is fed by a 3.3 V-safe VBUS power-good circuit. `PB12` is only the
+/// `PA6` is fed by a 3.3 V-safe VBUS power-good circuit. `PA7` is only the
 /// firmware half of the load-enable equation; hardware must also gate the
 /// switch directly with VBUS power-good so cable removal does not depend on
 /// executor latency or working firmware.
@@ -1086,7 +1086,7 @@ async fn main(_spawner: Spawner) {
     let peripherals = hal::init(config);
 
     let vbus_present = ExtiInput::new(peripherals.PA6, peripherals.EXTI6, Pull::Down);
-    let load_enable = Output::new(peripherals.PB12, Level::Low, Speed::Low);
+    let load_enable = Output::new(peripherals.PA7, Level::Low, Speed::Low);
     _spawner.spawn(port_supervisor_task(vbus_present, load_enable).expect("port supervisor task allocation failed"));
 
     let phy = UsbPdPhy::new_async(peripherals.USBPD, peripherals.PC14, peripherals.PC15, Irq);

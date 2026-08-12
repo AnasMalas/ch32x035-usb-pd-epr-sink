@@ -52,13 +52,22 @@ if ([string]::IsNullOrWhiteSpace($HostTarget)) {
 Write-Host "Native host checks use target $HostTarget."
 
 $firmwarePackage = 'ch32x035-usb-pd-epr-sink-reference'
-$usbControlEprFeatures = 'usb-control,epr-capable-hardware'
-$textConsoleEprFeatures = 'dev-text-console,epr-capable-hardware'
+$referenceChip = 'ch32x035f8u6'
+$supportedChips = @(
+    'ch32x035c8t6',
+    'ch32x035f7p6',
+    'ch32x035f8u6',
+    'ch32x035g8r6',
+    'ch32x035g8u6',
+    'ch32x035r8t6'
+)
+$usbControlEprFeatures = "$referenceChip,usb-control,epr-capable-hardware"
+$textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
 $firmwareFeatureSets = @(
-    'usb-control',
-    'usb-control,pps-capable-hardware',
+    "$referenceChip,usb-control",
+    "$referenceChip,usb-control,pps-capable-hardware",
     $usbControlEprFeatures,
-    'usb-control,epr-50v-compatible-hardware',
+    "$referenceChip,usb-control,epr-50v-compatible-hardware",
     $textConsoleEprFeatures
 )
 
@@ -83,6 +92,11 @@ try {
             if ($availableFeatures -notcontains $feature) {
                 throw "Firmware feature '$feature' from '$featureSet' is missing from Cargo metadata."
             }
+        }
+    }
+    foreach ($chip in $supportedChips) {
+        if ($availableFeatures -notcontains $chip) {
+            throw "Supported firmware chip feature '$chip' is missing from Cargo metadata."
         }
     }
 
@@ -115,6 +129,12 @@ try {
 
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd tests failed with exit code $LASTEXITCODE" }
+
+    foreach ($chip in $supportedChips) {
+        $packageCheckFeatures = "$chip,usb-control,epr-capable-hardware"
+        cargo check -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
+        if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware check failed with exit code $LASTEXITCODE" }
+    }
 
     cargo build -p $firmwarePackage --release --locked
     if ($LASTEXITCODE -ne 0) { throw "safe 5 V firmware build failed with exit code $LASTEXITCODE" }

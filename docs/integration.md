@@ -15,8 +15,8 @@ The library owns:
 - stack request conversion, Source_Info handling, reset handling, EPR entry,
   EPR exit, the bounded automatic-entry budget, Source Alert handling, and
   general/PPS status queries;
-- CH32X035 PHY receive/transmit cancellation on VBUS loss when the optional
-  `ch32x035` feature is enabled.
+- CH32X035 PHY receive/transmit cancellation on VBUS loss when one package
+  feature is enabled.
 
 The application owns:
 
@@ -25,7 +25,7 @@ The application owns:
 - the independent hardware load gate;
 - the source of user commands and the destination for diagnostics;
 - USB CDC, displays, persistent settings, and every feature unrelated to PD;
-- the GPIO choices. The reference PA6/PB12 assignment is only an example.
+- the GPIO choices. The reference PA6/PA7 assignment is only an example.
 
 ## Dependency
 
@@ -36,7 +36,7 @@ Until a crates.io release is available, consume a reviewed checkout by path:
 package = "ch32x035-usb-pd-epr-sink"
 path = "../ch32x035-usb-pd-epr-sink/crates/pd-sink"
 default-features = false
-features = ["ch32x035"]
+features = ["ch32x035f8u6"]
 ```
 
 Remote builds should pin a reviewed commit rather than follow a moving branch:
@@ -47,7 +47,7 @@ package = "ch32x035-usb-pd-epr-sink"
 git = "https://github.com/AnasMalas/ch32x035-usb-pd-epr-sink"
 rev = "<reviewed commit SHA>"
 default-features = false
-features = ["ch32x035"]
+features = ["ch32x035f8u6"]
 ```
 
 This repository carries maintained descendants of `usbpd`, `usbpd-traits`,
@@ -56,6 +56,10 @@ the same versions: duplicate protocol or HAL crates increase firmware size and
 can bypass the fixes documented in each `vendor/*/UPSTREAM.md`. A crates.io
 release is deferred until the dependency arrangement and public APIs are
 stable.
+
+Choose exactly one of `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`,
+`ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6`. CH32X033 does not expose
+the USB-PD peripheral and cannot use the CH32 PHY adapter.
 
 ## Application adapters
 

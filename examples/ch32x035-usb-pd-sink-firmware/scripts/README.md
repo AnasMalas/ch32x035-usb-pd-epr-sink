@@ -14,6 +14,8 @@ Run these PowerShell scripts from the repository root:
 Profiles are hardware assertions, not merely UI presets. Start with
 `usb-safe-5v` on unverified hardware and read the parent
 [firmware example README](../README.md) before enabling PPS or EPR.
+`build.ps1`, `flash.ps1`, and `program.ps1` accept `-Chip`; it defaults to
+`ch32x035f8u6` and keeps artifacts for different packages separate.
 
 `console.ps1` does not decode the compact `usb-control` protocol. Use the
 [browser control client](../../browser-usb-pd-control-client/) with the normal

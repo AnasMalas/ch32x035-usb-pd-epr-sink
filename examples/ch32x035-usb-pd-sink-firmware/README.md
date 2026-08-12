@@ -1,7 +1,7 @@
 # CH32X035 USB-PD sink firmware example
 
-This example binds the reusable sink library to a concrete CH32X035F8U6
-application: PA6 source-VBUS sensing, PB12 load-enable policy, USB CDC or LinkE
+This example binds the reusable sink library to a concrete CH32X035
+application: PA6 source-VBUS sensing, PA7 load-enable policy, USB CDC or LinkE
 diagnostics, build profiles, and bounded restart behavior. None of those pins
 or transports are requirements of the core crate.
 
@@ -14,7 +14,7 @@ PPS or EPR on a new board.
 
 This repository supplies firmware source and a pin-level hardware contract,
 not a reference schematic or finished board. You need to know how your board
-enters the CH32X035 factory USB ISP boot mode and how its PA6/PB12 safety
+enters the CH32X035 factory USB ISP boot mode and how its PA6/PA7 safety
 signals are implemented.
 
 1. Install Git and clone this repository.
@@ -71,6 +71,25 @@ another general-DMA user should set `hal::Config::enable_dma` to `true` (the
 HAL default).
 
 ## Build profiles
+
+The default target is `ch32x035f8u6`. Select another supported package with
+`-Chip`; the same PA6/PA7, CC, USB, and SDI GPIO names are bonded on all six:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v -Chip ch32x035g8u6
+```
+
+Supported values are `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`,
+`ch32x035g8r6`, `ch32x035g8u6`, and `ch32x035r8t6`. CH32X033 is not supported
+because it has USB but not the integrated USB-PD peripheral.
+
+The CH32X035F7P6 has only a 48 KiB application region. At this revision the
+compact USB/GUI EPR image links at 47,608 bytes, leaving just 1,544 bytes; the
+larger development text-console EPR profile does not fit. Treat F7P6 as a
+size-constrained library target, not as a promise that every reference profile
+or application extension is usable. The build uses the package's real linker
+limit and will fail rather than emit an oversized image. The other listed
+parts have the 62 KiB application region used by the full profile set.
 
 ```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v

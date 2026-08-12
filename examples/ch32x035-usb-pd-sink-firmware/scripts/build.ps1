@@ -8,7 +8,17 @@ param(
         'usb-epr-50v',
         'usb-epr-text'
     )]
-    [string]$Profile = 'safe-5v'
+    [string]$Profile = 'safe-5v',
+
+    [ValidateSet(
+        'ch32x035c8t6',
+        'ch32x035f7p6',
+        'ch32x035f8u6',
+        'ch32x035g8r6',
+        'ch32x035g8u6',
+        'ch32x035r8t6'
+    )]
+    [string]$Chip = 'ch32x035f8u6'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -28,17 +38,26 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
 
 Push-Location $workspace
 try {
-    $profileArguments = switch ($Profile) {
-        'safe-5v' { @() }
-        'usb-safe-5v' { @('--no-default-features', '--features', 'usb-control') }
-        'usb-pps' { @('--no-default-features', '--features', 'usb-control,pps-capable-hardware') }
-        'usb-epr' { @('--no-default-features', '--features', 'usb-control,epr-capable-hardware') }
-        'usb-epr-50v' { @('--no-default-features', '--features', 'usb-control,epr-50v-compatible-hardware') }
-        'usb-epr-text' { @('--no-default-features', '--features', 'dev-text-console,epr-capable-hardware') }
+    $profileFeatures = switch ($Profile) {
+        'safe-5v' { 'sdi-log' }
+        'usb-safe-5v' { 'usb-control' }
+        'usb-pps' { 'usb-control,pps-capable-hardware' }
+        'usb-epr' { 'usb-control,epr-capable-hardware' }
+        'usb-epr-50v' { 'usb-control,epr-50v-compatible-hardware' }
+        'usb-epr-text' { 'dev-text-console,epr-capable-hardware' }
     }
+    $selectedFeatures = "$Chip,$profileFeatures"
 
-    $arguments = @('build', '-p', 'ch32x035-usb-pd-epr-sink-reference', '--release', '--locked')
-    $arguments += $profileArguments
+    $arguments = @(
+        'build',
+        '-p',
+        'ch32x035-usb-pd-epr-sink-reference',
+        '--release',
+        '--locked',
+        '--no-default-features',
+        '--features',
+        $selectedFeatures
+    )
 
     cargo @arguments
     if ($LASTEXITCODE -ne 0) { throw "cargo build failed with exit code $LASTEXITCODE" }
@@ -46,12 +65,13 @@ try {
     $artifactDirectory = Join-Path $examples 'generated-artifacts'
     $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-reference'
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Profile.elf"
+    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Chip-$Profile.elf"
     Copy-Item -LiteralPath $builtFirmware -Destination $profileArtifact -Force
-    & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact
-    Write-Host "Built profile '$Profile': $profileArtifact"
-    Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile"
-    if ($Profile -eq 'safe-5v') {
+    $applicationFlashKiB = if ($Chip -eq 'ch32x035f7p6') { 48 } else { 62 }
+    & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashKiB $applicationFlashKiB
+    Write-Host "Built profile '$Profile' for '$Chip': $profileArtifact"
+    Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile -Chip $Chip"
+    if ($Profile -eq 'safe-5v' -and $Chip -eq 'ch32x035f8u6') {
         Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-reference.elf') -Force
     }
 }
