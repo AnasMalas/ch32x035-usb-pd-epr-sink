@@ -130,6 +130,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "ch32x035-usbpd-cc-wake-probe"
+version = "0.1.0"
+dependencies = [
+ "ch32-hal",
+ "embassy-executor",
+ "embassy-time",
+ "panic-halt",
+ "qingke-rt",
+]
+
+[[package]]
 name = "cordyceps"
 version = "0.3.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"

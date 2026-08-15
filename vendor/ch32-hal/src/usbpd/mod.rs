@@ -10,7 +10,7 @@
 
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -114,7 +114,9 @@ pub struct CcWakeInterruptHandler<T: Instance> {
 impl<T: Instance> interrupt::typelevel::Handler<T::WakeupInterrupt> for CcWakeInterruptHandler<T> {
     unsafe fn on_interrupt() {
         T::REGS.config().modify(|w| w.set_ie_pd_io(false));
-        T::state().cc_waker.wake();
+        let count = T::cc_state().wake_count.load(Ordering::Relaxed);
+        T::cc_state().wake_count.store(count.wrapping_add(1), Ordering::Relaxed);
+        T::cc_state().waker.wake();
     }
 }
 
@@ -160,6 +162,14 @@ pub struct UsbPdCcMonitor<'d, T: Instance> {
 }
 
 impl<T: Instance> UsbPdCcMonitor<'_, T> {
+    /// Return the number of PD-port wake interrupts observed since boot.
+    ///
+    /// This wrapping counter is intended for diagnostics. It includes wakeups
+    /// caused by pulses that ended before the waiting task could sample them.
+    pub fn wake_interrupt_count(&self) -> u32 {
+        T::cc_state().wake_count.load(Ordering::Relaxed)
+    }
+
     /// Return the current output of the comparator on the selected CC pin.
     ///
     /// The normal receive threshold is 0.66 V. This method never changes the
@@ -177,7 +187,7 @@ impl<T: Instance> UsbPdCcMonitor<'_, T> {
         let mut guard = CcWakeGuard::<T>::new();
 
         poll_fn(|cx| {
-            T::state().cc_waker.register(cx.waker());
+            T::cc_state().waker.register(cx.waker());
 
             if !self.active_cc_high() {
                 guard.disarm();
@@ -651,7 +661,6 @@ fn validate_message_length(length: usize) -> Result<(), Error> {
 
 struct State {
     waker: AtomicWaker,
-    cc_waker: AtomicWaker,
     // Set by the ISR on BUF_ERR; cleared at the start of each transfer.
     buf_err: AtomicBool,
 }
@@ -660,8 +669,21 @@ impl State {
     pub const fn new() -> Self {
         Self {
             waker: AtomicWaker::new(),
-            cc_waker: AtomicWaker::new(),
             buf_err: AtomicBool::new(false),
+        }
+    }
+}
+
+struct CcState {
+    waker: AtomicWaker,
+    wake_count: AtomicU32,
+}
+
+impl CcState {
+    const fn new() -> Self {
+        Self {
+            waker: AtomicWaker::new(),
+            wake_count: AtomicU32::new(0),
         }
     }
 }
@@ -670,6 +692,7 @@ trait SealedInstance {
     const REGS: crate::pac::usbpd::Usbpd;
 
     fn state() -> &'static State;
+    fn cc_state() -> &'static CcState;
 }
 
 #[allow(private_bounds)]
@@ -698,6 +721,11 @@ foreach_interrupt!(
 
             fn state() -> &'static State {
                 static STATE: State = State::new();
+                &STATE
+            }
+
+            fn cc_state() -> &'static CcState {
+                static STATE: CcState = CcState::new();
                 &STATE
             }
         }

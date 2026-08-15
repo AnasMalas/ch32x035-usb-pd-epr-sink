@@ -52,6 +52,7 @@ if ([string]::IsNullOrWhiteSpace($HostTarget)) {
 Write-Host "Native host checks use target $HostTarget."
 
 $firmwarePackage = 'ch32x035-usb-pd-epr-sink-reference'
+$ccWakeProbePackage = 'ch32x035-usbpd-cc-wake-probe'
 $referenceChip = 'ch32x035f8u6'
 $supportedChips = @(
     'ch32x035c8t6',
@@ -85,6 +86,12 @@ try {
     if (-not $firmwareMetadata) {
         throw "Firmware package '$firmwarePackage' is missing from Cargo metadata."
     }
+    $ccWakeProbeMetadata = $metadata.packages |
+        Where-Object { $_.name -eq $ccWakeProbePackage } |
+        Select-Object -First 1
+    if (-not $ccWakeProbeMetadata) {
+        throw "CC wake probe package '$ccWakeProbePackage' is missing from Cargo metadata."
+    }
 
     $availableFeatures = @($firmwareMetadata.features.PSObject.Properties.Name)
     foreach ($featureSet in $firmwareFeatureSets) {
@@ -97,6 +104,9 @@ try {
     foreach ($chip in $supportedChips) {
         if ($availableFeatures -notcontains $chip) {
             throw "Supported firmware chip feature '$chip' is missing from Cargo metadata."
+        }
+        if (@($ccWakeProbeMetadata.features.PSObject.Properties.Name) -notcontains $chip) {
+            throw "Supported CC wake probe chip feature '$chip' is missing from Cargo metadata."
         }
     }
 
@@ -124,6 +134,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $textConsoleEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "development text-console EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
+
     cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --target $HostTarget --locked
     if ($LASTEXITCODE -ne 0) { throw "host tests failed with exit code $LASTEXITCODE" }
 
@@ -134,6 +147,9 @@ try {
         $packageCheckFeatures = "$chip,usb-control,epr-capable-hardware"
         cargo check -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
         if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware check failed with exit code $LASTEXITCODE" }
+
+        cargo check -p $ccWakeProbePackage --release --locked --no-default-features --features $chip
+        if ($LASTEXITCODE -ne 0) { throw "$chip CC wake probe check failed with exit code $LASTEXITCODE" }
     }
 
     cargo build -p $firmwarePackage --release --locked

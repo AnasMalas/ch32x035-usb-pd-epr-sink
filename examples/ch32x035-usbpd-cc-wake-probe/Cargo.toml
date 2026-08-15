@@ -1,0 +1,28 @@
+[package]
+name = "ch32x035-usbpd-cc-wake-probe"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[features]
+default = ["ch32x035f8u6"]
+ch32x035c8t6 = ["ch32-hal/ch32x035c8t6"]
+ch32x035f7p6 = ["ch32-hal/ch32x035f7p6"]
+ch32x035f8u6 = ["ch32-hal/ch32x035f8u6"]
+ch32x035g8r6 = ["ch32-hal/ch32x035g8r6"]
+ch32x035g8u6 = ["ch32-hal/ch32x035g8u6"]
+ch32x035r8t6 = ["ch32-hal/ch32x035r8t6"]
+
+[dependencies]
+ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = [
+    "memory-x",
+    "embassy",
+    "rt",
+    "time-driver-tim2",
+] }
+embassy-executor = { version = "0.10.0", features = ["platform-spin", "executor-thread"] }
+embassy-time = "0.5.1"
+panic-halt = "1.0"
+qingke-rt = "0.7"

@@ -15,6 +15,7 @@ clear protocol or hardware evidence.
 | `vendor/ch32-hal/` | Maintained CH32 clocks, interrupts, USB-PD PHY, and USBFS primitives |
 | `tests/protocol/` | Scripted wire-level tests through the real policy engine |
 | `examples/ch32x035-usb-pd-sink-firmware/` | Executor, example pins, USB/SDI transports, text formatting, board profiles, flashing, and physical verification |
+| `examples/ch32x035-usbpd-cc-wake-probe/` | No-load hardware characterization of the CH32X035 PD-port wake interrupt |
 | `examples/browser-usb-pd-control-client/` | Desktop Web Serial and Android WebUSB controls and host-side formatting |
 | `scripts/` | Checks that apply to the whole repository |
 

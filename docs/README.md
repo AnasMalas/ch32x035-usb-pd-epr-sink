@@ -29,6 +29,9 @@ Choose the document by what you are trying to do:
   higher-voltage testing.
 - [Browser control client](../examples/browser-usb-pd-control-client/README.md)
   covers local desktop Web Serial and hosted Android WebUSB use.
+- [No-load CC wake probe](../examples/ch32x035-usbpd-cc-wake-probe/README.md)
+  isolates the experimental `IE_PD_IO` wake source from load control and
+  production detach policy so its hardware behavior can be characterized.
 
 The root [README](../README.md) is the shortest starting point for a new user.
 Implementation history that still affects behavior belongs in the relevant
