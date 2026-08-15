@@ -148,6 +148,14 @@ impl SinkController {
         self.desired
     }
 
+    pub(crate) fn retain_desired(&mut self, request: UserRequest) {
+        self.desired = Some(request);
+    }
+
+    pub(crate) fn clear_desired(&mut self) {
+        self.desired = None;
+    }
+
     pub fn take_pending_error(&mut self) -> Option<ControllerError> {
         self.pending_error.take()
     }

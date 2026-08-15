@@ -142,6 +142,35 @@ Every physical attachment starts by requesting fixed 5 V and learning source
 capabilities. A high voltage is not selected until an explicit request or the
 application's own later policy asks for one.
 
+### Warm MCU-reset recovery
+
+`SinkDevice::new_recovering` is an explicit alternative for a short local MCU
+restart when the application has trustworthy evidence that the same physical
+port session may still be powered. The caller supplies a `RecoveryIntent` with
+the retained SPR/EPR mode, user request, retry limit, and whether the output
+latch should be restored. The DPM makes the corresponding `usbpd` startup send
+Soft Reset first; EPR recovery remains in EPR and therefore waits for EPR
+Source Capabilities instead of entering EPR again or requesting 5 V.
+
+Do not infer this from VBUS presence alone and do not replay an old intent from
+ordinary flash. A product can combine its MCU reset cause with a volatile
+session token or another short-lived board-specific proof. A cold boot, a new
+attachment, or uncertain evidence must call `SinkDevice::new`.
+
+Recovery immediately clears both software load controls. The retained target
+is planned against the newly received capabilities, and the output latch is
+restored only after a fresh Accept and PS_RDY. Only a transient `Wait` is
+retried, up to `maximum_attempts`. Reject, unavailable/mismatched
+capabilities, Hard Reset, detach, protocol loss, a replacement request, and
+Output Off cancel the automatic restore and emit typed `SinkEvent`
+observations.
+
+If an immediate Output Off path bypasses `SinkDevice::get_event` (as the
+reference transports do), implement `SinkRuntime::recovery_cancel_requested`
+with the same application-owned latch/token. This prevents an Output Off that
+arrives during a PD exchange from being undone by the later PS_RDY callback;
+the observation path remains independent from the load-control path.
+
 ## Load safety
 
 `SinkRuntime::set_pd_load_permitted(true)` is only PD-policy permission after

@@ -19,15 +19,15 @@ use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
 use usbpd::protocol_layer::message::extended::{pps_status as stack_pps_status, status as stack_status};
 pub use usbpd::sink::device_policy_manager::HardResetReason as HardResetCause;
 use usbpd::sink::device_policy_manager::{
-    DevicePolicyManager, Event, HardResetOrigin, RequestRejection, StatusQueryFailure as StackStatusQueryFailure,
-    StatusQueryKind as StackStatusQueryKind,
+    DevicePolicyManager, Event, HardResetOrigin, RequestRejection, SinkStartup, SoftResetMode,
+    StatusQueryFailure as StackStatusQueryFailure, StatusQueryKind as StackStatusQueryKind,
 };
 
 use crate::{
     capabilities_from_stack, request_to_stack, CapabilityListError, Command, ContractState, ContractTracker,
     ContractTransition, ControllerAction, ControllerConfig, ControllerError, Demand, EprEntryFallback, EprEntryPolicy,
-    EprExitPolicy, EprState, Milliamps, Milliwatts, PdoValidity, PpsStatus, RequestPlan, SinkController, SourceAlert,
-    SourceStatus, StackConversionError, StatusQuery, StatusQueryFailure, SupplyKind, UserRequest,
+    EprExitPolicy, EprState, Milliamps, Milliwatts, PdoValidity, PortMode, PpsStatus, RequestPlan, SinkController,
+    SourceAlert, SourceStatus, StackConversionError, StatusQuery, StatusQueryFailure, SupplyKind, UserRequest,
 };
 
 /// Static power and identity data advertised by the sink.
@@ -114,6 +114,61 @@ impl SinkConfig {
     }
 }
 
+/// Caller-provided intent for recovering a contract after a short local MCU
+/// restart while the same physical PD attachment may still be present.
+///
+/// This value is deliberately not persisted or inferred by the library. A
+/// cold boot must use [`SinkDevice::new`]. The caller is responsible for
+/// supplying this only from trustworthy, short-lived reset/session evidence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct RecoveryIntent {
+    /// PD mode that the Source should have retained across the local reset.
+    pub mode: PortMode,
+    /// Product-level target to re-plan against the Source's fresh capabilities.
+    pub request: UserRequest,
+    /// Re-enable the application output latch only after the recovered Request
+    /// has reached Accept and PS_RDY.
+    pub restore_output: bool,
+    /// Maximum automatic Request attempts. Only a transient `Wait` is retried;
+    /// explicit rejection and session-loss conditions cancel immediately.
+    pub maximum_attempts: u8,
+}
+
+/// Invalid warm-recovery construction.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RecoveryInitError {
+    /// The ordinary sink configuration is invalid.
+    SinkConfig(SinkConfigError),
+    /// Recovery must permit at least one Request attempt.
+    AttemptsZero,
+    /// EPR recovery was requested for a sink not configured for EPR.
+    EprNotSupported,
+}
+
+/// Why an armed warm-recovery operation stopped without restoring the output.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
+pub enum RecoveryCancellationReason {
+    /// Output Off or another out-of-band application cancellation was observed.
+    ApplicationRequested = 0,
+    /// A newer explicit request replaced the automatic recovery target.
+    Superseded = 1,
+    /// The Source explicitly rejected the target.
+    RequestRejected = 2,
+    /// The configured transient retry budget was consumed.
+    AttemptsExhausted = 3,
+    /// Fresh capabilities could not satisfy the retained target.
+    TargetUnavailable = 4,
+    /// Fresh capabilities did not match the retained SPR/EPR mode.
+    ModeChanged = 5,
+    /// A Hard Reset invalidated the presumed surviving contract.
+    HardReset = 6,
+    /// Physical detach invalidated the port session.
+    Detached = 7,
+    /// The protocol/PHY session became unusable.
+    ProtocolLost = 8,
+}
+
 /// Result of previewing one advertised PDO without changing the live contract.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CapabilityPlan {
@@ -169,6 +224,25 @@ pub enum SinkEvent {
         failure: StatusQueryFailure,
     },
     RequestResult(RequestResult),
+    RecoveryStarted(RecoveryIntent),
+    RecoveryAttemptStarted {
+        attempt: u8,
+        maximum_attempts: u8,
+    },
+    RecoveryDeferred {
+        attempt: u8,
+        maximum_attempts: u8,
+    },
+    RecoverySucceeded {
+        attempt: u8,
+        plan: RequestPlan,
+        output_restored: bool,
+    },
+    RecoveryCancelled {
+        reason: RecoveryCancellationReason,
+        attempts: u8,
+        maximum_attempts: u8,
+    },
     #[cfg(feature = "hard-reset-reasons")]
     HardReset {
         direction: HardResetDirection,
@@ -212,6 +286,15 @@ pub trait SinkRuntime {
     /// PD request, alter desired contract state, or enter/exit EPR.
     fn set_user_output_enabled(&mut self, enabled: bool);
     fn clear_pending_commands(&mut self);
+    /// Return true when an out-of-band application path has cancelled warm
+    /// recovery, for example an immediate `Output Off` command handled while
+    /// the policy engine is waiting for a PD response.
+    ///
+    /// Implement this when output commands bypass [`SinkDevice::get_event`].
+    /// The default is suitable when all cancellation enters through the DPM.
+    fn recovery_cancel_requested(&self) -> bool {
+        false
+    }
     /// Catch-all observation hook. Applications that care about code size can
     /// override the typed `on_*` methods below; their defaults forward here.
     fn observe(&mut self, _event: SinkEvent) {}
@@ -280,6 +363,21 @@ pub trait SinkRuntime {
     fn on_request_result(&mut self, result: RequestResult) {
         self.observe(SinkEvent::RequestResult(result));
     }
+    fn on_recovery_started(&mut self, intent: RecoveryIntent) {
+        self.observe(SinkEvent::RecoveryStarted(intent));
+    }
+    fn on_recovery_attempt_started(&mut self, attempt: u8, maximum_attempts: u8) {
+        self.observe(SinkEvent::RecoveryAttemptStarted { attempt, maximum_attempts });
+    }
+    fn on_recovery_deferred(&mut self, attempt: u8, maximum_attempts: u8) {
+        self.observe(SinkEvent::RecoveryDeferred { attempt, maximum_attempts });
+    }
+    fn on_recovery_succeeded(&mut self, attempt: u8, plan: RequestPlan, output_restored: bool) {
+        self.observe(SinkEvent::RecoverySucceeded { attempt, plan, output_restored });
+    }
+    fn on_recovery_cancelled(&mut self, reason: RecoveryCancellationReason, attempts: u8, maximum_attempts: u8) {
+        self.observe(SinkEvent::RecoveryCancelled { reason, attempts, maximum_attempts });
+    }
     #[cfg(feature = "hard-reset-reasons")]
     fn on_hard_reset(&mut self, direction: HardResetDirection, cause: HardResetCause, recovery_ms: u64) {
         self.observe(SinkEvent::HardReset { direction, cause, recovery_ms });
@@ -336,12 +434,48 @@ pub struct SinkDevice<R: SinkRuntime> {
     source_status_pending: bool,
     epr_discovery_attempts: u8,
     epr_exhaustion_reported: bool,
+    recovery: Option<RecoveryState>,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct RecoveryState {
+    intent: RecoveryIntent,
+    attempts: u8,
+    request_pending: bool,
 }
 
 impl<R: SinkRuntime> SinkDevice<R> {
     pub fn new(config: SinkConfig, runtime: R) -> Result<Self, SinkConfigError> {
         let config = config.validate()?;
-        Ok(Self {
+        Ok(Self::from_validated(config, runtime, None))
+    }
+
+    /// Create a DPM that starts by Soft Resetting a presumed live PD session
+    /// and requesting the caller's retained target.
+    ///
+    /// The load is inhibited immediately. No output restoration occurs until
+    /// the new Request reaches Accept and PS_RDY.
+    pub fn new_recovering(
+        config: SinkConfig,
+        mut runtime: R,
+        intent: RecoveryIntent,
+    ) -> Result<Self, RecoveryInitError> {
+        let config = config.validate().map_err(RecoveryInitError::SinkConfig)?;
+        if intent.maximum_attempts == 0 {
+            return Err(RecoveryInitError::AttemptsZero);
+        }
+        if matches!(intent.mode, PortMode::Epr) && !config.controller.request_context.flags.epr_capable {
+            return Err(RecoveryInitError::EprNotSupported);
+        }
+
+        runtime.set_pd_load_permitted(false);
+        runtime.set_user_output_enabled(false);
+        runtime.on_recovery_started(intent);
+        Ok(Self::from_validated(config, runtime, Some(RecoveryState { intent, attempts: 0, request_pending: false })))
+    }
+
+    fn from_validated(config: SinkConfig, runtime: R, recovery: Option<RecoveryState>) -> Self {
+        Self {
             controller: SinkController::new(config.controller),
             config,
             runtime,
@@ -351,7 +485,8 @@ impl<R: SinkRuntime> SinkDevice<R> {
             source_status_pending: false,
             epr_discovery_attempts: 0,
             epr_exhaustion_reported: false,
-        })
+            recovery,
+        }
     }
 
     pub const fn config(&self) -> &SinkConfig {
@@ -368,6 +503,66 @@ impl<R: SinkRuntime> SinkDevice<R> {
 
     pub fn runtime_mut(&mut self) -> &mut R {
         &mut self.runtime
+    }
+
+    pub const fn recovery_intent(&self) -> Option<RecoveryIntent> {
+        match self.recovery {
+            Some(recovery) => Some(recovery.intent),
+            None => None,
+        }
+    }
+
+    pub const fn recovery_attempts(&self) -> u8 {
+        match self.recovery {
+            Some(recovery) => recovery.attempts,
+            None => 0,
+        }
+    }
+
+    fn cancel_recovery(&mut self, reason: RecoveryCancellationReason, clear_desired: bool) {
+        let Some(recovery) = self.recovery.take() else {
+            return;
+        };
+        if clear_desired {
+            self.controller.clear_desired();
+        }
+        self.runtime.on_recovery_cancelled(reason, recovery.attempts, recovery.intent.maximum_attempts);
+    }
+
+    fn recovery_plan(&mut self, capabilities: crate::SourceCapabilities) -> Option<RequestPlan> {
+        let recovery = self.recovery?;
+        if self.runtime.recovery_cancel_requested() {
+            self.cancel_recovery(RecoveryCancellationReason::ApplicationRequested, true);
+            return None;
+        }
+
+        let mode_matches = matches!(
+            (recovery.intent.mode, capabilities.kind()),
+            (PortMode::Spr, crate::CapabilitiesKind::Spr) | (PortMode::Epr, crate::CapabilitiesKind::Epr)
+        );
+        if !mode_matches {
+            self.cancel_recovery(RecoveryCancellationReason::ModeChanged, true);
+            return None;
+        }
+        if recovery.attempts >= recovery.intent.maximum_attempts {
+            self.cancel_recovery(RecoveryCancellationReason::AttemptsExhausted, true);
+            return None;
+        }
+
+        let plan = match self.controller.preview(recovery.intent.request) {
+            Ok(plan) => plan,
+            Err(error) => {
+                self.runtime.on_controller_rejected(error);
+                self.cancel_recovery(RecoveryCancellationReason::TargetUnavailable, true);
+                return None;
+            }
+        };
+        self.controller.retain_desired(recovery.intent.request);
+        let recovery = self.recovery.as_mut().expect("recovery remains armed while planning");
+        recovery.attempts += 1;
+        recovery.request_pending = true;
+        self.runtime.on_recovery_attempt_started(recovery.attempts, recovery.intent.maximum_attempts);
+        Some(plan)
     }
 
     fn begin_request(&mut self, plan: RequestPlan) -> bool {
@@ -429,6 +624,14 @@ impl<R: SinkRuntime> SinkDevice<R> {
 }
 
 impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
+    fn startup(&self) -> SinkStartup {
+        match self.recovery.map(|recovery| recovery.intent.mode) {
+            None => SinkStartup::Fresh,
+            Some(PortMode::Spr) => SinkStartup::SoftReset(SoftResetMode::Spr),
+            Some(PortMode::Epr) => SinkStartup::SoftReset(SoftResetMode::Epr),
+        }
+    }
+
     fn sink_capabilities(&self) -> SinkCapabilities {
         SinkCapabilities::new_vsafe5v_only((self.config.descriptor.maximum_current.get() / 10) as u16)
     }
@@ -472,10 +675,13 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     fn request(&mut self, source_capabilities: &StackSourceCapabilities) -> PowerSource {
         let capabilities =
             self.capabilities_or_report(source_capabilities).expect("policy engine must bound Source PDO count");
-        let plan = self
-            .controller
-            .request_for_capabilities_with_contract(capabilities, self.contract.active_plan())
-            .expect("every accepted source must advertise a valid fixed 5 V PDO");
+        let plan = match self.recovery_plan(capabilities) {
+            Some(plan) => plan,
+            None => self
+                .controller
+                .request_for_capabilities_with_contract(capabilities, self.contract.active_plan())
+                .expect("every accepted source must advertise a valid fixed 5 V PDO"),
+        };
         if let Some(error) = self.controller.take_pending_error() {
             self.runtime.on_controller_rejected(error);
         }
@@ -492,7 +698,27 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.contract.on_accept().expect("PS_RDY must correspond to a pending request");
         self.contract.on_ps_ready().expect("accepted request must become the active contract");
         self.controller.on_ps_ready();
+        let recovery_cancel_requested =
+            self.recovery.is_some_and(|recovery| recovery.request_pending && self.runtime.recovery_cancel_requested());
+        if recovery_cancel_requested {
+            self.runtime.set_user_output_enabled(false);
+        }
         self.runtime.set_pd_load_permitted(true);
+        if self.recovery.is_some_and(|recovery| recovery.request_pending) {
+            if recovery_cancel_requested {
+                self.cancel_recovery(RecoveryCancellationReason::ApplicationRequested, false);
+            } else {
+                let recovery = self.recovery.take().expect("pending recovery must remain armed");
+                if recovery.intent.restore_output {
+                    self.runtime.set_user_output_enabled(true);
+                }
+                self.runtime.on_recovery_succeeded(
+                    recovery.attempts,
+                    self.contract.active_plan().expect("recovery PS_RDY must confirm a contract"),
+                    recovery.intent.restore_output,
+                );
+            }
+        }
         if self.pending_contract_refresh {
             self.pending_contract_refresh = false;
             self.runtime.on_contract_refreshed(
@@ -516,6 +742,27 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                 RequestResult::Deferred
             }
         };
+        if self.recovery.is_some_and(|recovery| recovery.request_pending) {
+            let recovery = self.recovery.as_mut().expect("checked above");
+            recovery.request_pending = false;
+            if self.runtime.recovery_cancel_requested() {
+                self.cancel_recovery(RecoveryCancellationReason::ApplicationRequested, true);
+            } else {
+                match reason {
+                    RequestRejection::Reject => {
+                        self.cancel_recovery(RecoveryCancellationReason::RequestRejected, true);
+                    }
+                    RequestRejection::Wait => {
+                        let recovery = self.recovery.expect("Wait keeps recovery armed");
+                        if recovery.attempts >= recovery.intent.maximum_attempts {
+                            self.cancel_recovery(RecoveryCancellationReason::AttemptsExhausted, true);
+                        } else {
+                            self.runtime.on_recovery_deferred(recovery.attempts, recovery.intent.maximum_attempts);
+                        }
+                    }
+                }
+            }
+        }
         if self.contract.load_may_enable() {
             self.runtime.set_pd_load_permitted(true);
         }
@@ -569,6 +816,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
+        self.cancel_recovery(RecoveryCancellationReason::HardReset, false);
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -585,6 +833,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
+        self.cancel_recovery(RecoveryCancellationReason::HardReset, false);
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -608,6 +857,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.clear_pending_commands();
         self.contract.on_detach();
         self.pending_contract_refresh = false;
+        self.cancel_recovery(RecoveryCancellationReason::Detached, false);
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -621,6 +871,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         self.runtime.clear_pending_commands();
         self.contract.on_protocol_loss();
         self.pending_contract_refresh = false;
+        self.cancel_recovery(RecoveryCancellationReason::ProtocolLost, false);
         self.controller.reset_port();
         self.source_info_requested = false;
         self.source_status_pending = false;
@@ -691,7 +942,10 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
             let command = self.runtime.wait_for_command().await;
             let action = match command {
-                Command::Request(request) => self.controller.submit(request),
+                Command::Request(request) => {
+                    self.cancel_recovery(RecoveryCancellationReason::Superseded, true);
+                    self.controller.submit(request)
+                }
                 Command::Identity => {
                     self.runtime.on_identity_requested();
                     continue;
@@ -739,6 +993,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
                 }
                 Command::OutputOff => {
                     self.runtime.set_user_output_enabled(false);
+                    self.cancel_recovery(RecoveryCancellationReason::ApplicationRequested, true);
                     continue;
                 }
                 Command::EnterEpr => {

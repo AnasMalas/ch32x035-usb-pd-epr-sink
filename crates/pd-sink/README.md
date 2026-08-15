@@ -104,6 +104,15 @@ let mut sink: usbpd::sink::policy_engine::Sink<_, AppTimer, _> =
 sink.run().await
 ```
 
+`SinkDevice::new` always selects a fresh, conservative attachment. A product
+that has trustworthy short-lived evidence of a local MCU reset can instead
+pass an explicit `RecoveryIntent` to `SinkDevice::new_recovering`. That path
+starts with a wire Soft Reset, keeps both software load controls off, bounds
+transient retries, and restores the output latch only after a newly accepted
+contract reaches PS_RDY. It deliberately does not read reset flags or persist
+the target; see the [integration guide](../../docs/integration.md#warm-mcu-reset-recovery)
+for the safety and cancellation requirements.
+
 The [integration guide](../../docs/integration.md) explains each adapter and
 configuration field. The buildable
 [reference `main.rs`](../../examples/ch32x035-usb-pd-sink-firmware/src/main.rs)
@@ -119,6 +128,7 @@ is the canonical end-to-end implementation.
 | Classify a renegotiation | `ContractTransition`, `ContractTransitionKind` |
 | Select EPR entry/exit behavior | `EprEntryPolicy`, `EprEntryFallback`, `EprExitPolicy`, `EprExitFallback` |
 | Run the reusable DPM | `SinkConfig`, `SinkDevice`, `SinkRuntime`, `SinkEvent` |
+| Recover after a proven warm reset | `RecoveryIntent`, `RecoveryCancellationReason`, `SinkDevice::new_recovering` |
 | Connect the CH32 PHY | `Ch32x035UsbPdDriver`, `Ch32x035Port`, `PhyEvent` |
 | Exchange compact host frames | `control` module and `CONTROL_PROTOCOL_VERSION` |
 
