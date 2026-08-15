@@ -99,6 +99,25 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     }
 }
 
+/// Interrupt handler for the USB-PD port-level wake input.
+///
+/// The CH32X0 reference manual documents a wake level selected by
+/// `WAKE_POLAR`; it has no corresponding status flag. The
+/// handler therefore masks the source before waking the waiter. The waiter
+/// samples the comparator level and re-arms it when necessary. Board-level
+/// behavior still requires validation because WCH does not document the
+/// interrupt's timing or filtering.
+pub struct CcWakeInterruptHandler<T: Instance> {
+    _phantom: PhantomData<T>,
+}
+
+impl<T: Instance> interrupt::typelevel::Handler<T::WakeupInterrupt> for CcWakeInterruptHandler<T> {
+    unsafe fn on_interrupt() {
+        T::REGS.config().modify(|w| w.set_ie_pd_io(false));
+        T::state().cc_waker.wake();
+    }
+}
+
 #[repr(align(4))]
 struct UsbPdMsg {
     pub data: [u8; RX_DMA_BYTES],
@@ -130,6 +149,98 @@ pub struct UsbPdPhy<'d, T: Instance, M: Mode> {
     buffer: UsbPdMsg,
 }
 
+/// Read-only active-CC observation paired with a [`UsbPdPhy`].
+///
+/// This handle does not decide whether a level means detach. BMC traffic
+/// intentionally toggles CC, and the comparator threshold is temporarily
+/// changed by [`UsbPdPhy::sink_tx_ok`]. Applications must debounce observations
+/// and retain an independent VBUS-present safety path.
+pub struct UsbPdCcMonitor<'d, T: Instance> {
+    _marker: PhantomData<&'d T>,
+}
+
+impl<T: Instance> UsbPdCcMonitor<'_, T> {
+    /// Return the current output of the comparator on the selected CC pin.
+    ///
+    /// The normal receive threshold is 0.66 V. This method never changes the
+    /// threshold and is safe to call while the PHY is receiving.
+    pub fn active_cc_high(&self) -> bool {
+        let active_cc = T::REGS.config().read().cc_sel();
+        T::port_cc_reg(active_cc).read().pa_cc_ai()
+    }
+
+    /// Wait until the selected CC comparator reads low.
+    ///
+    /// This future is cancellation-safe: dropping it masks `IE_PD_IO`. A low
+    /// level is only an observation, not proof of Type-C detach.
+    pub async fn wait_for_active_cc_low(&mut self) {
+        let mut guard = CcWakeGuard::<T>::new();
+
+        poll_fn(|cx| {
+            T::state().cc_waker.register(cx.waker());
+
+            if !self.active_cc_high() {
+                guard.disarm();
+                return Poll::Ready(());
+            }
+
+            // The ISR masks the level source before waking us. If the pulse
+            // ended before this task ran, arm it again and keep waiting.
+            if guard.armed && !T::REGS.config().read().ie_pd_io() {
+                guard.armed = false;
+            }
+
+            if !guard.armed {
+                use crate::interrupt::typelevel::Interrupt;
+
+                critical_section::with(|_| {
+                    T::WakeupInterrupt::unpend();
+                    T::REGS.config().modify(|w| {
+                        w.set_wake_polar(false);
+                        w.set_ie_pd_io(true);
+                    });
+                });
+                guard.armed = true;
+
+                // Close the race between the first sample and arming the wake
+                // source even if a future silicon revision treats it as an edge.
+                if !self.active_cc_high() {
+                    guard.disarm();
+                    return Poll::Ready(());
+                }
+            }
+
+            Poll::Pending
+        })
+        .await
+    }
+}
+
+struct CcWakeGuard<T: Instance> {
+    armed: bool,
+    _marker: PhantomData<T>,
+}
+
+impl<T: Instance> CcWakeGuard<T> {
+    fn new() -> Self {
+        Self {
+            armed: false,
+            _marker: PhantomData,
+        }
+    }
+
+    fn disarm(&mut self) {
+        T::REGS.config().modify(|w| w.set_ie_pd_io(false));
+        self.armed = false;
+    }
+}
+
+impl<T: Instance> Drop for CcWakeGuard<T> {
+    fn drop(&mut self) {
+        self.disarm();
+    }
+}
+
 impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     pub fn new_async(
         peri: Peri<'d, T>,
@@ -143,6 +254,32 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         };
 
         Self::new_inner(peri, cc1, cc2)
+    }
+
+    /// Create an asynchronous PHY and an interrupt-assisted active-CC monitor.
+    ///
+    /// The ordinary [`Self::new_async`] constructor remains appropriate when
+    /// the application only uses VBUS-based detach detection.
+    pub fn new_async_with_cc_monitor(
+        peri: Peri<'d, T>,
+        cc1: Peri<'d, impl CcPin<T>>,
+        cc2: Peri<'d, impl CcPin<T>>,
+        _irqs: impl interrupt::typelevel::Binding<T::Interrupt, InterruptHandler<T>>
+            + interrupt::typelevel::Binding<T::WakeupInterrupt, CcWakeInterruptHandler<T>>
+            + 'd,
+    ) -> (UsbPdPhy<'d, T, Async>, UsbPdCcMonitor<'d, T>) {
+        use crate::interrupt::typelevel::Interrupt;
+
+        let phy = Self::new_inner(peri, cc1, cc2);
+
+        T::Interrupt::unpend();
+        T::WakeupInterrupt::unpend();
+        unsafe {
+            T::Interrupt::enable();
+            T::WakeupInterrupt::enable();
+        }
+
+        (phy, UsbPdCcMonitor { _marker: PhantomData })
     }
 
     fn enable_rx_interrupt(&mut self) {
@@ -514,6 +651,7 @@ fn validate_message_length(length: usize) -> Result<(), Error> {
 
 struct State {
     waker: AtomicWaker,
+    cc_waker: AtomicWaker,
     // Set by the ISR on BUF_ERR; cleared at the start of each transfer.
     buf_err: AtomicBool,
 }
@@ -522,6 +660,7 @@ impl State {
     pub const fn new() -> Self {
         Self {
             waker: AtomicWaker::new(),
+            cc_waker: AtomicWaker::new(),
             buf_err: AtomicBool::new(false),
         }
     }
@@ -536,6 +675,7 @@ trait SealedInstance {
 #[allow(private_bounds)]
 pub trait Instance: SealedInstance + RccPeripheral {
     type Interrupt: crate::interrupt::typelevel::Interrupt;
+    type WakeupInterrupt: crate::interrupt::typelevel::Interrupt;
 
     #[allow(dead_code)]
     fn port_cc_reg(cc: vals::CcSel) -> pac::common::Reg<pac::usbpd::regs::PortCc, pac::common::RW> {
@@ -564,6 +704,7 @@ foreach_interrupt!(
 
         impl Instance for crate::peripherals::$inst {
             type Interrupt = crate::interrupt::typelevel::$irq;
+            type WakeupInterrupt = crate::_generated::peripheral_interrupts::$inst::WKUP;
         }
     };
 );
