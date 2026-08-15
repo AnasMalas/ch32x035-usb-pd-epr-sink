@@ -17,7 +17,7 @@ use usbpd::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
 use usbpd::protocol_layer::message::{Message, Payload};
-use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event};
+use usbpd::sink::device_policy_manager::{DevicePolicyManager, Event, SinkStartup, SoftResetMode};
 use usbpd::sink::policy_engine::{Error as SinkError, Sink};
 use usbpd::timers::Timer;
 use usbpd::{DataRole, PowerRole};
@@ -211,6 +211,102 @@ fn epr_avs_request(position: u8, voltage_mv: u32, current_ma: u32, pdo: u32) -> 
     assert_eq!(raw_voltage_25mv & 0x3, 0, "AVS voltage must land on a 100 mV boundary");
     let rdo = (u32::from(position) << 28) | (1 << 24) | (1 << 22) | (raw_voltage_25mv << 9) | (current_ma / 50);
     PowerSource::EprRequest(EprRequestDataObject { rdo, pdo })
+}
+
+struct WarmEprDpm {
+    fixed_48v_pdo: u32,
+    capabilities_seen: Arc<AtomicBool>,
+    transitions: Arc<AtomicUsize>,
+    detached: Arc<AtomicBool>,
+}
+
+impl DevicePolicyManager for WarmEprDpm {
+    fn startup(&self) -> SinkStartup {
+        SinkStartup::SoftReset(SoftResetMode::Epr)
+    }
+
+    fn inform(
+        &mut self,
+        source_capabilities: &usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities,
+    ) {
+        self.capabilities_seen.store(source_capabilities.is_epr_capabilities(), Ordering::SeqCst);
+    }
+
+    fn request(
+        &mut self,
+        _source_capabilities: &usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities,
+    ) -> PowerSource {
+        epr_fixed_request(8, self.fixed_48v_pdo)
+    }
+
+    fn transition_power(&mut self, _accepted: &PowerSource) {
+        self.transitions.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn detached(&mut self) {
+        self.detached.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn warm_epr_startup_soft_resets_without_reentering_epr_or_requesting_5v() {
+    let fixed_5v = fixed_pdo(5_000, 3_000, true);
+    let fixed_20v = fixed_pdo(20_000, 5_000, false);
+    let fixed_48v = fixed_pdo(48_000, 5_000, false);
+    let epr_pdos = [fixed_5v, fixed_20v, 0, 0, 0, 0, 0, fixed_48v];
+    let epr_payload: Vec<u8> = epr_pdos.iter().flat_map(|pdo| pdo.to_le_bytes()).collect();
+    let scripted_receive = VecDeque::from([
+        (1, source_control(0, ControlMessageType::Accept)),
+        (1, source_epr_capabilities_chunk(1, epr_payload.len() as u16, 0, &epr_payload[..26])),
+        (2, source_epr_capabilities_chunk(2, epr_payload.len() as u16, 1, &epr_payload[26..])),
+        (3, source_control(3, ControlMessageType::Accept)),
+        (3, source_control(4, ControlMessageType::PsRdy)),
+    ]);
+
+    let transmitted = Arc::new(Mutex::new(Vec::new()));
+    let capabilities_seen = Arc::new(AtomicBool::new(false));
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let detached = Arc::new(AtomicBool::new(false));
+    let driver = ScriptedDriver {
+        receive: scripted_receive,
+        transmitted: Arc::clone(&transmitted),
+        sink_tx_ok: Arc::new(AtomicBool::new(true)),
+        sink_tx_checks: Arc::new(AtomicUsize::new(0)),
+        epr_sink_cap_requested: Arc::new(AtomicBool::new(false)),
+        sink_cap_ext_requested: Arc::new(AtomicBool::new(false)),
+    };
+    let dpm = WarmEprDpm {
+        fixed_48v_pdo: fixed_48v,
+        capabilities_seen: Arc::clone(&capabilities_seen),
+        transitions: Arc::clone(&transitions),
+        detached: Arc::clone(&detached),
+    };
+    let mut sink: Sink<_, EprTransitionTimer, _> = Sink::new(driver, dpm);
+
+    assert!(matches!(block_on(sink.run()), Err(SinkError::Detached)));
+    assert!(detached.load(Ordering::SeqCst));
+    assert!(capabilities_seen.load(Ordering::SeqCst));
+    assert_eq!(transitions.load(Ordering::SeqCst), 1);
+
+    let transmitted = transmitted.lock().unwrap();
+    let message_types: Vec<MessageType> =
+        transmitted.iter().map(|message| Header::from_bytes(&message[..2]).unwrap().message_type()).collect();
+    assert_eq!(
+        message_types,
+        [
+            MessageType::Control(ControlMessageType::SoftReset),
+            MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
+            MessageType::Data(DataMessageType::EprRequest),
+        ]
+    );
+    let epr_request = Message::from_bytes(&transmitted[2]).unwrap();
+    let Some(Payload::Data(usbpd::protocol_layer::message::data::Data::Request(PowerSource::EprRequest(request)))) =
+        epr_request.payload
+    else {
+        panic!("warm recovery must send EPR_Request");
+    };
+    assert_eq!(request.object_position(), 8);
+    assert_eq!(request.pdo, fixed_48v);
 }
 
 impl DevicePolicyManager for EprDpm {

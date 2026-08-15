@@ -1,6 +1,6 @@
 use std::collections::VecDeque;
 use std::future::{Future, pending};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll, Waker};
 
@@ -8,7 +8,7 @@ use usbpd::protocol_layer::message::Message;
 use usbpd::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, Header, MessageType, SpecificationRevision,
 };
-use usbpd::sink::device_policy_manager::DevicePolicyManager;
+use usbpd::sink::device_policy_manager::{DevicePolicyManager, SinkStartup, SoftResetMode};
 use usbpd::sink::policy_engine::{Error as SinkError, Sink};
 use usbpd::timers::Timer;
 use usbpd::{DataRole, PowerRole};
@@ -105,6 +105,90 @@ impl DevicePolicyManager for SoftResetDpm {
     fn detached(&mut self) {
         self.detached.store(true, Ordering::SeqCst);
     }
+}
+
+struct WarmStartupDriver {
+    receive: VecDeque<(usize, Vec<u8>)>,
+    transmitted: Arc<Mutex<Vec<Vec<u8>>>>,
+}
+
+impl Driver for WarmStartupDriver {
+    const HAS_AUTO_GOOD_CRC: bool = true;
+    const HAS_AUTO_RETRY: bool = true;
+
+    async fn wait_for_vbus(&mut self) {}
+
+    async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, DriverRxError> {
+        let Some((required_transmits, _)) = self.receive.front() else {
+            return Err(DriverRxError::Detached);
+        };
+        if self.transmitted.lock().unwrap().len() < *required_transmits {
+            pending().await
+        }
+
+        let (_, message) = self.receive.pop_front().unwrap();
+        buffer[..message.len()].copy_from_slice(&message);
+        Ok(message.len())
+    }
+
+    async fn transmit(&mut self, data: &[u8]) -> Result<(), DriverTxError> {
+        self.transmitted.lock().unwrap().push(data.to_vec());
+        Ok(())
+    }
+
+    async fn transmit_hard_reset(&mut self) -> Result<(), DriverTxError> {
+        panic!("successful warm SPR recovery must not escalate to Hard Reset")
+    }
+}
+
+struct WarmSprDpm {
+    transitions: Arc<AtomicUsize>,
+    detached: Arc<AtomicBool>,
+}
+
+impl DevicePolicyManager for WarmSprDpm {
+    fn startup(&self) -> SinkStartup {
+        SinkStartup::SoftReset(SoftResetMode::Spr)
+    }
+
+    fn transition_power(&mut self, _accepted: &usbpd::protocol_layer::message::data::request::PowerSource) {
+        self.transitions.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn detached(&mut self) {
+        self.detached.store(true, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn warm_spr_startup_soft_resets_before_requesting_a_fresh_contract() {
+    let fixed_5v = fixed_pdo(5_000, 3_000);
+    let receive = VecDeque::from([
+        (1, source_control(0, ControlMessageType::Accept)),
+        (1, source_capabilities(1, &[fixed_5v])),
+        (2, source_control(2, ControlMessageType::Accept)),
+        (2, source_control(3, ControlMessageType::PsRdy)),
+    ]);
+
+    let transmitted = Arc::new(Mutex::new(Vec::new()));
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let detached = Arc::new(AtomicBool::new(false));
+    let driver = WarmStartupDriver { receive, transmitted: Arc::clone(&transmitted) };
+    let dpm = WarmSprDpm { transitions: Arc::clone(&transitions), detached: Arc::clone(&detached) };
+    let mut sink: Sink<_, NeverTimer, _> = Sink::new(driver, dpm);
+
+    assert!(matches!(block_on(sink.run()), Err(SinkError::Detached)));
+    assert!(detached.load(Ordering::SeqCst));
+    assert_eq!(transitions.load(Ordering::SeqCst), 1);
+
+    let transmitted = transmitted.lock().unwrap();
+    assert_eq!(transmitted.len(), 2);
+    let soft_reset = Message::from_bytes(&transmitted[0]).unwrap();
+    assert_eq!(soft_reset.header.message_type(), MessageType::Control(ControlMessageType::SoftReset));
+    assert_eq!(soft_reset.header.message_id(), 0);
+    let request = Message::from_bytes(&transmitted[1]).unwrap();
+    assert_eq!(request.header.message_type(), MessageType::Data(DataMessageType::Request));
+    assert_eq!(request.header.message_id(), 1);
 }
 
 #[test]

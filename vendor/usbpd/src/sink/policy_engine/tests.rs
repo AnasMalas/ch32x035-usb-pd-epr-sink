@@ -15,6 +15,7 @@ use crate::protocol_layer::message::header::{
 use crate::protocol_layer::message::{Message, Payload};
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin, HardResetReason};
+use crate::sink::device_policy_manager::{SinkStartup, SoftResetMode};
 use crate::sink::policy_engine::State;
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
@@ -22,6 +23,28 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 
 fn get_policy_engine() -> Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DummySinkDevice> {
     Sink::new(DummyDriver::new(), DummySinkDevice {})
+}
+
+struct WarmEprStartupDpm;
+
+impl crate::sink::device_policy_manager::DevicePolicyManager for WarmEprStartupDpm {
+    fn startup(&self) -> SinkStartup {
+        SinkStartup::SoftReset(SoftResetMode::Epr)
+    }
+}
+
+#[test]
+fn warm_startup_is_one_shot_and_a_port_restart_is_fresh_spr() {
+    let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, WarmEprStartupDpm> =
+        Sink::new(DummyDriver::new(), WarmEprStartupDpm);
+
+    assert!(matches!(policy_engine.state, State::SendSoftReset));
+    assert_eq!(policy_engine.mode, super::Mode::Epr);
+
+    policy_engine.restart();
+
+    assert!(matches!(policy_engine.state, State::Discovery));
+    assert_eq!(policy_engine.mode, super::Mode::Spr);
 }
 
 fn simulate_source_control_message<TIMER: Timer, DPM: crate::sink::device_policy_manager::DevicePolicyManager>(

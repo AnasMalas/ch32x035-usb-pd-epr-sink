@@ -12,6 +12,36 @@ use crate::protocol_layer::message::extended::{
 };
 use crate::units::Power;
 
+/// USB PD mode retained by a Port Partner across a warm sink restart.
+///
+/// A Soft Reset resets protocol state but does not enter or leave EPR mode.
+/// The caller must therefore identify the mode that was active before the
+/// local restart.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SoftResetMode {
+    /// Standard Power Range mode.
+    Spr,
+    /// Extended Power Range mode.
+    Epr,
+}
+
+/// Initial policy-engine action selected by the product DPM.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum SinkStartup {
+    /// Treat the port as a new attachment and wait for Source Capabilities.
+    #[default]
+    Fresh,
+    /// Re-establish protocol synchronization with a still-powered partner.
+    ///
+    /// This is intended for a short local MCU restart while the physical
+    /// attachment and Source contract may have survived. It does not prove or
+    /// restore an explicit contract by itself: the DPM must keep the product
+    /// load inhibited until a new Request reaches Accept and PS_RDY.
+    SoftReset(SoftResetMode),
+}
+
 /// Events that the device policy manager can send to the policy engine.
 #[derive(Debug)]
 pub enum Event {
@@ -137,6 +167,15 @@ pub enum HardResetReason {
 /// Notification and policy callbacks are synchronous and must return promptly.
 /// [`DevicePolicyManager::get_event`] is the sole asynchronous, cancellation-safe hook.
 pub trait DevicePolicyManager {
+    /// Select the first policy-engine action for this DPM instance.
+    ///
+    /// The default is a conservative fresh attachment. Returning
+    /// [`SinkStartup::SoftReset`] requires caller-owned evidence that this is a
+    /// warm restart of the current physical port session.
+    fn startup(&self) -> SinkStartup {
+        SinkStartup::Fresh
+    }
+
     /// Inform the device about source capabilities, e.g. after a request.
     fn inform(&mut self, _source_capabilities: &source_capabilities::SourceCapabilities) {}
 

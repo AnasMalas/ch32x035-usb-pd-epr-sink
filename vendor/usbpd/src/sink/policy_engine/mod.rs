@@ -7,7 +7,8 @@ use usbpd_traits::Driver;
 #[cfg(feature = "hard-reset-reasons")]
 use super::device_policy_manager::HardResetReason;
 use super::device_policy_manager::{
-    DevicePolicyManager, HardResetOrigin, RequestRejection, StatusQueryFailure, StatusQueryKind,
+    DevicePolicyManager, HardResetOrigin, RequestRejection, SinkStartup, SoftResetMode, StatusQueryFailure,
+    StatusQueryKind,
 };
 use crate::counters::Counter;
 use crate::protocol_layer::message::data::epr_mode::{self, Action};
@@ -210,15 +211,20 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
     /// Create a new sink policy engine with a given `driver`.
     pub fn new(driver: DRIVER, device_policy_manager: DPM) -> Self {
+        let (state, mode) = match device_policy_manager.startup() {
+            SinkStartup::Fresh => (State::Discovery, Mode::Spr),
+            SinkStartup::SoftReset(SoftResetMode::Spr) => (State::SendSoftReset, Mode::Spr),
+            SinkStartup::SoftReset(SoftResetMode::Epr) => (State::SendSoftReset, Mode::Epr),
+        };
         Self {
             device_policy_manager,
             protocol_layer: Self::new_protocol_layer(driver),
-            state: State::Discovery,
+            state,
             contract: Default::default(),
             hard_reset_counter: Counter::new(crate::counters::CounterType::HardReset),
             source_capabilities: None,
             active_power_source: None,
-            mode: Mode::Spr,
+            mode,
             get_source_cap_pending: false,
             pending_sink_ams: None,
             wait_retry_pending: false,
