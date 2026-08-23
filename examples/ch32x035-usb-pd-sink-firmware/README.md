@@ -85,7 +85,7 @@ Supported values are `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`,
 because it has USB but not the integrated USB-PD peripheral.
 
 The CH32X035F7P6 has only a 48 KiB application region. At this revision the
-compact USB/GUI EPR image links at 47,608 bytes, leaving just 1,544 bytes; the
+compact USB/GUI EPR image links at 48,624 bytes, leaving just 528 bytes; the
 larger development text-console EPR profile does not fit. Treat F7P6 as a
 size-constrained library target, not as a promise that every reference profile
 or application extension is usable. The build uses the package's real linker
