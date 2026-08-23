@@ -16,7 +16,7 @@ use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
 use crate::protocol_layer::message::{Message, Payload};
-use crate::protocol_layer::{ProtocolError, RxError, SourceProtocolLayer, TxError};
+use crate::protocol_layer::{ProtocolError, RxError, SourceProtocolLayer, TxError, TxValidationError};
 use crate::timers::{Timer, TimerType};
 use crate::{DataRole, PowerRole};
 
@@ -194,13 +194,19 @@ pub enum Error {
     ReconnectionRequired,
     /// Easiest way to signal to device to swap to sink
     SwapToSink,
+    /// The locally constructed outgoing message failed validation. Retrying
+    /// the unchanged policy state cannot make this error succeed.
+    InvalidTransmitMessage(TxValidationError),
     /// A protocol error has occured.
     Protocol(ProtocolError),
 }
 
 impl From<ProtocolError> for Error {
     fn from(protocol_error: ProtocolError) -> Self {
-        Error::Protocol(protocol_error)
+        match protocol_error {
+            ProtocolError::TxValidation(error) => Error::InvalidTransmitMessage(error),
+            other => Error::Protocol(other),
+        }
     }
 }
 

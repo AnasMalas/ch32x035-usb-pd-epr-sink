@@ -63,11 +63,17 @@ pub struct SinkConfig {
 /// Invalid or internally inconsistent [`SinkConfig`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum SinkConfigError {
+    /// The maintained protocol stack always transmits extended messages in
+    /// chunked mode and must not advertise unchunked support in an RDO.
+    UnchunkedExtendedMessagesUnsupported,
     SinkCurrentOutOfRange(Milliamps),
     SinkCurrentResolution(Milliamps),
     EprOperationalPdpMissing,
     EprOperationalPdpInvalid(Milliwatts),
-    EprOperationalPdpMismatch { controller: Milliwatts, descriptor_watts: u8 },
+    EprOperationalPdpMismatch {
+        controller: Milliwatts,
+        descriptor_watts: u8,
+    },
     EprFieldsWithoutEprSupport,
     AutomaticEprWithoutEprSupport,
 }
@@ -76,6 +82,10 @@ impl SinkConfig {
     /// Validate values that would otherwise be truncated or advertised
     /// inconsistently on the wire.
     pub fn validate(self) -> Result<Self, SinkConfigError> {
+        if self.controller.request_context.flags.unchunked_extended_messages_supported {
+            return Err(SinkConfigError::UnchunkedExtendedMessagesUnsupported);
+        }
+
         let current = self.descriptor.maximum_current;
         if !(10..=5_000).contains(&current.get()) {
             return Err(SinkConfigError::SinkCurrentOutOfRange(current));

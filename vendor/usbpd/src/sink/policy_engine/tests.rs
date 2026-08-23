@@ -7,12 +7,13 @@ use crate::counters::{Counter, CounterType};
 use crate::dummy::{DUMMY_CAPABILITIES, DummyDriver, DummySinkDevice, DummyTimer, MAX_DATA_MESSAGE_SIZE};
 use crate::protocol_layer::message::data::Data;
 use crate::protocol_layer::message::data::epr_mode::Action;
-use crate::protocol_layer::message::data::request::PowerSource;
+use crate::protocol_layer::message::data::request::{FixedVariableSupply, PowerSource};
 use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
 use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType,
 };
 use crate::protocol_layer::message::{Message, Payload};
+use crate::protocol_layer::{ProtocolError, TxError, TxValidationError};
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin, HardResetReason};
 use crate::sink::device_policy_manager::{SinkStartup, SoftResetMode};
@@ -45,6 +46,59 @@ fn warm_startup_is_one_shot_and_a_port_restart_is_fresh_spr() {
 
     assert!(matches!(policy_engine.state, State::Discovery));
     assert_eq!(policy_engine.mode, super::Mode::Spr);
+}
+
+#[test]
+fn every_local_tx_validation_error_is_a_terminal_sink_error() {
+    for expected in [
+        TxValidationError::UnchunkedExtendedMessagesNotSupported,
+        TxValidationError::AvsVoltageAlignmentInvalid,
+        TxValidationError::ExtendedMessageChunkingRequired,
+    ] {
+        let error = super::Error::from(ProtocolError::from(expected));
+        let super::Error::InvalidTransmitMessage(actual) = error else {
+            panic!("local TX validation was classified as recoverable protocol traffic")
+        };
+        assert_eq!(actual, expected);
+    }
+}
+
+#[test]
+fn wire_tx_errors_keep_their_existing_recovery_classification() {
+    assert!(matches!(super::Error::from(ProtocolError::TxError(TxError::Detached)), super::Error::Detached));
+    assert!(matches!(super::Error::from(ProtocolError::TxError(TxError::Discarded)), super::Error::PhyUnstable));
+    assert!(matches!(
+        super::Error::from(ProtocolError::TxError(TxError::HardReset)),
+        super::Error::Protocol(ProtocolError::TxError(TxError::HardReset))
+    ));
+}
+
+struct InvalidTransmitDpm {
+    protocol_lost_count: std::sync::Arc<AtomicU32>,
+}
+
+impl crate::sink::device_policy_manager::DevicePolicyManager for InvalidTransmitDpm {
+    fn protocol_lost(&mut self) {
+        self.protocol_lost_count.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[tokio::test]
+async fn run_returns_local_tx_validation_once_without_state_reentry() {
+    let protocol_lost_count = std::sync::Arc::new(AtomicU32::new(0));
+    let dpm = InvalidTransmitDpm { protocol_lost_count: std::sync::Arc::clone(&protocol_lost_count) };
+    let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, InvalidTransmitDpm> =
+        Sink::new(DummyDriver::new(), dpm);
+    policy_engine.state =
+        State::SelectCapability(PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23))));
+
+    assert!(matches!(
+        policy_engine.run().await,
+        Err(super::Error::InvalidTransmitMessage(TxValidationError::UnchunkedExtendedMessagesNotSupported))
+    ));
+    assert_eq!(protocol_lost_count.load(Ordering::SeqCst), 1);
+    assert!(matches!(policy_engine.state, State::SelectCapability(_)));
+    assert!(!policy_engine.protocol_layer.driver().has_transmitted_data());
 }
 
 fn simulate_source_control_message<TIMER: Timer, DPM: crate::sink::device_policy_manager::DevicePolicyManager>(

@@ -62,6 +62,9 @@ pub enum ProtocolError {
     /// An error occured during data transmission.
     #[error("TX error")]
     TxError(#[from] TxError),
+    /// The locally constructed message cannot be transmitted correctly.
+    #[error("locally invalid TX message: {0}")]
+    TxValidation(#[from] TxValidationError),
     /// Transmission failed after the maximum number of allowed retries.
     #[error("transmit retries (`{0}`) exceeded")]
     TransmitRetriesExceeded(u8),
@@ -113,6 +116,15 @@ pub enum TxError {
     /// Driver reported a hard reset.
     #[error("hard reset")]
     HardReset,
+}
+
+/// Errors found while validating a locally constructed outgoing message.
+///
+/// These are deterministic caller/stack errors. Retrying them on the wire
+/// cannot succeed, and the driver is never invoked for them.
+#[derive(thiserror::Error, Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum TxValidationError {
     /// unchunked_extended_messages_supported must be false (library uses chunked mode).
     #[error("unchunked extended messages not supported")]
     UnchunkedExtendedMessagesNotSupported,
@@ -282,11 +294,11 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     ///
     /// Only validates outgoing messages - never called when parsing received data.
     /// Returns an error if validation fails, allowing the caller to handle it appropriately.
-    fn validate_outgoing_message(message: &Message) -> Result<(), TxError> {
+    fn validate_outgoing_message(message: &Message) -> Result<(), TxValidationError> {
         if let Some(Payload::Extended(extended)) = &message.payload
             && extended.data_size() > 26
         {
-            return Err(TxError::ExtendedMessageChunkingRequired);
+            return Err(TxValidationError::ExtendedMessageChunkingRequired);
         }
 
         if let Some(Payload::Data(message::data::Data::Request(power_source))) = &message.payload {
@@ -294,20 +306,20 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             match power_source {
                 PowerSource::FixedVariableSupply(rdo) => {
                     if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxError::UnchunkedExtendedMessagesNotSupported);
+                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
                     }
                 }
                 PowerSource::Pps(rdo) => {
                     if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxError::UnchunkedExtendedMessagesNotSupported);
+                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
                     }
                 }
                 PowerSource::Avs(rdo) => {
                     if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxError::UnchunkedExtendedMessagesNotSupported);
+                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
                     }
                     if rdo.raw_output_voltage() & 0x3 != 0 {
-                        return Err(TxError::AvsVoltageAlignmentInvalid);
+                        return Err(TxValidationError::AvsVoltageAlignmentInvalid);
                     }
                 }
                 PowerSource::EprRequest(epr) => {
@@ -315,7 +327,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     let rdo_bits = epr.rdo;
                     let unchunked = (rdo_bits >> 23) & 1 == 1;
                     if unchunked {
-                        return Err(TxError::UnchunkedExtendedMessagesNotSupported);
+                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
                     }
 
                     // The selected PDO, not the RDO's object-position bits,
@@ -327,7 +339,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     if is_avs {
                         let voltage = (rdo_bits >> 9) & 0xFFF;
                         if (voltage as u16) & 0x3 != 0 {
-                            return Err(TxError::AvsVoltageAlignmentInvalid);
+                            return Err(TxValidationError::AvsVoltageAlignmentInvalid);
                         }
                     }
                 }
@@ -849,13 +861,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                 Err(TxError::HardReset) => Err(RxError::HardReset),
                 Err(TxError::Detached) => Err(RxError::Detached),
                 Err(TxError::Discarded) => Err(RxError::ReceiveTimeout),
-                Err(
-                    TxError::UnchunkedExtendedMessagesNotSupported
-                    | TxError::AvsVoltageAlignmentInvalid
-                    | TxError::ExtendedMessageChunkingRequired,
-                ) => {
-                    unreachable!("validation should happen before transmit_inner")
-                }
             }
         }
     }
@@ -1080,24 +1085,25 @@ mod tests {
 
     use core::iter::zip;
 
-    use super::ProtocolLayer;
     use super::message::data::Data;
+    use super::message::data::request::{FixedVariableSupply, PowerSource};
     use super::message::data::source_capabilities::SourceCapabilities;
     use super::message::header::Header;
+    use super::{ProtocolError, ProtocolLayer, SinkProtocolLayer, TxValidationError};
     use crate::dummy::{
         DUMMY_CAPABILITIES, DummyDriver, DummyTimer, MAX_DATA_MESSAGE_SIZE, get_dummy_source_capabilities,
     };
     use crate::protocol_layer::message::Payload;
 
-    fn get_protocol_layer() -> ProtocolLayer<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer> {
-        ProtocolLayer::new(
+    fn get_protocol_layer() -> SinkProtocolLayer<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer> {
+        SinkProtocolLayer(ProtocolLayer::new(
             DummyDriver::new(),
             Header::new_template(
                 crate::DataRole::Ufp,
                 crate::PowerRole::Sink,
                 super::message::header::SpecificationRevision::R3_X,
             ),
-        )
+        ))
     }
 
     #[tokio::test]
@@ -1114,5 +1120,31 @@ mod tests {
         } else {
             panic!()
         }
+    }
+
+    #[test]
+    fn every_local_tx_validation_error_has_a_distinct_protocol_class() {
+        for expected in [
+            TxValidationError::UnchunkedExtendedMessagesNotSupported,
+            TxValidationError::AvsVoltageAlignmentInvalid,
+            TxValidationError::ExtendedMessageChunkingRequired,
+        ] {
+            let ProtocolError::TxValidation(actual) = ProtocolError::from(expected) else {
+                panic!("local TX validation was classified as a wire error")
+            };
+            assert_eq!(actual, expected);
+        }
+    }
+
+    #[tokio::test]
+    async fn invalid_local_request_never_reaches_the_driver() {
+        let mut protocol_layer = get_protocol_layer();
+        let invalid_request = PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23)));
+
+        assert!(matches!(
+            protocol_layer.request_power(invalid_request).await,
+            Err(ProtocolError::TxValidation(TxValidationError::UnchunkedExtendedMessagesNotSupported))
+        ));
+        assert!(!protocol_layer.driver().has_transmitted_data());
     }
 }

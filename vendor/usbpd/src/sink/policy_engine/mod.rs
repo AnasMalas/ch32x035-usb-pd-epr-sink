@@ -20,7 +20,7 @@ use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
 use crate::protocol_layer::message::{Payload, extended};
-use crate::protocol_layer::{ProtocolError, RxError, SinkProtocolLayer, TxError};
+use crate::protocol_layer::{ProtocolError, RxError, SinkProtocolLayer, TxError, TxValidationError};
 use crate::sink::device_policy_manager::Event;
 use crate::timers::{Timer, TimerType};
 use crate::{DataRole, PowerRole, units};
@@ -186,6 +186,9 @@ pub enum Error {
     /// The DPM returned a Request message that is incompatible with the
     /// policy engine's current SPR/EPR mode.
     InvalidRequestForMode,
+    /// The locally constructed outgoing message failed validation. Retrying
+    /// the unchanged policy state cannot make this error succeed.
+    InvalidTransmitMessage(TxValidationError),
     /// A protocol error has occured.
     Protocol(ProtocolError),
 }
@@ -197,6 +200,7 @@ impl From<ProtocolError> for Error {
             ProtocolError::RxError(RxError::Discarded) | ProtocolError::TxError(TxError::Discarded) => {
                 Error::PhyUnstable
             }
+            ProtocolError::TxValidation(error) => Error::InvalidTransmitMessage(error),
             other => Error::Protocol(other),
         }
     }

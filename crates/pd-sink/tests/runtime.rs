@@ -435,6 +435,10 @@ fn output_off_changes_only_the_application_latch() {
 #[test]
 fn configuration_rejects_wire_truncation_and_epr_mismatch() {
     let mut config = safe_5v_config();
+    config.controller.request_context.flags.unchunked_extended_messages_supported = true;
+    assert_eq!(config.validate(), Err(SinkConfigError::UnchunkedExtendedMessagesUnsupported));
+
+    let mut config = safe_5v_config();
     config.descriptor.maximum_current = Milliamps(3_005);
     assert_eq!(config.validate(), Err(SinkConfigError::SinkCurrentResolution(Milliamps(3_005))));
 

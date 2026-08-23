@@ -1049,7 +1049,8 @@ async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) ->
                 (PROTOCOL_RESTART_COOLDOWN_MS, false)
             }
             Err(usbpd::sink::policy_engine::Error::InvalidEprOperationalPdp)
-            | Err(usbpd::sink::policy_engine::Error::InvalidRequestForMode) => {
+            | Err(usbpd::sink::policy_engine::Error::InvalidRequestForMode)
+            | Err(usbpd::sink::policy_engine::Error::InvalidTransmitMessage(_)) => {
                 control_event!(ControlEvent::Lifecycle {
                     event: ControlLifecycleEvent::PdStoppedPolicy,
                     detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
