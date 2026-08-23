@@ -111,6 +111,7 @@ const ATTACH_DEBOUNCE_MS: u64 = 100;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
 const EPR_OPERATIONAL_PDP_WATTS: u8 = 240;
+const USER_OUTPUT_DEFAULT_ENABLED: bool = !cfg!(feature = "output-default-off");
 
 static VBUS_PRESENT: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::new(Cell::new(false));
 static VBUS_ATTACHED: Signal<CriticalSectionRawMutex, ()> = Signal::new();
@@ -271,9 +272,10 @@ async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_ena
     load_enable.set_low();
     let mut needs_attach_debounce = true;
     let mut pd_load_permitted = false;
-    // Preserve the reference firmware's historical behavior: a confirmed
-    // contract enables the output unless the user explicitly latches it off.
-    let mut user_output_enabled = true;
+    // Normal profiles preserve the historical automatic-on behavior. The
+    // diagnostic profile requires an explicit Output On command so a test
+    // image cannot energize a product load merely by completing negotiation.
+    let mut user_output_enabled = USER_OUTPUT_DEFAULT_ENABLED;
 
     loop {
         if vbus_present.is_low() {

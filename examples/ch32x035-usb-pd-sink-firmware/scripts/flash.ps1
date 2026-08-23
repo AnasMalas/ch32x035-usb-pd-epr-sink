@@ -6,6 +6,7 @@ param(
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
+        'usb-epr-diagnostic',
         'usb-epr-50v',
         'usb-epr-text'
     )]

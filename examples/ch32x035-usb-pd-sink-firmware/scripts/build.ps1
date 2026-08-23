@@ -5,6 +5,7 @@ param(
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
+        'usb-epr-diagnostic',
         'usb-epr-50v',
         'usb-epr-text'
     )]
@@ -43,6 +44,7 @@ try {
         'usb-safe-5v' { 'usb-control' }
         'usb-pps' { 'usb-control,pps-capable-hardware' }
         'usb-epr' { 'usb-control,epr-capable-hardware' }
+        'usb-epr-diagnostic' { 'usb-control,epr-capable-hardware,output-default-off' }
         'usb-epr-50v' { 'usb-control,epr-50v-compatible-hardware' }
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware' }
     }

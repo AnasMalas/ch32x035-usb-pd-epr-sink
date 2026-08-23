@@ -56,6 +56,7 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 | `usb-safe-5v` | compact USB control | fixed 5 V |
 | `usb-pps` | compact USB control | PPS through 21 V |
 | `usb-epr` | compact USB control | standard EPR through 48 V |
+| `usb-epr-diagnostic` | compact USB control, typed Hard Reset causes, output default off | standard EPR through 48 V |
 | `usb-epr-50v` | compact USB control | explicit non-standard 50 V compatibility |
 | `usb-epr-text` | ASCII USB console | standard EPR through 48 V |
 
@@ -110,11 +111,15 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic -Chip ch32x035g8u6
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
 `usb-epr` is the normal compact binary control image. The opt-in
+`usb-epr-diagnostic` profile keeps the application-owned output latch off
+until the compact `output-on` command arrives and includes typed Hard Reset
+causes; it is intended for library and first-board diagnosis. The opt-in
 `usb-epr-50v` image raises only the configured sink ceiling; normal AVS
 selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
 console for bring-up. Build output reports the current flash and static-RAM

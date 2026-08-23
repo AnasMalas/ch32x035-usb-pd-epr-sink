@@ -65,11 +65,13 @@ $supportedChips = @(
     'ch32x035r8t6'
 )
 $usbControlEprFeatures = "$referenceChip,usb-control,epr-capable-hardware"
+$diagnosticEprFeatures = "$referenceChip,usb-control,epr-capable-hardware,output-default-off"
 $textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control",
     "$referenceChip,usb-control,pps-capable-hardware",
     $usbControlEprFeatures,
+    $diagnosticEprFeatures,
     "$referenceChip,usb-control,epr-50v-compatible-hardware",
     $textConsoleEprFeatures
 )
