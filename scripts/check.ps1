@@ -7,6 +7,7 @@ param(
 
 $ErrorActionPreference = 'Stop'
 $workspace = Split-Path -Parent $PSScriptRoot
+$targetDirectory = if ($env:CARGO_TARGET_DIR) { $env:CARGO_TARGET_DIR } else { Join-Path $workspace 'target' }
 
 if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     $userProfile = [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)
@@ -145,8 +146,14 @@ try {
 
     foreach ($chip in $supportedChips) {
         $packageCheckFeatures = "$chip,usb-control,epr-capable-hardware"
-        cargo check -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
-        if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware check failed with exit code $LASTEXITCODE" }
+        cargo build -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
+        if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware build failed with exit code $LASTEXITCODE" }
+
+        $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
+        $applicationFlashBytes = if ($chip -eq 'ch32x035f7p6') { 48 * 1024 } else { 62 * 1024 }
+        & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
+            -Firmware $firmwareElf `
+            -ApplicationFlashBytes $applicationFlashBytes
 
         cargo check -p $ccWakeProbePackage --release --locked --no-default-features --features $chip
         if ($LASTEXITCODE -ne 0) { throw "$chip CC wake probe check failed with exit code $LASTEXITCODE" }

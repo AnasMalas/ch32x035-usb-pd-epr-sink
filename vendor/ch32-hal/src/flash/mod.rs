@@ -5,7 +5,24 @@ use embedded_storage::nor_flash::{NorFlashError, NorFlashErrorKind};
 mod common;
 pub use common::*;
 
-pub use crate::pac::{FLASH_SIZE, WRITE_SIZE};
+const APPLICATION_FLASH: &crate::pac::mem_layout::MemoryRegion =
+    match crate::pac::MEMORY_LAYOUT.find_by_role(crate::pac::mem_layout::MemoryRole::Application) {
+        Some(region) => region,
+        None => panic!("selected chip has no application flash region"),
+    };
+
+/// Physical application-flash address used for erase/program/read operations.
+pub const FLASH_BASE: usize = APPLICATION_FLASH.address as usize;
+/// Application-flash capacity in bytes.
+pub const FLASH_SIZE: usize = APPLICATION_FLASH.size as usize;
+/// Native page or standard write size in bytes.
+pub const WRITE_SIZE: usize = match APPLICATION_FLASH.page_program_size() {
+    Some(size) => size as usize,
+    None => match APPLICATION_FLASH.write_size() {
+        Some(size) => size as usize,
+        None => panic!("selected chip has no supported flash-write mode"),
+    },
+};
 
 /// Read size (always 1)
 pub const READ_SIZE: usize = 1;

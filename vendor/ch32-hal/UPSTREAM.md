@@ -28,6 +28,10 @@ Local changes relevant to this project:
    chip and make small warning-cleanup changes needed by the pinned toolchain.
 8. make general DMA/BDMA initialization optional while leaving it enabled by
    default; peripheral-local USBFS and USB-PD DMA are unaffected.
+9. pin `ch32-metapac` commit
+   `88920cd5a36a13aef475ce0814aaa17294ee9bc9`, whose memory-script renderer
+   emits the zero-address boot alias required by CH32X035 application images;
+   the previous revision linked G8U6 code at its unusable `0x08000000` alias.
 
 The fork keeps broadly reusable RX/TX and USB changes separable from
 sink-specific policy so they can be proposed upstream independently. The local

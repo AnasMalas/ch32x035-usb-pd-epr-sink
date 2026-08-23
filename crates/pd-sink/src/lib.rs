@@ -8,6 +8,30 @@
 //! the pin-agnostic adapter for the MCU's integrated USB-PD PHY; applications
 //! still own their executor, GPIO choices, load gate, commands, and diagnostics.
 
+#[cfg(any(
+    all(
+        feature = "ch32x035c8t6",
+        any(
+            feature = "ch32x035f7p6",
+            feature = "ch32x035f8u6",
+            feature = "ch32x035g8r6",
+            feature = "ch32x035g8u6",
+            feature = "ch32x035r8t6"
+        )
+    ),
+    all(
+        feature = "ch32x035f7p6",
+        any(feature = "ch32x035f8u6", feature = "ch32x035g8r6", feature = "ch32x035g8u6", feature = "ch32x035r8t6")
+    ),
+    all(feature = "ch32x035f8u6", any(feature = "ch32x035g8r6", feature = "ch32x035g8u6", feature = "ch32x035r8t6")),
+    all(feature = "ch32x035g8r6", any(feature = "ch32x035g8u6", feature = "ch32x035r8t6")),
+    all(feature = "ch32x035g8u6", feature = "ch32x035r8t6")
+))]
+compile_error!(
+    "CH32X035 package features are mutually exclusive; enable exactly one of \
+     ch32x035c8t6, ch32x035f7p6, ch32x035f8u6, ch32x035g8r6, ch32x035g8u6, or ch32x035r8t6"
+);
+
 pub mod capabilities;
 #[cfg(any(
     feature = "ch32x035c8t6",
