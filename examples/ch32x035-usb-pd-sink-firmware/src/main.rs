@@ -16,12 +16,12 @@ use ch32_hal::gpio::{Level, Output, Pull, Speed};
 use ch32_hal::usb_x0fs::cdc::{CdcAcm, InterruptHandler as UsbFsInterruptHandler};
 #[cfg(feature = "dev-text-console")]
 use ch32_hal::usb_x0fs::cdc::{Receiver as CdcReceiver, Sender as CdcSender};
-use ch32_hal::usbpd::{Error as UsbpdError, InterruptHandler, UsbPdPhy};
+use ch32_hal::usbpd::{InterruptHandler, UsbPdPhy};
 use ch32_hal::{bind_interrupts, peripherals};
 use embassy_executor::Spawner;
 #[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 use embassy_futures::join::join3;
-use embassy_futures::select::{select, select3, Either3};
+use embassy_futures::select::{select3, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -30,11 +30,12 @@ use embassy_time::{Instant, Timer};
 use panic_halt as _;
 use pd_sink::PlanError;
 use pd_sink::{
-    CapabilitiesKind, Ch32x035Port, Ch32x035UsbPdDriver, Command, ContractTransition, ControllerConfig,
-    ControllerError, CurrentConfidence, HardResetDirection, LimitReason, Milliamps, Millivolts, Milliwatts, PhyEvent,
-    PlannedOperating, PlannedVoltage, PpsStatus, RequestContext, RequestFlags, RequestMessage, RequestPlan,
-    RequestResult, SinkConfig, SinkDevice, SinkLimits, SinkPowerDescriptor, SinkRuntime, SourceAlert,
-    SourceCapabilities as ProductSourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure,
+    CapabilitiesKind, Ch32x035Port, Ch32x035SessionTimer, Ch32x035SinkSession, Command, ContractTransition,
+    ControllerConfig, ControllerError, CurrentConfidence, HardResetDirection, LimitReason, Milliamps, Millivolts,
+    Milliwatts, PhyEvent, PlannedOperating, PlannedVoltage, PpsStatus, RequestContext, RequestFlags, RequestMessage,
+    RequestPlan, RequestResult, SinkConfig, SinkLimits, SinkPowerDescriptor, SinkRuntime, SinkSessionEvent,
+    SinkSessionRecovery, SinkSessionTerminalError, SourceAlert, SourceCapabilities as ProductSourceCapabilities,
+    SourceStatus, StatusQuery, StatusQueryFailure,
 };
 #[cfg(not(feature = "dev-text-console"))]
 use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
@@ -43,8 +44,6 @@ use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
     HardResetCause,
 };
-use usbpd::sink::policy_engine::Sink;
-use usbpd::timers::Timer as SinkTimer;
 
 #[cfg(all(feature = "usb-control", feature = "dev-text-console"))]
 compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
@@ -110,8 +109,6 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
 
 const ATTACH_DEBOUNCE_MS: u64 = 100;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
-const PROTOCOL_RESTART_COOLDOWN_MS: u64 = 2_000;
-const UNRESPONSIVE_RETRY_MS: u64 = 10_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
 const EPR_OPERATIONAL_PDP_WATTS: u8 = 240;
 
@@ -660,9 +657,9 @@ fn log_request_plan(prefix: &str, plan: RequestPlan) {
     }
 }
 
-struct EmbassySinkTimer;
+struct FirmwareSessionTimer;
 
-impl SinkTimer for EmbassySinkTimer {
+impl Ch32x035SessionTimer for FirmwareSessionTimer {
     fn now_128ms_ticks() -> u32 {
         (Instant::now().as_ticks() >> 17) as u32
     }
@@ -727,6 +724,82 @@ impl Ch32x035Port for FirmwarePort {
                 #[cfg(not(feature = "dev-text-console"))]
                 logln!("SinkTxNG; deferred");
             }
+        }
+    }
+
+    fn observe_session(&self, event: SinkSessionEvent) {
+        match event {
+            SinkSessionEvent::PhyResetFailed { retry_ms } => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::PdResetFailed,
+                    detail: retry_ms,
+                    extra: 0,
+                });
+                logln!("PD reset failed; retry={}ms", retry_ms);
+            }
+            SinkSessionEvent::CcDetected => {
+                control_event!(ControlEvent::Lifecycle {
+                    event: ControlLifecycleEvent::CcDetected,
+                    detail: 0,
+                    extra: 0,
+                });
+                logln!("CC; wait VBUS");
+            }
+            SinkSessionEvent::Recovering { reason, retry_ms, wait_for_detach: _ } => match reason {
+                SinkSessionRecovery::Detached => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStoppedDetach,
+                        detail: retry_ms,
+                        extra: 0,
+                    });
+                    logln!("PD stopped: detach; retry={}ms", retry_ms);
+                }
+                SinkSessionRecovery::PhyUnstable => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStoppedPhy,
+                        detail: retry_ms,
+                        extra: 0,
+                    });
+                    logln!("PD stopped: PHY; retry={}ms", retry_ms);
+                }
+                SinkSessionRecovery::PortPartnerUnresponsive => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStoppedTimeout,
+                        detail: retry_ms,
+                        extra: 0,
+                    });
+                    logln!("PD stopped: timeout; passive retry={}ms", retry_ms);
+                }
+                SinkSessionRecovery::Protocol => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStoppedProtocol,
+                        detail: retry_ms,
+                        extra: 0,
+                    });
+                    logln!("PD stopped: protocol; retry={}ms", retry_ms);
+                }
+                _ => logln!("PD stopped: recovery; retry={}ms", retry_ms),
+            },
+            SinkSessionEvent::Terminal(error) => match error {
+                SinkSessionTerminalError::UnexpectedStop => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStopped,
+                        detail: 0,
+                        extra: 0,
+                    });
+                    logln!("PD stopped unexpectedly; off");
+                }
+                SinkSessionTerminalError::LocalPolicy(_) => {
+                    control_event!(ControlEvent::Lifecycle {
+                        event: ControlLifecycleEvent::PdStoppedPolicy,
+                        detail: 0,
+                        extra: 0,
+                    });
+                    logln!("PD stopped: local policy error; off");
+                }
+                _ => logln!("PD stopped: terminal error; off"),
+            },
+            _ => logln!("PD session lifecycle event"),
         }
     }
 }
@@ -980,95 +1053,11 @@ impl SinkRuntime for FirmwareRuntime {
 }
 
 async fn run_pd(phy: UsbPdPhy<'static, peripherals::USBPD, hal::mode::Async>) -> ! {
-    let driver = Ch32x035UsbPdDriver::new(phy, FirmwarePort);
-    let device = SinkDevice::new(sink_config(), FirmwareRuntime).expect("firmware sink configuration must be valid");
-    let mut sink: Sink<_, EmbassySinkTimer, _> = Sink::new(driver, device);
-
-    loop {
-        while let Err(error) = sink.driver_mut().reset() {
-            if !matches!(error, UsbpdError::CCNotConnected) {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdResetFailed,
-                    detail: 0,
-                    extra: 0,
-                });
-                logln!("PD reset failed");
-            }
-            Timer::after_millis(20).await;
-        }
-
-        sink.restart();
-        control_event!(ControlEvent::Lifecycle { event: ControlLifecycleEvent::CcDetected, detail: 0, extra: 0 });
-        logln!("CC; wait VBUS");
-
-        let result = sink.run().await;
-        let (restart_delay_ms, wait_for_detach) = match result {
-            Ok(()) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStopped,
-                    detail: 20,
-                    extra: 0,
-                });
-                logln!("PD stopped");
-                (20, false)
-            }
-            Err(usbpd::sink::policy_engine::Error::Detached) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStoppedDetach,
-                    detail: 20,
-                    extra: 0,
-                });
-                logln!("PD stopped: detach");
-                (20, false)
-            }
-            Err(usbpd::sink::policy_engine::Error::PhyUnstable) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStoppedPhy,
-                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
-                    extra: 0,
-                });
-                logln!("PD stopped: PHY; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                (PROTOCOL_RESTART_COOLDOWN_MS, false)
-            }
-            Err(usbpd::sink::policy_engine::Error::PortPartnerUnresponsive) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStoppedTimeout,
-                    detail: UNRESPONSIVE_RETRY_MS as u32,
-                    extra: 0,
-                });
-                logln!("PD stopped: timeout; passive retry={}ms", UNRESPONSIVE_RETRY_MS);
-                (UNRESPONSIVE_RETRY_MS, true)
-            }
-            Err(usbpd::sink::policy_engine::Error::Protocol(_)) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStoppedProtocol,
-                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
-                    extra: 0,
-                });
-                logln!("PD stopped: protocol; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                (PROTOCOL_RESTART_COOLDOWN_MS, false)
-            }
-            Err(usbpd::sink::policy_engine::Error::InvalidEprOperationalPdp)
-            | Err(usbpd::sink::policy_engine::Error::InvalidRequestForMode)
-            | Err(usbpd::sink::policy_engine::Error::InvalidTransmitMessage(_)) => {
-                control_event!(ControlEvent::Lifecycle {
-                    event: ControlLifecycleEvent::PdStoppedPolicy,
-                    detail: PROTOCOL_RESTART_COOLDOWN_MS as u32,
-                    extra: 0,
-                });
-                logln!("PD stopped: policy; retry={}ms", PROTOCOL_RESTART_COOLDOWN_MS);
-                (PROTOCOL_RESTART_COOLDOWN_MS, false)
-            }
-        };
-        discard_pending_commands();
-        if wait_for_detach {
-            if vbus_is_present() {
-                let _ = select(VBUS_DETACHED.wait(), Timer::after_millis(restart_delay_ms)).await;
-            }
-        } else {
-            Timer::after_millis(restart_delay_ms).await;
-        }
-    }
+    let mut session =
+        Ch32x035SinkSession::<_, _, FirmwareSessionTimer>::new(phy, FirmwarePort, sink_config(), FirmwareRuntime)
+            .expect("firmware sink configuration must be valid");
+    let _ = session.run().await;
+    match core::future::pending::<core::convert::Infallible>().await {}
 }
 
 #[embassy_executor::main(entry = "qingke_rt::entry")]

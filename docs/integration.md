@@ -131,10 +131,11 @@ power path safe for those voltages.
 
 ## Startup
 
-The application creates the CH32 PHY with its chosen CC pins, wraps it in
-`Ch32x035UsbPdDriver`, creates `SinkDevice`, and passes both to the maintained
-`usbpd::sink::policy_engine::Sink`. The application then runs the policy engine
-and applies its own bounded restart policy. See
+The application creates the CH32 PHY with its chosen CC pins, implements
+`Ch32x035SessionTimer`, and passes the PHY, `Ch32x035Port`, configuration, and
+`SinkRuntime` to `Ch32x035SinkSession`. That high-level session owns PHY reset,
+policy-engine construction, terminal local-error classification, and the
+standard bounded recovery delays. See
 [`examples/ch32x035-usb-pd-sink-firmware/src/main.rs`](../examples/ch32x035-usb-pd-sink-firmware/src/main.rs)
 for a complete buildable consumer.
 
@@ -144,7 +145,7 @@ application's own later policy asks for one.
 
 ### Warm MCU-reset recovery
 
-`SinkDevice::new_recovering` is an explicit alternative for a short local MCU
+`Ch32x035SinkSession::new_recovering` is an explicit alternative for a short local MCU
 restart when the application has trustworthy evidence that the same physical
 port session may still be powered. The caller supplies a `RecoveryIntent` with
 the retained SPR/EPR mode, user request, retry limit, and whether the output
@@ -155,7 +156,7 @@ Source Capabilities instead of entering EPR again or requesting 5 V.
 Do not infer this from VBUS presence alone and do not replay an old intent from
 ordinary flash. A product can combine its MCU reset cause with a volatile
 session token or another short-lived board-specific proof. A cold boot, a new
-attachment, or uncertain evidence must call `SinkDevice::new`.
+attachment, or uncertain evidence must call `Ch32x035SinkSession::new`.
 
 Recovery immediately clears both software load controls. The retained target
 is planned against the newly received capabilities, and the output latch is

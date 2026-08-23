@@ -278,6 +278,27 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.hard_reset_recovery_ms = None;
     }
 
+    /// Invalidate a not-yet-started attachment after physical disconnect was
+    /// observed, notify the DPM, and reset the policy engine for a future
+    /// fresh attachment.
+    ///
+    /// Once [`Self::run`] has returned `Detached`, the DPM has already been
+    /// notified and ordinary [`Self::restart`] is sufficient.
+    pub fn restart_unstarted_after_detach(&mut self) {
+        self.device_policy_manager.detached();
+        self.restart();
+    }
+
+    /// Invalidate a not-yet-started attachment after a local PHY/protocol
+    /// failure, notify the DPM, and reset for a future fresh attachment.
+    ///
+    /// Once [`Self::run`] has returned another error, the DPM has already been
+    /// notified and ordinary [`Self::restart`] is sufficient.
+    pub fn restart_unstarted_after_protocol_loss(&mut self) {
+        self.device_policy_manager.protocol_lost();
+        self.restart();
+    }
+
     /// Run a single step in the policy engine state machine.
     async fn run_step(&mut self) -> Result<(), Error> {
         let result = self.update_state().await;

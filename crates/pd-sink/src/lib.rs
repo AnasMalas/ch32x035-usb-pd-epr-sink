@@ -49,6 +49,7 @@ pub mod controller;
 pub mod request;
 pub mod runtime;
 pub mod safety;
+pub mod session;
 pub mod stack;
 pub mod status;
 pub mod units;
@@ -65,7 +66,7 @@ pub use capabilities::{
     feature = "ch32x035g8u6",
     feature = "ch32x035r8t6"
 ))]
-pub use ch32x035::{Ch32x035Port, Ch32x035UsbPdDriver, PhyEvent};
+pub use ch32x035::{Ch32x035Port, Ch32x035SessionTimer, Ch32x035SinkSession, Ch32x035UsbPdDriver, PhyEvent};
 pub use command::{parse_command, Command, CommandError};
 pub use contract::{
     ContractError, ContractOperatingPoint, ContractState, ContractTracker, ContractTransition, ContractTransitionKind,
@@ -94,6 +95,9 @@ pub use runtime::{
     RequestResult, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime,
 };
 pub use safety::{PortInputs, PortState, PortSupervisor, SafetyDecision, SafetyTimings};
+pub use session::{
+    SinkSessionEvent, SinkSessionLocalError, SinkSessionRecovery, SinkSessionTerminalError, SinkSessionTransmitError,
+};
 pub use stack::{capabilities_from_stack, request_to_stack, StackConversionError};
 pub use status::{
     ExternalPowerInput, InternalTemperature, PowerIndicator, PowerState, PpsOperatingMode, PpsStatus, SourceAlert,

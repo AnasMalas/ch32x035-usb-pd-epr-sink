@@ -31,12 +31,10 @@ default-features = false
 features = ["ch32x035f8u6"]
 ```
 
-The complete CH32 firmware also uses the maintained `usbpd`,
-`usbpd-traits`, and `ch32-hal` descendants from the same checkout. Keep direct
-dependencies aligned with the entries in the
-[reference firmware manifest](../../examples/ch32x035-usb-pd-sink-firmware/Cargo.toml);
-mixing unrelated protocol or HAL revisions can bypass required fixes or
-duplicate code.
+The high-level CH32 session keeps the maintained `usbpd` and `usbpd-traits`
+implementation private. Board firmware only needs a direct `ch32-hal`
+dependency for peripheral setup, aligned with the
+[reference firmware manifest](../../examples/ch32x035-usb-pd-sink-firmware/Cargo.toml).
 
 ## Features
 
@@ -86,27 +84,27 @@ runtime.
 3. With one CH32X035 package feature, implement `Ch32x035Port` for real
    VBUS-present state, cancellation-safe attach/detach waits, immediate load
    disable, and optional PHY diagnostics.
-4. Construct `Ch32x035UsbPdDriver`, `SinkDevice`, and the maintained
-   `usbpd::sink::policy_engine::Sink`.
-5. Reset and run the policy engine using an application-owned bounded restart
-   loop.
+4. Implement `Ch32x035SessionTimer` using the application's monotonic timer.
+5. Construct and run `Ch32x035SinkSession`; it owns PHY reset, policy-engine
+   construction, terminal error classification, and bounded recovery delays.
 6. Independently enforce a hardware-default-off load gate.
 
 The final assembly has this shape; the board-specific types and setup are
 intentionally omitted:
 
 ```rust,ignore
-let driver = Ch32x035UsbPdDriver::new(phy, AppPort);
-let device = SinkDevice::new(sink_config(), AppRuntime)?;
-let mut sink: usbpd::sink::policy_engine::Sink<_, AppTimer, _> =
-    usbpd::sink::policy_engine::Sink::new(driver, device);
-
-sink.run().await
+let mut session = Ch32x035SinkSession::<_, _, AppTimer>::new(
+    phy,
+    AppPort,
+    sink_config(),
+    AppRuntime,
+)?;
+session.run().await
 ```
 
-`SinkDevice::new` always selects a fresh, conservative attachment. A product
+`Ch32x035SinkSession::new` always selects a fresh, conservative attachment. A product
 that has trustworthy short-lived evidence of a local MCU reset can instead
-pass an explicit `RecoveryIntent` to `SinkDevice::new_recovering`. That path
+pass an explicit `RecoveryIntent` to `Ch32x035SinkSession::new_recovering`. That path
 starts with a wire Soft Reset, keeps both software load controls off, bounds
 transient retries, and restores the output latch only after a newly accepted
 contract reaches PS_RDY. It deliberately does not read reset flags or persist
@@ -128,8 +126,9 @@ is the canonical end-to-end implementation.
 | Classify a renegotiation | `ContractTransition`, `ContractTransitionKind` |
 | Select EPR entry/exit behavior | `EprEntryPolicy`, `EprEntryFallback`, `EprExitPolicy`, `EprExitFallback` |
 | Run the reusable DPM | `SinkConfig`, `SinkDevice`, `SinkRuntime`, `SinkEvent` |
-| Recover after a proven warm reset | `RecoveryIntent`, `RecoveryCancellationReason`, `SinkDevice::new_recovering` |
-| Connect the CH32 PHY | `Ch32x035UsbPdDriver`, `Ch32x035Port`, `PhyEvent` |
+| Recover after a proven warm reset | `RecoveryIntent`, `RecoveryCancellationReason`, `Ch32x035SinkSession::new_recovering` |
+| Run the CH32 PHY lifecycle | `Ch32x035SinkSession`, `Ch32x035SessionTimer`, `Ch32x035Port`, `SinkSessionEvent` |
+| Build a custom low-level integration | `Ch32x035UsbPdDriver`, `SinkDevice`, `PhyEvent` |
 | Exchange compact host frames | `control` module and `CONTROL_PROTOCOL_VERSION` |
 
 ## Safety boundary

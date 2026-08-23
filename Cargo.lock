@@ -149,8 +149,6 @@ dependencies = [
  "panic-halt",
  "qingke",
  "qingke-rt",
- "usbpd",
- "usbpd-traits",
 ]
 
 [[package]]

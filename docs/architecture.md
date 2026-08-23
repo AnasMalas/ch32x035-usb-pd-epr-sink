@@ -77,10 +77,12 @@ diagnostics, delays, and their firmware-controlled load request. Avoiding
 floating-point unit conversions saves several kilobytes and makes capability
 reports deterministic.
 
-With one CH32X035 package feature, `Ch32x035UsbPdDriver` connects the DPM to
-the integrated CH32X035 PHY. Its `Ch32x035Port` trait deliberately contains no
-pin assignments: the application supplies VBUS-present waits, immediate load
-disable, and diagnostics.
+With one CH32X035 package feature, `Ch32x035SinkSession` connects the DPM to
+the integrated CH32X035 PHY and owns the normal reset/run/recovery lifecycle.
+Its `Ch32x035Port` trait deliberately contains no pin assignments: the
+application supplies VBUS-present waits, immediate load disable, and
+diagnostics. `Ch32x035UsbPdDriver` remains available for deliberately custom
+low-level integrations.
 
 Every attachment starts with no retained user intent. The sequence for an
 EPR-capable profile is:

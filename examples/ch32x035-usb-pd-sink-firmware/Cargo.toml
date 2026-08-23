@@ -37,5 +37,3 @@ embassy-time = "0.5.1"
 panic-halt = "1.0"
 qingke = "0.7"
 qingke-rt = "0.7"
-usbpd = { path = "../../vendor/usbpd" }
-usbpd-traits = { path = "../../vendor/usbpd-traits" }

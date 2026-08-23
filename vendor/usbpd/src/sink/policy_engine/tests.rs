@@ -48,6 +48,49 @@ fn warm_startup_is_one_shot_and_a_port_restart_is_fresh_spr() {
     assert_eq!(policy_engine.mode, super::Mode::Spr);
 }
 
+struct StartupLossDpm {
+    detached: std::sync::Arc<AtomicU32>,
+    protocol_lost: std::sync::Arc<AtomicU32>,
+}
+
+impl crate::sink::device_policy_manager::DevicePolicyManager for StartupLossDpm {
+    fn startup(&self) -> SinkStartup {
+        SinkStartup::SoftReset(SoftResetMode::Epr)
+    }
+
+    fn detached(&mut self) {
+        self.detached.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn protocol_lost(&mut self) {
+        self.protocol_lost.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[test]
+fn an_unstarted_session_loss_cancels_warm_startup_exactly_once() {
+    let detached = std::sync::Arc::new(AtomicU32::new(0));
+    let protocol_lost = std::sync::Arc::new(AtomicU32::new(0));
+    let dpm = StartupLossDpm {
+        detached: std::sync::Arc::clone(&detached),
+        protocol_lost: std::sync::Arc::clone(&protocol_lost),
+    };
+    let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, StartupLossDpm> =
+        Sink::new(DummyDriver::new(), dpm);
+
+    policy_engine.restart_unstarted_after_detach();
+    assert_eq!(detached.load(Ordering::SeqCst), 1);
+    assert_eq!(protocol_lost.load(Ordering::SeqCst), 0);
+    assert!(matches!(policy_engine.state, State::Discovery));
+    assert_eq!(policy_engine.mode, super::Mode::Spr);
+
+    policy_engine.restart_unstarted_after_protocol_loss();
+    assert_eq!(detached.load(Ordering::SeqCst), 1);
+    assert_eq!(protocol_lost.load(Ordering::SeqCst), 1);
+    assert!(matches!(policy_engine.state, State::Discovery));
+    assert_eq!(policy_engine.mode, super::Mode::Spr);
+}
+
 #[test]
 fn every_local_tx_validation_error_is_a_terminal_sink_error() {
     for expected in [
