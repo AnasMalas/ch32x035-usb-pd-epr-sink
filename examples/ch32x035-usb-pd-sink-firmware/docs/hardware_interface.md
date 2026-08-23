@@ -19,6 +19,12 @@ laying out a board.
 | PA6 | 22 | 16 | 11 | 13 | 8 | 12 | input, active-high `VBUS_PRESENT` from external 3.3 V logic |
 | PA7 | 23 | 17 | 12 | 17 | 9 | 13 | output, active-high `LOAD_ENABLE` firmware request |
 
+The table describes the normal profiles. The public G8U6 rev0 board has a
+separate, fixed-5 V [`rev0-validation` profile](rev0_validation.md): OPA1
+compares PB4 against PB6, PB1 reads the PB5 OPA output through the package's
+documented PB1/PB5 bond, and PB10 is the active-high load request. Those exact
+pins remain example-local and are not requirements of the reusable library.
+
 PA6 and PA7 were selected partly to leave a hardware-assisted cutoff route
 available: PA6 exposes OPA/comparator-related input and TIM1 break alternate
 functions, while PA7 exposes a TIM1 complementary-output alternate function.

@@ -1,14 +1,21 @@
 # CH32X035 USB-PD sink firmware example
 
-This example binds the reusable sink library to a concrete CH32X035
-application: PA6 source-VBUS sensing, PA7 load-enable policy, USB CDC or LinkE
-diagnostics, build profiles, and bounded restart behavior. None of those pins
-or transports are requirements of the core crate.
+This example binds the reusable sink library to concrete CH32X035 board
+profiles: VBUS sensing, load-enable policy, USB CDC or LinkE diagnostics,
+build profiles, and bounded restart behavior. Normal profiles use PA6/PA7;
+the G8U6-only `rev0-validation` profile implements the public rev0 board's
+OPA1 and PB10 wiring. None of those pins or transports are requirements of
+the core crate.
 
 Run the commands below from the repository root. Read the
 [hardware interface](docs/hardware_interface.md) and
 [first-board verification](docs/first_board_verification.md) before enabling
 PPS or EPR on a new board.
+
+For the public CH32X035G8U6 rev0 board, use the dedicated
+[rev0 validation procedure](docs/rev0_validation.md). It is fixed at 5 V,
+uses the internal OPA1 detector, and keeps PB10 off until an explicit
+`output-on` command is permitted by the PD and VBUS state.
 
 ## First safe run on Windows
 
@@ -53,6 +60,7 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 | Profile | Diagnostics/control | Declared hardware policy |
 |---|---|---|
 | `safe-5v` | LinkE SDI | fixed 5 V |
+| `rev0-validation` | ASCII USB console, PB10 default off | G8U6 rev0, fixed 5 V |
 | `usb-safe-5v` | compact USB control | fixed 5 V |
 | `usb-pps` | compact USB control | PPS through 21 V |
 | `usb-epr` | compact USB control | standard EPR through 48 V |
@@ -74,7 +82,8 @@ HAL default).
 ## Build profiles
 
 The default target is `ch32x035f8u6`. Select another supported package with
-`-Chip`; the same PA6/PA7, CC, USB, and SDI GPIO names are bonded on all six:
+`-Chip`; the same normal-profile PA6/PA7, CC, USB, and SDI GPIO names are
+bonded on all six:
 
 ```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v -Chip ch32x035g8u6
@@ -83,6 +92,9 @@ The default target is `ch32x035f8u6`. Select another supported package with
 Supported values are `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`,
 `ch32x035g8r6`, `ch32x035g8u6`, and `ch32x035r8t6`. CH32X033 is not supported
 because it has USB but not the integrated USB-PD peripheral.
+`rev0-validation` is the exception: its package-bonded detector topology is
+specific to `ch32x035g8u6`, so the scripts select G8U6 automatically and
+reject an explicitly requested different chip.
 
 The CH32X035F7P6 has only a 48 KiB application region. At this revision the
 compact USB/GUI EPR image links at 48,624 bytes, leaving just 528 bytes; the
@@ -109,6 +121,7 @@ Useful interactive builds are:
 
 ```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile rev0-validation
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic -Chip ch32x035g8u6
@@ -116,6 +129,8 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
+`rev0-validation` is the human-readable, fixed-5 V public-board bring-up
+image; follow its [dedicated procedure](docs/rev0_validation.md).
 `usb-epr` is the normal compact binary control image. The opt-in
 `usb-epr-diagnostic` profile keeps the application-owned output latch off
 until the compact `output-on` command arrives and includes typed Hard Reset

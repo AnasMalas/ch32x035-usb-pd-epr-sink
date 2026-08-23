@@ -2,6 +2,7 @@
 param(
     [ValidateSet(
         'safe-5v',
+        'rev0-validation',
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
@@ -37,10 +38,18 @@ if (-not (Get-Command cargo -ErrorAction SilentlyContinue)) {
     throw 'Cargo is not installed. Run .\scripts\bootstrap.ps1 first.'
 }
 
+if ($Profile -eq 'rev0-validation') {
+    if ($PSBoundParameters.ContainsKey('Chip') -and $Chip -ne 'ch32x035g8u6') {
+        throw "Profile 'rev0-validation' requires -Chip ch32x035g8u6."
+    }
+    $Chip = 'ch32x035g8u6'
+}
+
 Push-Location $workspace
 try {
     $profileFeatures = switch ($Profile) {
         'safe-5v' { 'sdi-log' }
+        'rev0-validation' { 'dev-text-console,output-default-off,rev0-validation' }
         'usb-safe-5v' { 'usb-control' }
         'usb-pps' { 'usb-control,pps-capable-hardware' }
         'usb-epr' { 'usb-control,epr-capable-hardware' }

@@ -67,13 +67,15 @@ $supportedChips = @(
 $usbControlEprFeatures = "$referenceChip,usb-control,epr-capable-hardware"
 $diagnosticEprFeatures = "$referenceChip,usb-control,epr-capable-hardware,output-default-off"
 $textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
+$rev0ValidationFeatures = 'ch32x035g8u6,dev-text-console,output-default-off,rev0-validation'
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control",
     "$referenceChip,usb-control,pps-capable-hardware",
     $usbControlEprFeatures,
     $diagnosticEprFeatures,
     "$referenceChip,usb-control,epr-50v-compatible-hardware",
-    $textConsoleEprFeatures
+    $textConsoleEprFeatures,
+    $rev0ValidationFeatures
 )
 
 Push-Location $workspace
@@ -138,6 +140,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $textConsoleEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "development text-console EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0ValidationFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 validation firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
@@ -168,6 +173,36 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
+        if ($feature -eq $rev0ValidationFeatures) {
+            $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
+            & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
+                -Firmware $firmwareElf `
+                -ApplicationFlashBytes (62 * 1024)
+        }
+    }
+
+    if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
+        $profileBuild = Join-Path $workspace 'examples/ch32x035-usb-pd-sink-firmware/scripts/build.ps1'
+        $wrongChipRejected = $false
+        try {
+            & $profileBuild -Profile rev0-validation -Chip $referenceChip
+        }
+        catch {
+            if ($_.Exception.Message -notlike '*requires -Chip ch32x035g8u6*') { throw }
+            $wrongChipRejected = $true
+        }
+        if (-not $wrongChipRejected) {
+            throw 'rev0-validation profile accepted a non-G8U6 chip.'
+        }
+
+        & $profileBuild -Profile rev0-validation
+        $rev0Artifact = Join-Path $workspace 'examples/generated-artifacts/ch32x035-usb-pd-epr-sink-reference-ch32x035g8u6-rev0-validation.elf'
+        if (-not (Test-Path -LiteralPath $rev0Artifact -PathType Leaf)) {
+            throw "rev0-validation profile did not stage $rev0Artifact"
+        }
+        & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
+            -Firmware $rev0Artifact `
+            -ApplicationFlashBytes (62 * 1024)
     }
 
     $guiCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) "usb-pd-control-$([guid]::NewGuid().ToString('N')).html"

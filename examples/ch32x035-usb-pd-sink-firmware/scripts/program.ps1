@@ -2,6 +2,7 @@
 param(
     [ValidateSet(
         'safe-5v',
+        'rev0-validation',
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
@@ -23,6 +24,13 @@ param(
 )
 
 $ErrorActionPreference = 'Stop'
+
+if ($Profile -eq 'rev0-validation') {
+    if ($PSBoundParameters.ContainsKey('Chip') -and $Chip -ne 'ch32x035g8u6') {
+        throw "Profile 'rev0-validation' requires -Chip ch32x035g8u6."
+    }
+    $Chip = 'ch32x035g8u6'
+}
 
 & (Join-Path $PSScriptRoot 'build.ps1') -Profile $Profile -Chip $Chip
 & (Join-Path $PSScriptRoot 'flash.ps1') -Profile $Profile -Chip $Chip
