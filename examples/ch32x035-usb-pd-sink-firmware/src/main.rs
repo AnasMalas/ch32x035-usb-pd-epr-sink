@@ -8,10 +8,14 @@ use core::fmt::{self, Write};
 
 #[cfg(feature = "usb-control")]
 mod control_transport;
+#[cfg(feature = "rev0-validation")]
+mod rev0_validation;
 
 use ch32_hal as hal;
 use ch32_hal::exti::ExtiInput;
-use ch32_hal::gpio::{Level, Output, Pull, Speed};
+#[cfg(not(feature = "rev0-validation"))]
+use ch32_hal::gpio::Pull;
+use ch32_hal::gpio::{Level, Output, Speed};
 #[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 use ch32_hal::usb_x0fs::cdc::{CdcAcm, InterruptHandler as UsbFsInterruptHandler};
 #[cfg(feature = "dev-text-console")]
@@ -21,7 +25,7 @@ use ch32_hal::{bind_interrupts, peripherals};
 use embassy_executor::Spawner;
 #[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
 use embassy_futures::join::join3;
-use embassy_futures::select::{select3, Either3};
+use embassy_futures::select::{select, select3, Either, Either3};
 use embassy_sync::blocking_mutex::raw::CriticalSectionRawMutex;
 use embassy_sync::blocking_mutex::Mutex;
 use embassy_sync::channel::Channel;
@@ -49,6 +53,14 @@ use pd_sink::{
 compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
 #[cfg(all(feature = "sdi-log", feature = "dev-text-console"))]
 compile_error!("sdi-log and dev-text-console are separate diagnostic outputs; select only one");
+#[cfg(all(feature = "rev0-validation", not(feature = "ch32x035g8u6")))]
+compile_error!("rev0-validation is only valid for the CH32X035G8U6");
+#[cfg(all(feature = "rev0-validation", not(feature = "dev-text-console")))]
+compile_error!("rev0-validation requires dev-text-console diagnostics");
+#[cfg(all(feature = "rev0-validation", not(feature = "output-default-off")))]
+compile_error!("rev0-validation requires output-default-off");
+#[cfg(all(feature = "rev0-validation", any(feature = "pps-capable-hardware", feature = "epr-capable-hardware")))]
+compile_error!("rev0-validation is a fixed-5-V validation profile; do not enable PPS or EPR hardware features");
 
 static COMMANDS: Channel<CriticalSectionRawMutex, Command, 4> = Channel::new();
 
@@ -261,21 +273,44 @@ macro_rules! control_event {
     }};
 }
 
-/// Owns the physical load-control output for the lifetime of the firmware.
+/// Owns the board-provided active-high minimum-VBUS input and load-enable
+/// output for the lifetime of the firmware.
 ///
-/// `PA6` is fed by a 3.3 V-safe VBUS power-good circuit. `PA7` is only the
-/// firmware half of the load-enable equation; hardware must also gate the
-/// switch directly with VBUS power-good so cable removal does not depend on
-/// executor latency or working firmware.
+/// Normal profiles currently provide those signals on PA6 and PA7. The rev0
+/// validation profile supplies OPA1 via the PB1/PB5 bonded pad and PB10 from
+/// its board-local module. The reusable PD library does not know these pins.
 #[embassy_executor::task]
-async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_enable: Output<'static>) {
+async fn port_supervisor_task(
+    mut vbus_present: ExtiInput<'static>,
+    mut load_enable: Output<'static>,
+    detector_ready: bool,
+) {
     load_enable.set_low();
+    if !detector_ready {
+        publish_vbus_state(false);
+        PD_LOAD_PERMISSION.reset();
+        #[cfg(feature = "rev0-validation")]
+        logln!("Rev0 detector fault: register readback invalid; PB10=0");
+        loop {
+            Timer::after_millis(60_000).await;
+        }
+    }
+
     let mut needs_attach_debounce = true;
     let mut pd_load_permitted = false;
     // Normal profiles preserve the historical automatic-on behavior. The
     // diagnostic profile requires an explicit Output On command so a test
     // image cannot energize a product load merely by completing negotiation.
     let mut user_output_enabled = USER_OUTPUT_DEFAULT_ENABLED;
+    #[cfg(feature = "rev0-validation")]
+    let mut reported_load_enabled = false;
+
+    #[cfg(feature = "rev0-validation")]
+    logln!(
+        "Rev0 safety: PB10=0 OPA1/PB1 raw={} qualified=0 pd=0 user={}",
+        u8::from(vbus_present.is_high()),
+        u8::from(user_output_enabled),
+    );
 
     loop {
         if vbus_present.is_low() {
@@ -285,31 +320,96 @@ async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_ena
             pd_load_permitted = false;
             PD_LOAD_PERMISSION.reset();
             publish_vbus_state(false);
-            vbus_present.wait_for_rising_edge().await;
+            #[cfg(feature = "rev0-validation")]
+            {
+                user_output_enabled = false;
+                USER_OUTPUT_REQUEST.reset();
+            }
+            vbus_present.wait_for_high().await;
             needs_attach_debounce = true;
             continue;
         }
 
         if needs_attach_debounce {
-            Timer::after_millis(ATTACH_DEBOUNCE_MS).await;
-            if vbus_present.is_low() {
-                continue;
+            #[cfg(feature = "rev0-validation")]
+            logln!("Rev0 OPA1/PB1 raw=1; qualify={}ms", ATTACH_DEBOUNCE_MS);
+            // Give deassertion priority if the low event and timer become
+            // ready in the same executor poll.
+            match select(vbus_present.wait_for_low(), Timer::after_millis(ATTACH_DEBOUNCE_MS)).await {
+                Either::Second(()) if vbus_present.is_high() => {}
+                Either::First(()) | Either::Second(()) => {
+                    load_enable.set_low();
+                    pd_load_permitted = false;
+                    PD_LOAD_PERMISSION.reset();
+                    publish_vbus_state(false);
+                    #[cfg(feature = "rev0-validation")]
+                    {
+                        user_output_enabled = false;
+                        USER_OUTPUT_REQUEST.reset();
+                    }
+                    #[cfg(feature = "rev0-validation")]
+                    logln!("Rev0 OPA1/PB1 raw=0 qualified=0; assertion cancelled");
+                    continue;
+                }
             }
+            #[cfg(feature = "rev0-validation")]
+            USER_OUTPUT_REQUEST.reset();
             publish_vbus_state(true);
             needs_attach_debounce = false;
+            #[cfg(feature = "rev0-validation")]
+            logln!("Rev0 OPA1/PB1 raw=1 qualified=1; attach published");
         }
 
-        match select3(vbus_present.wait_for_falling_edge(), PD_LOAD_PERMISSION.wait(), USER_OUTPUT_REQUEST.wait()).await
-        {
+        match select3(vbus_present.wait_for_low(), PD_LOAD_PERMISSION.wait(), USER_OUTPUT_REQUEST.wait()).await {
             Either3::First(()) => {
                 load_enable.set_low();
                 pd_load_permitted = false;
                 PD_LOAD_PERMISSION.reset();
                 publish_vbus_state(false);
                 needs_attach_debounce = true;
+                #[cfg(feature = "rev0-validation")]
+                {
+                    user_output_enabled = false;
+                    USER_OUTPUT_REQUEST.reset();
+                }
+                #[cfg(feature = "rev0-validation")]
+                logln!("Rev0 OPA1/PB1 raw=0 qualified=0 pd=0 PB10=0; detach immediate");
             }
-            Either3::Second(permitted) => pd_load_permitted = permitted,
-            Either3::Third(enabled) => user_output_enabled = enabled,
+            Either3::Second(permitted) => {
+                pd_load_permitted = permitted;
+                #[cfg(feature = "rev0-validation")]
+                {
+                    // Do not let a command queued before the current PD
+                    // permission transition arm a later load enable.
+                    USER_OUTPUT_REQUEST.reset();
+                    if !permitted {
+                        user_output_enabled = false;
+                    }
+                }
+                #[cfg(feature = "rev0-validation")]
+                logln!(
+                    "Rev0 load permission: pd={} user={}",
+                    u8::from(pd_load_permitted),
+                    u8::from(user_output_enabled),
+                );
+            }
+            Either3::Third(enabled) => {
+                #[cfg(not(feature = "rev0-validation"))]
+                {
+                    user_output_enabled = enabled;
+                }
+                #[cfg(feature = "rev0-validation")]
+                {
+                    let can_arm = pd_load_permitted && vbus_present.is_high() && vbus_is_present();
+                    user_output_enabled = enabled && can_arm;
+                    logln!(
+                        "Rev0 user permission: requested={} accepted={} pd={}",
+                        u8::from(enabled),
+                        u8::from(user_output_enabled),
+                        u8::from(pd_load_permitted),
+                    );
+                }
+            }
         }
 
         if pd_load_permitted && user_output_enabled && vbus_present.is_high() && vbus_is_present() {
@@ -321,9 +421,32 @@ async fn port_supervisor_task(mut vbus_present: ExtiInput<'static>, mut load_ena
                 pd_load_permitted = false;
                 publish_vbus_state(false);
                 needs_attach_debounce = true;
+                #[cfg(feature = "rev0-validation")]
+                {
+                    user_output_enabled = false;
+                    USER_OUTPUT_REQUEST.reset();
+                }
+                #[cfg(feature = "rev0-validation")]
+                logln!("Rev0 OPA1/PB1 raw=0 qualified=0 pd=0 PB10=0; edge-race cutoff");
             }
         } else {
             load_enable.set_low();
+        }
+
+        #[cfg(feature = "rev0-validation")]
+        {
+            let load_enabled = load_enable.is_set_high();
+            if load_enabled != reported_load_enabled {
+                reported_load_enabled = load_enabled;
+                logln!(
+                    "Rev0 load state: PB10={} raw={} qualified={} pd={} user={}",
+                    u8::from(load_enabled),
+                    u8::from(vbus_present.is_high()),
+                    u8::from(vbus_is_present()),
+                    u8::from(pd_load_permitted),
+                    u8::from(user_output_enabled),
+                );
+            }
         }
     }
 }
@@ -1077,9 +1200,30 @@ async fn main(_spawner: Spawner) {
     };
     let peripherals = hal::init(config);
 
+    #[cfg(not(feature = "rev0-validation"))]
     let vbus_present = ExtiInput::new(peripherals.PA6, peripherals.EXTI6, Pull::Down);
+    #[cfg(not(feature = "rev0-validation"))]
     let load_enable = Output::new(peripherals.PA7, Level::Low, Speed::Low);
-    _spawner.spawn(port_supervisor_task(vbus_present, load_enable).expect("port supervisor task allocation failed"));
+    #[cfg(not(feature = "rev0-validation"))]
+    let detector_ready = true;
+
+    #[cfg(feature = "rev0-validation")]
+    let load_enable = Output::new(peripherals.PB10, Level::Low, Speed::Low);
+    #[cfg(feature = "rev0-validation")]
+    let (vbus_present, detector_ready) = rev0_validation::configure_vbus_detector(
+        peripherals.OPA,
+        peripherals.PC3,
+        peripherals.PB4,
+        peripherals.PB5,
+        peripherals.PB6,
+        peripherals.PB1,
+        peripherals.EXTI1,
+    );
+
+    _spawner.spawn(
+        port_supervisor_task(vbus_present, load_enable, detector_ready)
+            .expect("port supervisor task allocation failed"),
+    );
 
     let phy = UsbPdPhy::new_async(peripherals.USBPD, peripherals.PC14, peripherals.PC15, Irq);
 
