@@ -1,0 +1,11 @@
+[package]
+name = "ch32x035-usb-pd-epr-sink-hal-tests"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
+critical-section = { version = "1.2.0", features = ["std"] }
+embassy-sync = "0.8.0"

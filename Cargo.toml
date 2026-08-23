@@ -3,6 +3,7 @@ members = [
     "crates/pd-sink",
     "examples/ch32x035-usb-pd-sink-firmware",
     "examples/ch32x035-usbpd-cc-wake-probe",
+    "tests/hal",
     "tests/protocol",
 ]
 exclude = ["vendor/ch32-hal", "vendor/usbpd", "vendor/usbpd-traits"]

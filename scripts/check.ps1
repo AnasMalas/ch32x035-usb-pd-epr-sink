@@ -54,6 +54,7 @@ Write-Host "Native host checks use target $HostTarget."
 
 $firmwarePackage = 'ch32x035-usb-pd-epr-sink-reference'
 $ccWakeProbePackage = 'ch32x035-usbpd-cc-wake-probe'
+$halTestPackage = 'ch32x035-usb-pd-epr-sink-hal-tests'
 $referenceChip = 'ch32x035f8u6'
 $supportedChips = @(
     'ch32x035c8t6',
@@ -123,7 +124,7 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "cargo fmt failed for $manifest with exit code $LASTEXITCODE" }
     }
 
-    cargo clippy -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --all-targets --target $HostTarget --locked -- -D warnings
+    cargo clippy -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests -p $halTestPackage --all-targets --target $HostTarget --locked -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "host clippy failed with exit code $LASTEXITCODE" }
 
     cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget -- -D warnings
@@ -138,7 +139,7 @@ try {
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
-    cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests --target $HostTarget --locked
+    cargo test -p ch32x035-usb-pd-epr-sink -p ch32x035-usb-pd-epr-sink-protocol-tests -p $halTestPackage --target $HostTarget --locked
     if ($LASTEXITCODE -ne 0) { throw "host tests failed with exit code $LASTEXITCODE" }
 
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget

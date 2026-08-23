@@ -120,6 +120,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ch32x035-usb-pd-epr-sink-hal-tests"
+version = "0.1.0"
+dependencies = [
+ "critical-section",
+ "embassy-sync",
+]
+
+[[package]]
 name = "ch32x035-usb-pd-epr-sink-protocol-tests"
 version = "0.1.0"
 dependencies = [

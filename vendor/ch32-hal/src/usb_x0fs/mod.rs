@@ -6,6 +6,7 @@
 //! bring-up.
 
 pub mod cdc;
+mod connection;
 
 const MAX_NR_EP: usize = 4;
 

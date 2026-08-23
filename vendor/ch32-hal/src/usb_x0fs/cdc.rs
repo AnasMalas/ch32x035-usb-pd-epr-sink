@@ -13,6 +13,7 @@ use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
 
+use super::connection::ConnectionState;
 use super::{
     configure_usb_pins, endpoint_ctrl, endpoint_dma, endpoint_t_len, regs, RESPONSE_ACK, RESPONSE_NAK, RESPONSE_STALL,
     TOKEN_IN, TOKEN_OUT, TOKEN_SETUP,
@@ -116,11 +117,10 @@ static mut CONTROL: ControlState = ControlState {
     configuration: 0,
 };
 
-static CONNECTION_WAKER: AtomicWaker = AtomicWaker::new();
 static RX_WAKER: AtomicWaker = AtomicWaker::new();
 static TX_WAKER: AtomicWaker = AtomicWaker::new();
 
-static CONFIGURED: AtomicBool = AtomicBool::new(false);
+static CONNECTION: ConnectionState = ConnectionState::new();
 static RX_READY: AtomicBool = AtomicBool::new(false);
 static RX_LENGTH: AtomicU8 = AtomicU8::new(0);
 static TX_BUSY: AtomicBool = AtomicBool::new(false);
@@ -291,7 +291,7 @@ unsafe fn set_endpoint_stall(index: u16, stalled: bool) -> bool {
                 w.set_t_tog(false);
             }
         } else {
-            let ready = CONFIGURED.load(Ordering::SeqCst) && !RX_READY.load(Ordering::SeqCst);
+            let ready = CONNECTION.is_configured() && !RX_READY.load(Ordering::SeqCst);
             w.set_r_res(if stalled {
                 RESPONSE_STALL
             } else if ready {
@@ -431,11 +431,10 @@ unsafe fn handle_ep0_in() {
                     RX_READY.store(false, Ordering::SeqCst);
                     RX_LENGTH.store(0, Ordering::SeqCst);
                     TX_BUSY.store(false, Ordering::SeqCst);
-                    CONFIGURED.store(configured, Ordering::SeqCst);
                     endpoint_ctrl(1).write(|w| w.set_t_res(RESPONSE_NAK));
                     endpoint_ctrl(2).write(|w| w.set_r_res(if configured { RESPONSE_ACK } else { RESPONSE_NAK }));
                     endpoint_ctrl(3).write(|w| w.set_t_res(RESPONSE_NAK));
-                    CONNECTION_WAKER.wake();
+                    CONNECTION.publish(configured);
                     RX_WAKER.wake();
                     TX_WAKER.wake();
                 }
@@ -475,7 +474,6 @@ unsafe fn reset_device() {
     state.configuration = 0;
 
     advance_connection_generation();
-    CONFIGURED.store(false, Ordering::SeqCst);
     RX_READY.store(false, Ordering::SeqCst);
     RX_LENGTH.store(0, Ordering::SeqCst);
     TX_BUSY.store(false, Ordering::SeqCst);
@@ -496,7 +494,7 @@ unsafe fn reset_device() {
     endpoint_t_len(1).write(|w| w.set_t_len(0));
     endpoint_t_len(3).write(|w| w.set_t_len(0));
 
-    CONNECTION_WAKER.wake();
+    CONNECTION.publish(false);
     RX_WAKER.wake();
     TX_WAKER.wake();
 }
@@ -632,29 +630,21 @@ impl Sender<'_> {
     }
 
     pub async fn wait_connection(&mut self) {
-        poll_fn(|cx| {
-            CONNECTION_WAKER.register(cx.waker());
-            if CONFIGURED.load(Ordering::SeqCst) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
+        CONNECTION.wait_sender().await;
     }
 
     pub async fn write_packet(&mut self, data: &[u8]) -> Result<(), Error> {
         if data.len() > EP_SIZE {
             return Err(Error::PacketTooLarge);
         }
-        if !CONFIGURED.load(Ordering::SeqCst) {
+        if !CONNECTION.is_configured() {
             return Err(Error::Disconnected);
         }
 
         let generation = loop {
             poll_fn(|cx| {
                 TX_WAKER.register(cx.waker());
-                if !CONFIGURED.load(Ordering::SeqCst) {
+                if !CONNECTION.is_configured() {
                     Poll::Ready(Err(Error::Disconnected))
                 } else if TX_BUSY.load(Ordering::SeqCst) {
                     Poll::Pending
@@ -665,7 +655,7 @@ impl Sender<'_> {
             .await?;
 
             let started = critical_section::with(|_| {
-                if !CONFIGURED.load(Ordering::SeqCst) {
+                if !CONNECTION.is_configured() {
                     return Err(Error::Disconnected);
                 }
                 if TX_BUSY.load(Ordering::SeqCst) {
@@ -687,7 +677,7 @@ impl Sender<'_> {
 
         poll_fn(|cx| {
             TX_WAKER.register(cx.waker());
-            if !CONFIGURED.load(Ordering::SeqCst) || CONNECTION_GENERATION.load(Ordering::SeqCst) != generation {
+            if !CONNECTION.is_configured() || CONNECTION_GENERATION.load(Ordering::SeqCst) != generation {
                 Poll::Ready(Err(Error::Disconnected))
             } else if TX_BUSY.load(Ordering::SeqCst) {
                 Poll::Pending
@@ -709,15 +699,7 @@ impl Receiver<'_> {
     }
 
     pub async fn wait_connection(&mut self) {
-        poll_fn(|cx| {
-            CONNECTION_WAKER.register(cx.waker());
-            if CONFIGURED.load(Ordering::SeqCst) {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        })
-        .await;
+        CONNECTION.wait_receiver().await;
     }
 
     pub async fn read_packet(&mut self, data: &mut [u8]) -> Result<usize, Error> {
@@ -728,7 +710,7 @@ impl Receiver<'_> {
         loop {
             poll_fn(|cx| {
                 RX_WAKER.register(cx.waker());
-                if !CONFIGURED.load(Ordering::SeqCst) {
+                if !CONNECTION.is_configured() {
                     Poll::Ready(Err(Error::Disconnected))
                 } else if RX_READY.load(Ordering::SeqCst) {
                     Poll::Ready(Ok(()))
@@ -739,7 +721,7 @@ impl Receiver<'_> {
             .await?;
 
             let packet = critical_section::with(|_| {
-                if !CONFIGURED.load(Ordering::SeqCst) {
+                if !CONNECTION.is_configured() {
                     return Err(Error::Disconnected);
                 }
                 if !RX_READY.load(Ordering::SeqCst) {
