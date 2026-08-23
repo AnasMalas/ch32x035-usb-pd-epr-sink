@@ -16,6 +16,10 @@ impl Default for SafetyTimings {
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct PortInputs {
     pub cc_attached: bool,
+    /// Active-high coarse physical predicate: true only after the board's
+    /// detector has qualified VBUS above its minimum-valid threshold. False
+    /// also covers an unavailable detector and must be published immediately;
+    /// it is not proof that VBUS matches the negotiated contract.
     pub vbus_present: bool,
     /// False for an over-voltage, over-temperature, power-path, or other local
     /// hardware fault.

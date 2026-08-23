@@ -75,9 +75,25 @@ current VBUS-present level, waits for attach/detach notifications, clears a
 stale detach notification at session start, disables or enables the firmware
 load request, and optionally reports `PhyEvent` diagnostics.
 
-The reference implementation uses Embassy signals populated by an EXTI GPIO
-task. Another application can use different pins or a different
-3.3 V-safe power-good circuit without modifying the library.
+The VBUS-present level is an active-high physical detector contract. High
+means the detector is initialized and VBUS is above a board-chosen
+minimum-valid threshold. Low means VBUS is below that threshold or the
+detector is unavailable. Start with the published state low, qualify the raw
+high continuously before publishing attachment, and publish the first raw low
+or unavailable observation immediately without detach debounce. The wait
+methods must remain cancellation-safe.
+
+Document the detector's active polarity, nominal rising and falling
+thresholds, worst-case threshold tolerance, hysteresis, assertion
+qualification interval, and maximum deassertion-to-load-off latency. The
+detector and independent physical load gate must default off when the MCU is
+reset or unpowered, when the detector is unpowered, or when its state is
+uncertain. This is a coarse minimum-VBUS predicate, not a measurement or proof
+that VBUS agrees with the negotiated contract.
+
+The reference implementation uses Embassy signals populated by a board-owned
+GPIO/comparator supervisor task. Another application can use different pins
+or detector circuitry without modifying the library.
 
 ## PPS current-limit indicator
 
@@ -185,6 +201,11 @@ LOAD_ON = PD_LOAD_PERMITTED AND USER_OUTPUT_ENABLED AND VBUS_PRESENT AND HARDWAR
 VBUS removal must turn the load path off without relying on the executor, the
 PD stack, or a functioning MCU. The reference implementation is documented in
 [`examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md`](../examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md).
+
+The minimum-VBUS predicate cannot validate an active contract's voltage. A
+board that must enforce contract-voltage agreement needs a separate,
+appropriately accurate measurement and policy path in addition to this
+detector and the default-off hardware gate.
 
 Before each Request, `ContractTracker` classifies the wire transition against
 the confirmed RDO. Identical maintenance and a same-encoded-voltage request

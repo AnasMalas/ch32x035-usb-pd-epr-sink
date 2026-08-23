@@ -81,9 +81,9 @@ runtime.
    limits. Do not derive safe limits from a charger's label.
 2. Implement `SinkRuntime` for command input, typed observations, delays, and
    the firmware load-enable request.
-3. With one CH32X035 package feature, implement `Ch32x035Port` for real
-   VBUS-present state, cancellation-safe attach/detach waits, immediate load
-   disable, and optional PHY diagnostics.
+3. With one CH32X035 package feature, implement `Ch32x035Port` for a real
+   active-high minimum-VBUS detector, cancellation-safe attach/detach waits,
+   immediate load disable, and optional PHY diagnostics.
 4. Implement `Ch32x035SessionTimer` using the application's monotonic timer.
 5. Construct and run `Ch32x035SinkSession`; it owns PHY reset, policy-engine
    construction, terminal error classification, and bounded recovery delays.
@@ -132,6 +132,19 @@ is the canonical end-to-end implementation.
 | Exchange compact host frames | `control` module and `CONTROL_PROTOCOL_VERSION` |
 
 ## Safety boundary
+
+The `Ch32x035Port` VBUS predicate has a precise physical meaning. High means
+an initialized detector reports VBUS above a board-chosen minimum-valid
+threshold. Low means VBUS is below that threshold or the detector is
+unavailable. Initialize it low, require a continuous high for the documented
+assertion qualification interval, and react to the first low/unavailable
+observation without debounce. The board integration must document active
+polarity, nominal rising and falling thresholds, worst-case tolerance,
+hysteresis, assertion time, and maximum deassertion-to-load-off latency.
+
+This predicate is deliberately coarse. High does not measure VBUS and is not
+evidence that the rail equals the voltage or tolerance required by the active
+PD contract.
 
 `SinkRuntime::set_pd_load_permitted(true)` and
 `Ch32x035Port::set_pd_load_permitted(true)` are PD-policy permissions after a

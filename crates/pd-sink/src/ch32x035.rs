@@ -31,8 +31,23 @@ pub enum PhyEvent {
 
 /// Board-owned port services needed by [`Ch32x035UsbPdDriver`].
 ///
+/// The three VBUS methods expose one active-high, board-defined physical
+/// detector predicate. `true` means the detector is available and reports
+/// VBUS above the board's minimum-valid threshold. `false` means VBUS is below
+/// that threshold or the detector is unavailable. This is only a coarse
+/// minimum-VBUS predicate; it does not measure VBUS or prove that VBUS matches
+/// the negotiated contract.
+///
+/// The application must initialize the published predicate to false, qualify
+/// a raw high continuously for its documented assertion interval, and publish
+/// a raw low or unavailable detector immediately, without detach debounce.
 /// Both wait methods must be cancellation-safe. A simple implementation can
-/// use Embassy signals fed by a separate GPIO supervisor task.
+/// use Embassy signals fed by a separate GPIO or comparator supervisor task.
+/// Board documentation must state detector polarity, nominal rising and
+/// falling thresholds, worst-case threshold tolerance, hysteresis, assertion
+/// qualification, and maximum deassertion-to-load-off latency. The detector
+/// and physical load gate must fail safe/off during reset, loss of either
+/// supply, or uncertain detector state.
 pub trait Ch32x035Port {
     fn vbus_present(&self) -> bool;
     fn wait_for_vbus_present(&self) -> impl Future<Output = ()>;
