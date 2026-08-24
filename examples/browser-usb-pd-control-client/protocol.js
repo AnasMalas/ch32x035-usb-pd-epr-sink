@@ -5,7 +5,7 @@
   const VERSION = 1;
   const MAX_PAYLOAD_LENGTH = 56;
   const NONE_U32 = 0xffffffff;
-  const VOLTAGE_CEILINGS = Object.freeze([5000, 28000, 48000, 50000]);
+  const VOLTAGE_CEILINGS = Object.freeze([5000, 21000, 28000, 48000, 50000]);
 
   const COMMAND = Object.freeze({
     device: 0x01,

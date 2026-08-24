@@ -8,7 +8,8 @@ const protocol = globalThis.PdControlProtocol;
 assert.equal(protocol.boundedVoltageCeiling(50000), 48000);
 assert.equal(protocol.boundedVoltageCeiling(50000, 50000), 50000);
 assert.equal(protocol.boundedVoltageCeiling(48000, 28000), 28000);
-assert.equal(protocol.boundedVoltageCeiling(21000, 50000), 5000);
+assert.equal(protocol.boundedVoltageCeiling(21000, 50000), 21000);
+assert.equal(protocol.boundedVoltageCeiling(28000, 21000), 21000);
 
 function u32(value) {
   const number = value >>> 0;
