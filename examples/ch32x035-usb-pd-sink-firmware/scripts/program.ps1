@@ -10,7 +10,7 @@ param(
         'usb-epr-50v',
         'usb-epr-text'
     )]
-    [string]$Profile = 'safe-5v',
+    [string]$Profile = 'usb-safe-5v',
 
     [ValidateSet(
         'ch32x035c8t6',
@@ -25,9 +25,19 @@ param(
 
 $ErrorActionPreference = 'Stop'
 
-if ($Profile -eq 'rev0-validation') {
+$rev0Profiles = @(
+    'rev0-validation',
+    'usb-safe-5v',
+    'usb-pps',
+    'usb-epr',
+    'usb-epr-diagnostic',
+    'usb-epr-50v',
+    'usb-epr-text'
+)
+
+if ($Profile -in $rev0Profiles) {
     if ($PSBoundParameters.ContainsKey('Chip') -and $Chip -ne 'ch32x035g8u6') {
-        throw "Profile 'rev0-validation' requires -Chip ch32x035g8u6."
+        throw "Profile '$Profile' requires -Chip ch32x035g8u6."
     }
     $Chip = 'ch32x035g8u6'
 }

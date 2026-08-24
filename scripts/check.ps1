@@ -56,6 +56,7 @@ $firmwarePackage = 'ch32x035-usb-pd-epr-sink-reference'
 $ccWakeProbePackage = 'ch32x035-usbpd-cc-wake-probe'
 $halTestPackage = 'ch32x035-usb-pd-epr-sink-hal-tests'
 $referenceChip = 'ch32x035f8u6'
+$rev0Chip = 'ch32x035g8u6'
 $supportedChips = @(
     'ch32x035c8t6',
     'ch32x035f7p6',
@@ -67,7 +68,10 @@ $supportedChips = @(
 $usbControlEprFeatures = "$referenceChip,usb-control,epr-capable-hardware"
 $diagnosticEprFeatures = "$referenceChip,usb-control,epr-capable-hardware,output-default-off"
 $textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
-$rev0ValidationFeatures = 'ch32x035g8u6,dev-text-console,output-default-off,rev0-validation'
+$rev0UsbSafeFeatures = "$rev0Chip,usb-control,output-default-off,rev0-board"
+$rev0UsbPpsFeatures = "$rev0Chip,usb-control,pps-capable-hardware,output-default-off,rev0-board"
+$rev0UsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
+$rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control",
     "$referenceChip,usb-control,pps-capable-hardware",
@@ -75,6 +79,9 @@ $firmwareFeatureSets = @(
     $diagnosticEprFeatures,
     "$referenceChip,usb-control,epr-50v-compatible-hardware",
     $textConsoleEprFeatures,
+    $rev0UsbSafeFeatures,
+    $rev0UsbPpsFeatures,
+    $rev0UsbEprFeatures,
     $rev0ValidationFeatures
 )
 
@@ -143,6 +150,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0ValidationFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 validation firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 compact EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
@@ -153,7 +163,17 @@ try {
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd tests failed with exit code $LASTEXITCODE" }
 
     foreach ($chip in $supportedChips) {
-        $packageCheckFeatures = "$chip,usb-control,epr-capable-hardware"
+        # F7P6 has only 48 KiB of application flash. Prove its complete
+        # pin/PHY/session integration with the fitting console-free 5 V
+        # reference; the GUI-capable EPR example is intentionally documented
+        # as too large for that package. All 62 KiB packages link the complete
+        # compact USB/EPR reference here.
+        $packageCheckFeatures = if ($chip -eq 'ch32x035f7p6') {
+            $chip
+        }
+        else {
+            "$chip,usb-control,epr-capable-hardware"
+        }
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
         if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware build failed with exit code $LASTEXITCODE" }
 
@@ -173,7 +193,7 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
-        if ($feature -eq $rev0ValidationFeatures) {
+        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0ValidationFeatures)) {
             $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $firmwareElf `
@@ -183,26 +203,36 @@ try {
 
     if ([Environment]::OSVersion.Platform -eq [PlatformID]::Win32NT) {
         $profileBuild = Join-Path $workspace 'examples/ch32x035-usb-pd-sink-firmware/scripts/build.ps1'
-        $wrongChipRejected = $false
-        try {
-            & $profileBuild -Profile rev0-validation -Chip $referenceChip
-        }
-        catch {
-            if ($_.Exception.Message -notlike '*requires -Chip ch32x035g8u6*') { throw }
-            $wrongChipRejected = $true
-        }
-        if (-not $wrongChipRejected) {
-            throw 'rev0-validation profile accepted a non-G8U6 chip.'
-        }
+        foreach ($profile in @(
+            'rev0-validation',
+            'usb-safe-5v',
+            'usb-pps',
+            'usb-epr',
+            'usb-epr-diagnostic',
+            'usb-epr-50v',
+            'usb-epr-text'
+        )) {
+            $wrongChipRejected = $false
+            try {
+                & $profileBuild -Profile $profile -Chip $referenceChip
+            }
+            catch {
+                if ($_.Exception.Message -notlike '*requires -Chip ch32x035g8u6*') { throw }
+                $wrongChipRejected = $true
+            }
+            if (-not $wrongChipRejected) {
+                throw "$profile profile accepted a non-G8U6 chip."
+            }
 
-        & $profileBuild -Profile rev0-validation
-        $rev0Artifact = Join-Path $workspace 'examples/generated-artifacts/ch32x035-usb-pd-epr-sink-reference-ch32x035g8u6-rev0-validation.elf'
-        if (-not (Test-Path -LiteralPath $rev0Artifact -PathType Leaf)) {
-            throw "rev0-validation profile did not stage $rev0Artifact"
+            & $profileBuild -Profile $profile
+            $profileArtifact = Join-Path $workspace "examples/generated-artifacts/ch32x035-usb-pd-epr-sink-reference-$rev0Chip-$profile.elf"
+            if (-not (Test-Path -LiteralPath $profileArtifact -PathType Leaf)) {
+                throw "$profile did not stage $profileArtifact"
+            }
+            & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
+                -Firmware $profileArtifact `
+                -ApplicationFlashBytes (62 * 1024)
         }
-        & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
-            -Firmware $rev0Artifact `
-            -ApplicationFlashBytes (62 * 1024)
     }
 
     $guiCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) "usb-pd-control-$([guid]::NewGuid().ToString('N')).html"

@@ -11,7 +11,7 @@ param(
         'usb-epr-50v',
         'usb-epr-text'
     )]
-    [string]$Profile = 'safe-5v',
+    [string]$Profile = 'usb-safe-5v',
 
     [Parameter(ParameterSetName = 'ByProfile')]
     [ValidateSet(
@@ -42,9 +42,19 @@ if (-not (Get-Command wchisp -ErrorAction SilentlyContinue)) {
     throw 'wchisp is not installed. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\install-wchisp.ps1 or install a prebuilt wchisp release.'
 }
 
-if ($PSCmdlet.ParameterSetName -eq 'ByProfile' -and $Profile -eq 'rev0-validation') {
+$rev0Profiles = @(
+    'rev0-validation',
+    'usb-safe-5v',
+    'usb-pps',
+    'usb-epr',
+    'usb-epr-diagnostic',
+    'usb-epr-50v',
+    'usb-epr-text'
+)
+
+if ($PSCmdlet.ParameterSetName -eq 'ByProfile' -and $Profile -in $rev0Profiles) {
     if ($PSBoundParameters.ContainsKey('Chip') -and $Chip -ne 'ch32x035g8u6') {
-        throw "Profile 'rev0-validation' requires -Chip ch32x035g8u6."
+        throw "Profile '$Profile' requires -Chip ch32x035g8u6."
     }
     $Chip = 'ch32x035g8u6'
 }
