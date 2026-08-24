@@ -1,5 +1,11 @@
 # First-board verification
 
+The scripted `usb-*` profiles now target the public CH32X035G8U6 rev0 board.
+Use the [rev0 procedure](rev0_validation.md) for those artifacts. The PA6/PA7
+fixture below applies only to a custom Cargo build without the internal
+`rev0-board` feature; the scripted profile commands later in this document
+must not be combined with that fixture.
+
 This procedure stops at safe 5 V, full source-capability discovery, and detach
 cutoff. Do not issue a high-voltage command during this pass.
 

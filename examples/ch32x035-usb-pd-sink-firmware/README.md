@@ -2,10 +2,10 @@
 
 This example binds the reusable sink library to concrete CH32X035 board
 profiles: VBUS sensing, load-enable policy, USB CDC or LinkE diagnostics,
-build profiles, and bounded restart behavior. Normal profiles use PA6/PA7;
-the G8U6-only `rev0-validation` profile implements the public rev0 board's
-OPA1 and PB10 wiring. None of those pins or transports are requirements of
-the core crate.
+build profiles, and bounded restart behavior. The scripted `usb-*` profiles
+target the public G8U6 rev0 board's OPA1/PB10 wiring. The non-USB `safe-5v`
+profile and custom Cargo builds retain the alternate PA6/PA7 binding. None of
+those pins or transports are requirements of the core crate.
 
 Run the commands below from the repository root. Read the
 [hardware interface](docs/hardware_interface.md) and
@@ -15,14 +15,16 @@ PPS or EPR on a new board.
 For the public CH32X035G8U6 rev0 board, use the dedicated
 [rev0 validation procedure](docs/rev0_validation.md). It is fixed at 5 V,
 uses the internal OPA1 detector, and keeps PB10 off until an explicit
-`output-on` command is permitted by the PD and VBUS state.
+`output-on` command is permitted by the active power policy and VBUS state.
+The same command can control a qualified non-PD USB-A supply after the PD
+session is classified as unmanaged; passive PD retries do not own PB10.
 
 ## First safe run on Windows
 
 This repository supplies firmware source and a pin-level hardware contract,
-not a reference schematic or finished board. You need to know how your board
-enters the CH32X035 factory USB ISP boot mode and how its PA6/PA7 safety
-signals are implemented.
+not a reference schematic or finished board. You need to know how the rev0
+board enters the CH32X035 factory USB ISP boot mode and how its OPA1/PB10
+safety signals are implemented.
 
 1. Install Git and clone this repository.
 2. Install Rust through <https://rustup.rs/>.
@@ -61,12 +63,12 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 |---|---|---|
 | `safe-5v` | LinkE SDI | fixed 5 V |
 | `rev0-validation` | ASCII USB console, PB10 default off | G8U6 rev0, fixed 5 V |
-| `usb-safe-5v` | compact USB control | fixed 5 V |
-| `usb-pps` | compact USB control | PPS through 21 V |
-| `usb-epr` | compact USB control | standard EPR through 48 V |
-| `usb-epr-diagnostic` | compact USB control, typed Hard Reset causes, output default off | standard EPR through 48 V |
-| `usb-epr-50v` | compact USB control | explicit non-standard 50 V compatibility |
-| `usb-epr-text` | ASCII USB console | standard EPR through 48 V |
+| `usb-safe-5v` | compact USB control, PB10 default off | G8U6 rev0, fixed 5 V |
+| `usb-pps` | compact USB control, PB10 default off | G8U6 rev0, PPS through 21 V |
+| `usb-epr` | compact USB control, PB10 default off | G8U6 rev0, standard EPR through 48 V |
+| `usb-epr-diagnostic` | compatibility alias of `usb-epr` | G8U6 rev0, standard EPR through 48 V |
+| `usb-epr-50v` | compact USB control, PB10 default off | G8U6 rev0, explicit non-standard 50 V compatibility |
+| `usb-epr-text` | explicit ASCII troubleshooting console, PB10 default off | G8U6 rev0, standard EPR through 48 V |
 
 These profiles are board assertions, not software-only unlocks. Do not select
 one whose voltage, current, or power exceeds the complete connector,
@@ -81,28 +83,29 @@ HAL default).
 
 ## Build profiles
 
-The default target is `ch32x035f8u6`. Select another supported package with
-`-Chip`; the same normal-profile PA6/PA7, CC, USB, and SDI GPIO names are
-bonded on all six:
+The scripted `usb-*` profiles and `rev0-validation` select
+`ch32x035g8u6` automatically and reject another explicit `-Chip`, because the
+OPA1/PB1/PB5 bonded-pad detector is package-specific:
 
 ```powershell
-.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v -Chip ch32x035g8u6
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
 ```
 
-Supported values are `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`,
-`ch32x035g8r6`, `ch32x035g8u6`, and `ch32x035r8t6`. CH32X033 is not supported
-because it has USB but not the integrated USB-PD peripheral.
-`rev0-validation` is the exception: its package-bonded detector topology is
-specific to `ch32x035g8u6`, so the scripts select G8U6 automatically and
-reject an explicitly requested different chip.
+Omitting `-Profile`, or building the firmware package with Cargo defaults,
+selects this compact `usb-safe-5v` G8U6 rev0 configuration.
+
+The `safe-5v` PA6/PA7 profile and direct Cargo builds still support
+`ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`,
+`ch32x035g8u6`, and `ch32x035r8t6`. CH32X033 is not supported because it has
+USB but not the integrated USB-PD peripheral.
 
 The CH32X035F7P6 has only a 48 KiB application region. At this revision the
-compact USB/GUI EPR image links at 48,624 bytes, leaving just 528 bytes; the
-larger development text-console EPR profile does not fit. Treat F7P6 as a
-size-constrained library target, not as a promise that every reference profile
-or application extension is usable. The build uses the package's real linker
-limit and will fail rather than emit an oversized image. The other listed
-parts have the 62 KiB application region used by the full profile set.
+the console-free fixed-5 V integration links at 39,504 bytes. The current
+compact USB/GUI EPR feature set is 49,264 bytes and therefore exceeds F7P6's
+48 KiB application region by 112 bytes; the larger development text-console
+EPR feature set also does not fit. Treat F7P6 as a size-constrained manual
+integration target, not as a scripted rev0 profile. The linker will fail
+rather than emit an oversized image.
 
 ```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-safe-5v
@@ -124,20 +127,25 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile rev0-validation
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
-.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic -Chip ch32x035g8u6
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
 `rev0-validation` is the human-readable, fixed-5 V public-board bring-up
 image; follow its [dedicated procedure](docs/rev0_validation.md).
-`usb-epr` is the normal compact binary control image. The opt-in
-`usb-epr-diagnostic` profile keeps the application-owned output latch off
-until the compact `output-on` command arrives and includes typed Hard Reset
-causes; it is intended for library and first-board diagnosis. The opt-in
+`usb-epr` is the normal compact binary control image. All scripted USB
+profiles keep the application-owned output latch off until a permitted
+`output-on` command arrives and include typed Hard Reset causes. They select
+the safe automatic-restore transition policy: PB10 is inhibited for an unsafe
+contract change, the user latch is preserved, and PB10 returns only after
+PS_RDY. Applications can explicitly choose manual re-arm or uninterrupted
+transitions when their complete downstream path supports that policy.
+`usb-epr-diagnostic` remains as a compatibility alias. The opt-in
 `usb-epr-50v` image raises only the configured sink ceiling; normal AVS
 selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
-console for bring-up. Build output reports the current flash and static-RAM
+console only for explicit troubleshooting; compact control remains the
+default. Build output reports the current flash and static-RAM
 usage; the [crate guide](../../crates/pd-sink/README.md#flash-use)
 shows representative linked costs for common integration paths.
 

@@ -5,6 +5,10 @@ firmware is deliberately fixed at 5 V. It validates the current public PD
 library branch without enabling PPS or EPR and keeps the active-high PB10 load
 request low until every software permission is present.
 
+The scripted `usb-safe-5v`, `usb-pps`, and `usb-epr*` profiles use the same
+G8U6 OPA1/PB10 board binding. Compact USB control is the default; only the
+explicit `rev0-validation` and `usb-epr-text` profiles use ASCII transport.
+
 ## Exact rev0 implementation
 
 | Function | Rev0 connection | Firmware configuration |
@@ -16,7 +20,7 @@ request low until every software permission is present.
 | OPA1 output | PB5 | OPA mode selects PB5 (`MODE1=1`); PB5 GPIO driver disabled in analog-input mode |
 | detector observation | PB1 on the shared PB1/PB5 package pad | floating digital input with EXTI1; never an output or pulled-up input |
 | load request | PB10 | active high; initialized low before OPA or PD setup |
-| diagnostic USB | PC16 / PC17 | ASCII CDC console |
+| diagnostic USB | PC16 / PC17 | compact CDC by default; ASCII only for explicit text profiles |
 
 The current [WCH CH32X035 datasheet v2.2](https://www.wch-ic.com/downloads/CH32X035DS0_PDF.html)
 shows PB1, PB5, OPA1 output `O1O1`, and `T1BK` together on G8U6 QFN28 pin 16
@@ -114,13 +118,13 @@ Put the MCU in factory USB ISP mode and flash the already-built artifact:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile rev0-validation
 ```
 
-Keep the PD connector and PD VBUS source disconnected while entering ISP and
-flashing. Before attaching either USB interface, prove that debug-USB VBUS,
-the board's 5 V VDD rail, and PD VBUS cannot backfeed one another. Use the
-board's intended isolation/power-selection arrangement; do not assume the two
-USB connectors may be powered together.
+If PD VBUS is the board's only supply, enter ISP and flash through that normal
+powered connection; do not add a second supply merely for this procedure. If
+a board variant has separate debug and PD connectors, first prove that their
+VBUS rails cannot backfeed one another.
 
-Leave ISP mode, reset normally, then list and open the application CDC port:
+Leave ISP mode and power-cycle normally, then list and open the application
+CDC port:
 
 ```powershell
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\console.ps1 -List
@@ -139,8 +143,14 @@ Use a current-limited 5 V source for the first pass.
    a confirmed 5 V session outcome.
 3. Confirm PB10 remains low even after the PD permission becomes true. Send
    `status` and `caps` to capture the session, then send `output-on`. PB10 may
-   rise only when raw and qualified VBUS, PD permission, and the user latch
-   are all true. Send `output-off` before changing bench wiring.
+   rise only when raw and qualified VBUS and the user latch are true, with the
+   active PD policy either permitted or explicitly unmanaged. Send
+   `output-off` before changing bench wiring.
+   Repeat with a current-limited USB-A-to-C source that provides no PD
+   messages: after the partner is treated as PD-unmanaged, `output-on` must be
+   able to raise PB10 using the user latch and the qualified VBUS predicate;
+   passive PD retries must not pulse it low. This confirms control policy, not
+   the source voltage or available current.
 4. For a detector-only threshold sweep, disconnect the ordinary PD source and
    CC pins completely. Power VDD through a verified isolated arrangement and
    drive only PD VBUS from a current-limited bench supply. Never parallel a
@@ -151,12 +161,56 @@ Use a current-limited 5 V source for the first pass.
    an ordinary charger. Re-enable with a fresh `output-on`, then scope OPA
    output/QFN28 pin 16, PB10, and the switch gate while VBUS drops below the
    measured crossing. PB10 must fall on the first observed detector low.
-6. Detector low, PD-permission loss, detach, and Hard Reset clear the rev0
-   user latch. Issue a fresh `output-on` only after each recovered contract;
-   then send `output-off` before the next reconnect. Repeat attach/detach,
+6. Detector low, a real managed-PD permission loss, detach, and Hard Reset
+   clear the rev0 user latch. An ordinary configured voltage transition
+   preserves the latch while PB10 is inhibited, then restores PB10 after
+   PS_RDY. Issue a fresh `output-on` after safety cutoff; then send
+   `output-off` before the next reconnect. Repeat attach/detach,
    cable reversal, failed negotiation, and reconnect tests. Save the console
    transcript with the firmware SHA-256, source/cable identity, measured
    thresholds, and cutoff latency.
+
+## Compact PPS and EPR regression
+
+Run high-voltage tests only after the fixed-5 V procedure passes and the
+complete upstream path is already known to tolerate the requested voltage.
+Keep PB10 and the product load off throughout the first protocol regression.
+The GUI's confirmed contract proves protocol agreement, not the actual VBUS
+voltage; use at least a suitably rated meter if electrical voltage evidence is
+required.
+
+Test the compact PPS artifact first:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-pps
+.\examples\browser-usb-pd-control-client\scripts\launch.ps1
+```
+
+Capture `device`, `caps`, and `plans`, then request only values advertised by
+the connected source. Exercise a low, middle, and high PPS value, request
+`pps-status` after each, and finish by requesting fixed 5 V. Do not send
+`output-on` at the higher voltages.
+
+Then test standard compact EPR, still with PB10 off:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-epr
+```
+
+Capture the automatic EPR entry outcome, `epr-caps`, and `plans` before making
+an EPR request. Exercise only the source's advertised low, middle, and high
+standard EPR points, never above nominal 48 V with this profile. Finish with
+`exit-epr` and confirm fixed 5 V. `usb-epr-50v` remains a separate nonstandard
+opt-in and is not part of this regression.
+
+At nominal 21 V, 48 V, and the standard 50.4 V positive limit, the divider
+node is approximately 1.94 V, 4.44 V, and 4.66 V respectively. Qualify
+component tolerances and pin-rail margin before the upper EPR test. The
+roughly 4.54 V detector remains only a minimum-VBUS predicate: it cannot tell
+48 V from an erroneous 9 V. Bridging one lower 5.1 kohm resistor also does not
+force detector-low at high V; perform that synthetic detector test at 5 V.
 
 ## Rev0 facts still requiring bench evidence
 

@@ -78,7 +78,8 @@ runtime.
 ## Integration sequence
 
 1. Build `SinkConfig` from the complete board's voltage, current, and power
-   limits. Do not derive safe limits from a charger's label.
+   limits and select an explicit `TransitionLoadPolicy`. Do not derive safe
+   limits from a charger's label.
 2. Implement `SinkRuntime` for command input, typed observations, delays, and
    the firmware load-enable request.
 3. With one CH32X035 package feature, implement `Ch32x035Port` for a real
@@ -124,6 +125,8 @@ is the canonical end-to-end implementation.
 | Plan a request | `RequestPlanner`, `RequestContext`, `SinkLimits`, `Demand` |
 | Track a contract | `ContractTracker`, `ContractState` |
 | Classify a renegotiation | `ContractTransition`, `ContractTransitionKind` |
+| Select transition load continuity | `TransitionLoadPolicy` |
+| Arbitrate PD versus an application user latch | `LoadControlState` |
 | Select EPR entry/exit behavior | `EprEntryPolicy`, `EprEntryFallback`, `EprExitPolicy`, `EprExitFallback` |
 | Run the reusable DPM | `SinkConfig`, `SinkDevice`, `SinkRuntime`, `SinkEvent` |
 | Recover after a proven warm reset | `RecoveryIntent`, `RecoveryCancellationReason`, `Ch32x035SinkSession::new_recovering` |
@@ -146,16 +149,30 @@ This predicate is deliberately coarse. High does not measure VBUS and is not
 evidence that the rail equals the voltage or tolerance required by the active
 PD contract.
 
-`SinkRuntime::set_pd_load_permitted(true)` and
-`Ch32x035Port::set_pd_load_permitted(true)` are PD-policy permissions after a
-confirmed contract. The application owns a separate user output latch. None is
-an independent safety mechanism. Hardware must enforce:
+`SinkRuntime::set_pd_load_permitted` and
+`Ch32x035Port::set_pd_load_permitted` publish PD-policy permission. They do not
+give PD exclusive ownership of the product load. The application owns a
+separate user output latch and may explicitly permit that latch to control a
+non-PD supply when no usable PD session is active. No ADC or particular
+voltage-validation scheme is required by the crate; those are product choices.
+
+The application still combines its final MCU request with independent hardware
+gates:
 
 ```text
-LOAD_ON = PD_LOAD_PERMITTED AND USER_OUTPUT_ENABLED AND VBUS_PRESENT AND HARDWARE_OK
+LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
+`LoadControlState` is an optional pin-free helper for this arbitration. It
+allows user control while PD is unmanaged, latches active-session safety
+cutoffs until the application consumes them, and prevents lifecycle updates
+from overwriting a pending user-latch clear. It still owns no GPIO, comparator,
+ADC, or product policy.
+
 Detach, Hard Reset, protocol loss, and invalid state must disable the load.
+`TransitionLoadPolicy` separately selects manual re-arm, restoration after
+PS_RDY, or deliberately uninterrupted operation for a downstream path rated
+for every transition. None is an independent safety mechanism.
 Negotiated current is a permitted ceiling, not guaranteed source-side
 electronic current limiting.
 

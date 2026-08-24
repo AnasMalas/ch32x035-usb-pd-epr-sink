@@ -14,9 +14,12 @@ Run these PowerShell scripts from the repository root:
 Profiles are hardware assertions, not merely UI presets. Start with
 `usb-safe-5v` on unverified hardware and read the parent
 [firmware example README](../README.md) before enabling PPS or EPR.
-`build.ps1`, `flash.ps1`, and `program.ps1` accept `-Chip`; it defaults to
-`ch32x035f8u6` and keeps artifacts for different packages separate.
+Every scripted `usb-*` profile selects the public rev0
+`ch32x035g8u6` board binding and rejects another `-Chip`. The non-USB
+`safe-5v` profile retains the generic PA6/PA7 binding and package selection.
+Omitting `-Profile` selects compact `usb-safe-5v`.
 
 `console.ps1` does not decode the compact `usb-control` protocol. Use the
 [browser control client](../../browser-usb-pd-control-client/) with the normal
-compact-control profiles.
+compact-control profiles. Text transport is explicit opt-in, never the
+default.

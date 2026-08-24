@@ -124,8 +124,14 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
 
 `VBUS_PRESENT` and `HARDWARE_OK` must disable the power path without working
-firmware. The reference firmware's PA6/PA7 assignment is an example, not a
-library requirement.
+firmware. Scripted USB profiles use the G8U6 rev0 OPA1/PB10 binding; the
+alternate PA6/PA7 binding remains an example for custom applications. Neither
+is a library requirement. PD load permission is one application input, not
+exclusive ownership of the load: products may let an explicit user latch
+control a non-PD USB-A supply when no usable PD session is active. The library
+does not require an ADC for that choice. Contract transitions separately offer
+manual re-arm, automatic restore after PS_RDY, and deliberately uninterrupted
+policies; physical fault and detector cutoffs remain unconditional.
 
 ### Documentation by task
 

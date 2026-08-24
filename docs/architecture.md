@@ -16,8 +16,9 @@ The repository has two intentional ownership domains:
 | Browser host-client example | `examples/browser-usb-pd-control-client` | Desktop Web Serial, Android WebUSB, controls, tables, and host-side diagnostic formatting |
 
 The reference application may demonstrate a policy without making that policy
-a library requirement. In particular, PA6, PA7, USB CDC, LinkE SDI, and the
-browser are not owned by the core crate.
+a library requirement. In particular, the rev0 OPA1/PB10 binding, the
+alternate PA6/PA7 binding, USB CDC, LinkE SDI, and the browser are not owned
+by the core crate.
 
 ## Layer boundaries
 
@@ -95,7 +96,8 @@ SPR capabilities -> request 5 V -> PS_RDY -> Source_Info
 
 A Hard Reset invalidates the contract and holds the load off while the PHY
 actively listens through a fixed two-second source-recovery window, without
-requiring a PA6 edge. The reference configuration permits at most two
+requiring another VBUS-detector edge. The reference configuration permits at
+most two
 automatic EPR entry attempts per physical attachment. If
 the retry also fails, it remains usable in SPR and leaves further EPR retries
 to explicit user commands. Software-session restarts preserve this budget and
@@ -103,15 +105,20 @@ use a bounded cooldown instead of creating a reset storm.
 
 ### Port and safety supervisor
 
-The reference application's supervisor owns PA6 attach/detach and PA7 load
-enable; neither pin is selected by the library. Its invariant is that reset,
-detach, protocol loss, or an unconfirmed transition leaves the load off. The
+The reference application's supervisor owns the board-provided attach/detach
+predicate and load request; neither signal is selected by the library.
+Scripted USB profiles bind them to rev0 OPA1/PB1 and PB10, while direct Cargo
+builds may retain PA6/PA7. Its invariant is that reset, detector loss, a real
+PD-session failure, or an inhibiting transition leaves the load off. Transition
+behavior is an explicit application-selected policy: manual re-arm, automatic
+restore after PS_RDY, or deliberately uninterrupted operation for a suitably
+rated load. When no usable PD session is active, the reference permits the
+separate user latch to control a non-PD supply; PD retries do not own that
+product decision. The
 separate hardware gate documented in
 [`examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md`](../examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md)
-remains the primary fast cutoff. PA6 is not required to pulse for protocol
-recovery after Hard Reset;
-this keeps the isolated always-high fixture usable while preserving PA6 as a
-load-safety input.
+remains the primary fast cutoff. The detector is not required to pulse for
+protocol recovery after Hard Reset.
 
 ### Diagnostics and commands
 

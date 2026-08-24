@@ -1,8 +1,9 @@
 # CH32X035 hardware/firmware interface
 
-This is the schematic contract assumed by the firmware. The GPIO names are
-common to every supported CH32X035 package; physical package pins differ.
-Confirm the package drawing against the current
+This is the schematic contract assumed by the firmware example. Scripted
+`usb-*` profiles target the public CH32X035G8U6 rev0 board; the table below
+also records the alternate PA6/PA7 binding available to custom Cargo builds.
+Confirm every physical package pin against the current
 [WCH datasheet](https://www.wch-ic.com/downloads/CH32X035DS0_PDF.html) before
 laying out a board.
 
@@ -19,17 +20,18 @@ laying out a board.
 | PA6 | 22 | 16 | 11 | 13 | 8 | 12 | input, active-high `VBUS_PRESENT` from external 3.3 V logic |
 | PA7 | 23 | 17 | 12 | 17 | 9 | 13 | output, active-high `LOAD_ENABLE` firmware request |
 
-The table describes the normal profiles. The public G8U6 rev0 board has a
-separate, fixed-5 V [`rev0-validation` profile](rev0_validation.md): OPA1
-compares PB4 against PB6, PB1 reads the PB5 OPA output through the package's
-documented PB1/PB5 bond, and PB10 is the active-high load request. Those exact
-pins remain example-local and are not requirements of the reusable library.
+PA6/PA7 describe the alternate generic binding, not a scripted USB profile.
+All scripted USB profiles use the public G8U6 rev0 implementation documented
+in the [`rev0-validation` procedure](rev0_validation.md): OPA1 compares PB4
+against PB6, PB1 reads the PB5 OPA output through the package's documented
+PB1/PB5 bond, and PB10 is the active-high load request. Those exact pins
+remain example-local and are not requirements of the reusable library.
 
 PA6 and PA7 were selected partly to leave a hardware-assisted cutoff route
 available: PA6 exposes OPA/comparator-related input and TIM1 break alternate
 functions, while PA7 exposes a TIM1 complementary-output alternate function.
-The reference firmware intentionally configures PA6 as an EXTI GPIO and PA7
-as a GPIO output today. Do not claim or depend on the analog-to-break path
+The alternate binding configures PA6 as an EXTI GPIO and PA7 as a GPIO output
+today. Do not claim or depend on the analog-to-break path
 until its remap, polarity, startup state, and fault latency have been verified
 on hardware.
 
@@ -59,6 +61,10 @@ power the board, prevent either connector from back-powering the other.
 
 ## Non-negotiable power-path behavior
 
+For the alternate PA6/PA7 binding, PA6 must never connect directly to VBUS
+and PA7 requires an external pull-down. The following requirements describe
+that custom binding.
+
 PA6 must never connect directly to VBUS. Feed it from a 48 V-capable
 comparator, supervisor, or isolated power-good circuit with a 3.3 V-safe
 output, hysteresis, and a defined low state whenever the cable, comparator
@@ -84,6 +90,14 @@ LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 The PA6 interrupt is a second cutoff path and cancels blocked PD I/O; it is not
 the primary anti-spark guarantee.
 
+For the scripted rev0 binding, substitute the active-high OPA1/PB1 minimum-
+VBUS predicate for PA6 and PB10 for PA7. PB10 likewise needs a physical
+default-off gate. The OPA predicate proves only that VBUS exceeds the board's
+roughly 4.54 V minimum; it does not prove that VBUS matches a 21 V, 48 V, or
+other negotiated contract. It is neither an ADC requirement nor a PD-only
+signal: another board may supply the same active-high predicate from an
+external comparator or power supervisor.
+
 The switch, FETs, connector, protection, discharge path, measurement network,
 spacing, and passives must be rated for the worst supported EPR condition and
 fault energy. Standard operation is nominally capped at 48 V, which can reach
@@ -96,15 +110,21 @@ those ratings.
 
 ## Firmware behavior
 
-- PA7 is driven low before attach debounce.
-- PA6 must remain high for 100 ms before attachment is accepted.
-- The first PA6 falling edge drives PA7 low without detach debounce.
+- The load request is driven low before attach debounce.
+- The VBUS detector must remain high for 100 ms before attachment is accepted.
+- The first detector falling edge drives the load request low without detach
+  debounce.
 - Every PD receive/transmit operation races against cable removal.
-- A new/changing request disables the load until `Accept` and `PS_RDY`.
+- The reference selects `InhibitUntilReady`: an electrically significant
+  Request disables the load until `Accept` and `PS_RDY`, then restores a still-
+  armed user latch. Applications may explicitly select manual re-arm or
+  uninterrupted transitions when their downstream path supports that choice.
 - Hard reset, detach, protocol loss, and unknown state force load-off.
+- With no usable PD session, `output-on` may control a non-PD supply through
+  the same VBUS-present and hardware-health gates. PD retries do not repeatedly
+  disable that user-controlled path.
 - Hard Reset recovery actively receives for a fixed two-second window and
-  does not require a PA6 edge; PA6 held high is therefore usable for the
-  isolated protocol fixture.
+  does not require another detector edge.
 - Reconnect clears capabilities, EPR mode, user intent, queued commands, and
   confirmed current before requesting 5 V.
 - An EPR-capable image may enter EPR to read capabilities, but its automatic
@@ -116,11 +136,12 @@ those ratings.
    is off.
 2. Measure both external CC-to-ground Rd terminations before connecting a
    source.
-3. At 5 V, scope PA6, PA7, and the physical switch gate while repeatedly
-   removing the cable. Confirm the hardware term cuts the gate without MCU
-   activity.
-4. Verify PA7 cannot override low `VBUS_PRESENT` or `HARDWARE_OK`.
-5. Flash `usb-safe-5v`; confirm PA7 rises only after `PS_RDY`.
+3. At 5 V, scope the VBUS detector, MCU load request, and physical switch gate
+   while repeatedly removing the cable. Confirm the hardware term cuts the
+   gate without MCU activity.
+4. Verify the MCU request cannot override low `VBUS_PRESENT` or `HARDWARE_OK`.
+5. Flash `usb-safe-5v`; confirm PB10 remains low until a permitted
+   `output-on` after `PS_RDY`.
 6. Verify USB ISP, normal boot CDC enumeration, and LinkE do not back-power or
    contend with the PD input.
 7. Exercise SinkTxNG/SinkTxOK using the procedure in

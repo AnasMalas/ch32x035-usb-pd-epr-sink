@@ -25,7 +25,8 @@ The application owns:
 - the independent hardware load gate;
 - the source of user commands and the destination for diagnostics;
 - USB CDC, displays, persistent settings, and every feature unrelated to PD;
-- the GPIO choices. The reference PA6/PA7 assignment is only an example.
+- the GPIO choices. The scripted example's rev0 OPA1/PB10 binding and the
+  alternate PA6/PA7 binding are both application choices.
 
 ## Dependency
 
@@ -64,7 +65,7 @@ the USB-PD peripheral and cannot use the CH32 PHY adapter.
 ## Application adapters
 
 Implement `SinkRuntime` for a small application type. Its core services set the
-firmware load request, clear stale commands, wait for a new command, delay
+PD policy's load permission, clear stale commands, wait for a new command, delay
 after Hard Reset, and report typed observations. A single
 `observe(SinkEvent)` implementation is enough. Flash-constrained firmware can
 override the typed `on_*` callbacks directly so unused event formatting is
@@ -72,8 +73,8 @@ removed by the linker.
 
 Implement `Ch32x035Port` for another small application type. It reports the
 current VBUS-present level, waits for attach/detach notifications, clears a
-stale detach notification at session start, disables or enables the firmware
-load request, and optionally reports `PhyEvent` diagnostics.
+stale detach notification at session start, publishes prompt PD load-control
+updates, and optionally reports `PhyEvent` diagnostics.
 
 The VBUS-present level is an active-high physical detector contract. High
 means the detector is initialized and VBUS is above a board-chosen
@@ -137,6 +138,7 @@ maximums. Important fields are:
 - `board_max_current`, `cable_max_current`, and `max_power`;
 - `RequestFlags::epr_capable`;
 - the EPR operational PDP, which must agree with the extended sink descriptor;
+- `transition_load_policy`, selected explicitly for the downstream load path;
 - `max_auto_epr_attempts` and `hard_reset_recovery_ms`.
 
 `SinkDevice::new` validates values that would be truncated on the wire or
@@ -190,13 +192,29 @@ the observation path remains independent from the load-control path.
 
 ## Load safety
 
-`SinkRuntime::set_pd_load_permitted(true)` is only PD-policy permission after
-PS_RDY. It must not be the sole safety path. The application owns the separate
-user output latch. The board should enforce:
+`SinkRuntime::set_pd_load_permitted` is a PD-policy input, not ownership of the
+product output. `true` means a contract has reached PS_RDY. While PD policy is
+active, `false` inhibits the load immediately. When no usable PD session is
+active, an application may instead let an explicit user latch control a
+non-PD supply, such as a USB-A power source. The library deliberately does not
+require ADC measurement or prescribe how that product policy validates its
+supply.
+
+One application-level formulation is:
 
 ```text
-LOAD_ON = PD_LOAD_PERMITTED AND USER_OUTPUT_ENABLED AND VBUS_PRESENT AND HARDWARE_OK
+PD_ALLOWS_LOAD = (NOT PD_POLICY_ACTIVE) OR PD_LOAD_PERMITTED OR TRANSITION_BYPASS
+MCU_LOAD_ENABLE = USER_OUTPUT_ENABLED AND PD_ALLOWS_LOAD
+LOAD_ON = MCU_LOAD_ENABLE AND VBUS_PRESENT AND HARDWARE_OK
 ```
+
+The reference marks PD policy active when a contract Request starts and marks
+it unmanaged after an initial/uncontracted partner is classified as
+unresponsive. Consequently repeated passive PD retries do not knock out a
+user-enabled USB-A load. A real PD session loss first clears the user latch;
+falling back to unmanaged operation never silently re-enables it.
+`LoadControlState` implements this small arbitration as an optional, pin-free
+helper; it does not require an ADC or own the final load output.
 
 VBUS removal must turn the load path off without relying on the executor, the
 PD stack, or a functioning MCU. The reference implementation is documented in
@@ -209,9 +227,17 @@ detector and the default-off hardware gate.
 
 Before each Request, `ContractTracker` classifies the wire transition against
 the confirmed RDO. Identical maintenance and a same-encoded-voltage request
-with known, nondecreasing operating current can retain load permission. A
-voltage change, reduced or uncertain current, or missing confirmed contract
-causes an immediate load-disable request before the PD Request is returned.
+with known, nondecreasing operating current can retain load permission. For a
+voltage change, reduced or uncertain current, or missing confirmed contract,
+`TransitionLoadPolicy` explicitly selects manual re-arm, automatic restoration
+after PS_RDY, or deliberately uninterrupted operation for a downstream path
+rated for the complete transition.
+
+Both inhibiting policies issue their load-control action before the PD Request
+is returned. `InhibitUntilManualRearm` also clears the user latch;
+`InhibitUntilReady` preserves it and restores only PD permission after PS_RDY.
+`Uninterrupted` never weakens detector-low, detach, Hard Reset, protocol-loss,
+or terminal-fault cutoff.
 `SinkRuntime::on_contract_transition_started` receives the library-owned
 classification for diagnostics; telemetry delivery is not part of the cutoff
 path. Current comparisons use the limited current actually encoded in the RDO,
@@ -219,11 +245,12 @@ not the Source PDO maximum or an unbounded user demand.
 
 `output-on` and `output-off` update only the runtime's user latch through
 `SinkRuntime::set_user_output_enabled`. They do not submit a PD Request, alter
-the desired contract, or enter/exit EPR. The reference keeps that latch across
-detach/re-attach and defaults it on after an MCU reset to preserve the original
-automatic-load behavior; private products can choose a different reset policy.
-Its USB and text transports apply Output Off before sending an acknowledgement
-instead of waiting for the PD policy engine to reach `Ready`.
+the desired contract, or enter/exit EPR. Scripted rev0 profiles default it off,
+clear it on physical detector loss and real PD-session safety faults, and use
+`InhibitUntilReady` for ordinary voltage transitions. Direct custom builds may
+choose a different reset and transition policy. The USB and text transports
+apply Output Off before sending an acknowledgement instead of waiting for the
+PD policy engine to reach `Ready`.
 
 ## EPR entry and exit policy
 

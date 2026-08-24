@@ -99,9 +99,9 @@ as typed frames and translates returned events. For development text, it sends
 and parses MCU ASCII directly, applying the same PDO and Status decoder where
 the firmware emits raw words.
 
-The standard reference `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
-`usb-epr-50v` profiles use compact control. `usb-epr-text` exists for ordinary
-serial terminals.
+The G8U6 rev0 `usb-safe-5v`, `usb-pps`, `usb-epr`, and opt-in
+`usb-epr-50v` profiles use compact control by default. `usb-epr-text` is an
+explicit troubleshooting profile for ordinary serial terminals.
 
 ## Reading diagnostic values
 
