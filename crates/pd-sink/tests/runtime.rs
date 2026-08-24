@@ -7,7 +7,7 @@ use pd_sink::{
     CapabilitiesKind, Command, ContractState, ContractTransitionKind, ControllerConfig, HardResetCause,
     HardResetDirection, Milliamps, Millivolts, Milliwatts, PortMode, Preference, RecoveryCancellationReason,
     RecoveryInitError, RecoveryIntent, RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice,
-    SinkEvent, SinkPowerDescriptor, SinkRuntime, UserRequest,
+    SinkEvent, SinkPowerDescriptor, SinkRuntime, TransitionLoadPolicy, UserRequest,
 };
 use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::request::PowerSource;
@@ -88,6 +88,7 @@ fn safe_5v_config() -> SinkConfig {
             epr_operational_pdp_watts: 0,
             epr_maximum_pdp_watts: 0,
         },
+        transition_load_policy: TransitionLoadPolicy::InhibitUntilReady,
         max_auto_epr_attempts: 0,
         hard_reset_recovery_ms: 2_000,
     }
@@ -111,6 +112,53 @@ fn fresh_startup_remains_the_default() {
     let device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
 
     assert_eq!(DevicePolicyManager::startup(&device), SinkStartup::Fresh);
+}
+
+#[test]
+fn transition_load_policies_are_explicit_and_distinct() {
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+    let cases = [
+        (TransitionLoadPolicy::InhibitUntilManualRearm, vec![false], vec![false]),
+        (TransitionLoadPolicy::InhibitUntilReady, vec![false], vec![]),
+        (TransitionLoadPolicy::Uninterrupted, vec![], vec![]),
+    ];
+
+    for (policy, expected_load, expected_user) in cases {
+        let mut config = safe_5v_config();
+        config.transition_load_policy = policy;
+        let mut device = SinkDevice::new(config, TestRuntime::default()).unwrap();
+
+        device.inform(&source);
+        let request = device.request(&source);
+        let runtime = device.runtime_mut();
+        assert_eq!(runtime.load_states, expected_load);
+        assert_eq!(runtime.user_output_states, expected_user);
+        assert!(runtime.events.iter().any(|event| matches!(
+            event,
+            SinkEvent::ContractTransitionStarted(transition)
+                if transition.kind == ContractTransitionKind::NoConfirmedContract
+        )));
+
+        device.transition_power(&request);
+        assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
+    }
+}
+
+#[test]
+fn uninterrupted_transition_policy_does_not_weaken_session_loss_cutoff() {
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+    let mut config = safe_5v_config();
+    config.transition_load_policy = TransitionLoadPolicy::Uninterrupted;
+    let mut device = SinkDevice::new(config, TestRuntime::default()).unwrap();
+
+    device.inform(&source);
+    let request = device.request(&source);
+    device.transition_power(&request);
+    device.runtime_mut().load_states.clear();
+
+    device.protocol_lost();
+
+    assert_eq!(device.runtime_mut().load_states, [false]);
 }
 
 #[test]

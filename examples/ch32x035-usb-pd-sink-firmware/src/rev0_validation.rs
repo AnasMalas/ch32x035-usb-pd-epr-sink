@@ -21,6 +21,9 @@ fn opa_routes_are_fail_closed() -> bool {
         && !routes.bkin_en2()
         && !routes.rst_en1()
         && !routes.rst_en2()
+        && !routes.ie_out1()
+        && !routes.ie_out2()
+        && !routes.ie_cnt()
         && !routes.nmi_en()
 }
 

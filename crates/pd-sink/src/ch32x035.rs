@@ -55,8 +55,11 @@ pub trait Ch32x035Port {
     /// Clear any stale detach notification and report the start of a fresh
     /// session. The physical VBUS level has already been checked as present.
     fn begin_session(&self);
-    /// This is the PD policy's permission for the application load. Hardware
-    /// should still combine it with the user latch, VBUS-present, and health.
+    /// This is the PD policy's permission for the application load, not a
+    /// claim that PD owns the product output in the absence of a usable PD
+    /// session. Hardware should combine it with product policy, the user
+    /// latch, VBUS-present, and health. A non-PD supply may therefore remain
+    /// user-controlled if the application explicitly chooses that behavior.
     fn set_pd_load_permitted(&self, permitted: bool);
     fn observe_phy(&self, event: PhyEvent);
     /// Observe managed-session lifecycle without owning retry policy. This is

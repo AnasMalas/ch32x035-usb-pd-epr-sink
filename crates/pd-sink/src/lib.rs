@@ -46,6 +46,7 @@ pub mod command;
 pub mod contract;
 pub mod control;
 pub mod controller;
+pub mod load_control;
 pub mod request;
 pub mod runtime;
 pub mod safety;
@@ -86,6 +87,7 @@ pub use controller::{
     ControllerAction, ControllerConfig, ControllerError, EprEntryFallback, EprEntryPolicy, EprEntryRefusal,
     EprExitFallback, EprExitPolicy, EprExitRefusal, EprState, SinkController, UserRequest,
 };
+pub use load_control::LoadControlState;
 pub use request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, PortMode, Preference,
     RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestPlanner, SinkLimits,
@@ -93,6 +95,7 @@ pub use request::{
 pub use runtime::{
     CapabilityPlan, HardResetCause, HardResetDirection, RecoveryCancellationReason, RecoveryInitError, RecoveryIntent,
     RequestResult, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime,
+    TransitionLoadPolicy,
 };
 pub use safety::{PortInputs, PortState, PortSupervisor, SafetyDecision, SafetyTimings};
 pub use session::{

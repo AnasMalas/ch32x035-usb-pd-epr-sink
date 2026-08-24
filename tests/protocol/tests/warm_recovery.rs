@@ -5,7 +5,7 @@ use std::task::{Context, Poll, Waker};
 
 use pd_sink::{
     ControllerConfig, Milliamps, Millivolts, PortMode, Preference, RecoveryIntent, SinkConfig, SinkDevice, SinkEvent,
-    SinkPowerDescriptor, SinkRuntime, UserRequest,
+    SinkPowerDescriptor, SinkRuntime, TransitionLoadPolicy, UserRequest,
 };
 use usbpd::protocol_layer::message::Message;
 use usbpd::protocol_layer::message::data::request::FixedVariableSupply;
@@ -156,6 +156,7 @@ fn sink_config() -> SinkConfig {
             epr_operational_pdp_watts: 0,
             epr_maximum_pdp_watts: 0,
         },
+        transition_load_policy: TransitionLoadPolicy::InhibitUntilReady,
         max_auto_epr_attempts: 0,
         hard_reset_recovery_ms: 2_000,
     }

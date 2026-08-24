@@ -52,12 +52,34 @@ pub struct SinkPowerDescriptor {
 pub struct SinkConfig {
     pub controller: ControllerConfig,
     pub descriptor: SinkPowerDescriptor,
+    /// Product policy for application-load continuity while a USB-PD Request
+    /// changes the confirmed wire contract.
+    pub transition_load_policy: TransitionLoadPolicy,
     /// Maximum automatic EPR entry attempts during one physical attachment.
     /// Set to zero to require an explicit `enter-epr` command.
     pub max_auto_epr_attempts: u8,
     /// Receive window for fresh Source Capabilities after a sent or received
     /// Hard Reset. The PHY remains armed throughout this interval.
     pub hard_reset_recovery_ms: u64,
+}
+
+/// Application-load behavior while an electrically significant USB-PD
+/// contract transition is in progress.
+///
+/// This policy applies only to transitions classified by the PD library.
+/// Physical detector loss, detach, Hard Reset, protocol loss, and terminal
+/// faults still use the unconditional PD-inhibit path.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TransitionLoadPolicy {
+    /// Inhibit the load before the Request and clear the application latch.
+    /// A later PS_RDY restores PD permission, but the user must re-arm output.
+    InhibitUntilManualRearm,
+    /// Inhibit the load before the Request, preserve the application latch,
+    /// and restore PD permission after PS_RDY.
+    InhibitUntilReady,
+    /// Keep the application load uninterrupted. Select this only when the
+    /// complete downstream power path is rated for every requested transition.
+    Uninterrupted,
 }
 
 /// Invalid or internally inconsistent [`SinkConfig`].
@@ -289,9 +311,35 @@ pub enum SinkEvent {
 /// `wait_for_command` must be cancellation-safe because the policy engine may
 /// temporarily abandon the future to service a source-initiated message.
 pub trait SinkRuntime {
-    /// Update the PD policy's permission for the application load. This is the
-    /// immediate safety-control path and must not wait for telemetry.
+    /// Update the PD policy's permission for the application load.
+    ///
+    /// This is an immediate control input, not global ownership of the load.
+    /// An application may deliberately allow its user latch to control a
+    /// non-PD or otherwise unmanaged supply. It must still honor `false` while
+    /// a PD contract/session is under policy control, and combine its final
+    /// output with board-defined VBUS-valid and fault inputs.
     fn set_pd_load_permitted(&mut self, permitted: bool);
+    /// Apply the configured load-continuity policy before a PD Request.
+    ///
+    /// The default is suitable for applications whose
+    /// [`SinkRuntime::set_pd_load_permitted`] and
+    /// [`SinkRuntime::set_user_output_enabled`] methods directly control the
+    /// two gates. Applications with a dedicated supervisor can override this
+    /// method to deliver one typed, prompt transition command. It must never
+    /// wait for telemetry or other slow work.
+    fn apply_transition_load_policy(&mut self, policy: TransitionLoadPolicy, transition: ContractTransition) {
+        if !transition.inhibits_load() {
+            return;
+        }
+        match policy {
+            TransitionLoadPolicy::InhibitUntilManualRearm => {
+                self.set_pd_load_permitted(false);
+                self.set_user_output_enabled(false);
+            }
+            TransitionLoadPolicy::InhibitUntilReady => self.set_pd_load_permitted(false),
+            TransitionLoadPolicy::Uninterrupted => {}
+        }
+    }
     /// Update the application-owned user output latch. This must not submit a
     /// PD request, alter desired contract state, or enter/exit EPR.
     fn set_user_output_enabled(&mut self, enabled: bool);
@@ -577,9 +625,7 @@ impl<R: SinkRuntime> SinkDevice<R> {
 
     fn begin_request(&mut self, plan: RequestPlan) -> bool {
         let transition = self.contract.classify_transition(plan);
-        if transition.inhibits_load() {
-            self.runtime.set_pd_load_permitted(false);
-        }
+        self.runtime.apply_transition_load_policy(self.config.transition_load_policy, transition);
         self.runtime.on_contract_transition_started(transition);
         self.contract.on_request(plan).expect("request must follow advertised capabilities");
         self.pending_contract_refresh = transition.is_identical_refresh();
