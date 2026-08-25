@@ -66,6 +66,7 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 | `usb-safe-5v` | compact USB control, PB10 default off | G8U6 rev0, fixed 5 V |
 | `usb-pps` | compact USB control, PB10 default off | G8U6 rev0, PPS through 21 V |
 | `usb-epr` | compact USB control, PB10 default off | G8U6 rev0, standard EPR through 48 V |
+| `usb-epr-uninterrupted` | compact USB control, PB10 held across contract transitions | G8U6 rev0, standard EPR through 48 V |
 | `usb-epr-diagnostic` | compatibility alias of `usb-epr` | G8U6 rev0, standard EPR through 48 V |
 | `usb-epr-50v` | compact USB control, PB10 default off | G8U6 rev0, explicit non-standard 50 V compatibility |
 | `usb-epr-text` | explicit ASCII troubleshooting console, PB10 default off | G8U6 rev0, standard EPR through 48 V |
@@ -127,6 +128,7 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile rev0-validation
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-uninterrupted
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
@@ -136,11 +138,15 @@ Useful interactive builds are:
 image; follow its [dedicated procedure](docs/rev0_validation.md).
 `usb-epr` is the normal compact binary control image. All scripted USB
 profiles keep the application-owned output latch off until a permitted
-`output-on` command arrives and include typed Hard Reset causes. They select
-the safe automatic-restore transition policy: PB10 is inhibited for an unsafe
-contract change, the user latch is preserved, and PB10 returns only after
-PS_RDY. Applications can explicitly choose manual re-arm or uninterrupted
-transitions when their complete downstream path supports that policy.
+`output-on` command arrives and include typed Hard Reset causes. Normal
+profiles select the safe automatic-restore transition policy: PB10 is
+inhibited for an unsafe contract change, the user latch is preserved, and
+PB10 returns only after PS_RDY. The opt-in `usb-epr-uninterrupted` profile
+keeps PB10 asserted across contract transitions. It does not guarantee a
+regulated or dip-free output while the Source changes VBUS, and must be used
+only when the complete downstream path and load tolerate every requested
+voltage. Detector loss, detach, Hard Reset, protocol loss, and terminal faults
+remain unconditional shutoffs.
 `usb-epr-diagnostic` remains as a compatibility alias. The opt-in
 `usb-epr-50v` image raises only the configured sink ceiling; normal AVS
 selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII

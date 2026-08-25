@@ -115,10 +115,11 @@ those ratings.
 - The first detector falling edge drives the load request low without detach
   debounce.
 - Every PD receive/transmit operation races against cable removal.
-- The reference selects `InhibitUntilReady`: an electrically significant
-  Request disables the load until `Accept` and `PS_RDY`, then restores a still-
-  armed user latch. Applications may explicitly select manual re-arm or
-  uninterrupted transitions when their downstream path supports that choice.
+- Normal reference profiles select `InhibitUntilReady`: an electrically
+  significant Request disables the load until `Accept` and `PS_RDY`, then
+  restores a still-armed user latch. The explicit `usb-epr-uninterrupted`
+  profile keeps PB10 asserted across those transitions; it still cannot make
+  the Source's VBUS ramp electrically dip-free.
 - Hard reset, detach, protocol loss, and unknown state force load-off.
 - With no usable PD session, `output-on` may control a non-PD supply through
   the same VBUS-present and hardware-health gates. PD retries do not repeatedly

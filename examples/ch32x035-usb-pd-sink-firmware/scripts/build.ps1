@@ -6,6 +6,7 @@ param(
         'usb-safe-5v',
         'usb-pps',
         'usb-epr',
+        'usb-epr-uninterrupted',
         'usb-epr-diagnostic',
         'usb-epr-50v',
         'usb-epr-text'
@@ -43,6 +44,7 @@ $rev0Profiles = @(
     'usb-safe-5v',
     'usb-pps',
     'usb-epr',
+    'usb-epr-uninterrupted',
     'usb-epr-diagnostic',
     'usb-epr-50v',
     'usb-epr-text'
@@ -63,6 +65,7 @@ try {
         'usb-safe-5v' { 'usb-control,output-default-off,rev0-board' }
         'usb-pps' { 'usb-control,pps-capable-hardware,output-default-off,rev0-board' }
         'usb-epr' { 'usb-control,epr-capable-hardware,output-default-off,rev0-board' }
+        'usb-epr-uninterrupted' { 'usb-control,epr-capable-hardware,output-default-off,uninterrupted-load-transitions,rev0-board' }
         'usb-epr-diagnostic' { 'usb-control,epr-capable-hardware,output-default-off,rev0-board' }
         'usb-epr-50v' { 'usb-control,epr-50v-compatible-hardware,output-default-off,rev0-board' }
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware,output-default-off,rev0-board' }

@@ -245,12 +245,12 @@ not the Source PDO maximum or an unbounded user demand.
 
 `output-on` and `output-off` update only the runtime's user latch through
 `SinkRuntime::set_user_output_enabled`. They do not submit a PD Request, alter
-the desired contract, or enter/exit EPR. Scripted rev0 profiles default it off,
-clear it on physical detector loss and real PD-session safety faults, and use
-`InhibitUntilReady` for ordinary voltage transitions. Direct custom builds may
-choose a different reset and transition policy. The USB and text transports
-apply Output Off before sending an acknowledgement instead of waiting for the
-PD policy engine to reach `Ready`.
+the desired contract, or enter/exit EPR. Scripted rev0 profiles default it off
+and clear it on physical detector loss and real PD-session safety faults.
+Normal profiles use `InhibitUntilReady` for voltage transitions; the explicit
+`usb-epr-uninterrupted` profile selects `Uninterrupted`. The USB and text
+transports apply Output Off before sending an acknowledgement instead of
+waiting for the PD policy engine to reach `Ready`.
 
 ## EPR entry and exit policy
 

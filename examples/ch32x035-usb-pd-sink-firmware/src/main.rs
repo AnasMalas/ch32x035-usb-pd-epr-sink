@@ -123,6 +123,10 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
 const ATTACH_DEBOUNCE_MS: u64 = 100;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
+#[cfg(not(feature = "uninterrupted-load-transitions"))]
+const TRANSITION_LOAD_POLICY: TransitionLoadPolicy = TransitionLoadPolicy::InhibitUntilReady;
+#[cfg(feature = "uninterrupted-load-transitions")]
+const TRANSITION_LOAD_POLICY: TransitionLoadPolicy = TransitionLoadPolicy::Uninterrupted;
 const EPR_OPERATIONAL_PDP_WATTS: u8 = 240;
 const USER_OUTPUT_DEFAULT_ENABLED: bool = !cfg!(feature = "output-default-off");
 
@@ -263,9 +267,10 @@ fn sink_config() -> SinkConfig {
             epr_operational_pdp_watts: if epr_capable { EPR_OPERATIONAL_PDP_WATTS } else { 0 },
             epr_maximum_pdp_watts: if epr_capable { 240 } else { 0 },
         },
-        // Preserve the user's output latch, inhibit PB10 during an unsafe
-        // electrical transition, then restore it only after PS_RDY.
-        transition_load_policy: TransitionLoadPolicy::InhibitUntilReady,
+        // The normal profiles preserve the user's latch, inhibit PB10 during
+        // an electrical transition, and restore it after PS_RDY. The explicit
+        // uninterrupted profile keeps PB10 asserted across the transition.
+        transition_load_policy: TRANSITION_LOAD_POLICY,
         max_auto_epr_attempts: if epr_capable { MAX_AUTO_EPR_ATTEMPTS } else { 0 },
         hard_reset_recovery_ms: HARD_RESET_RECOVERY_MS,
     }

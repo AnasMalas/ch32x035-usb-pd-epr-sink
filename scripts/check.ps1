@@ -208,6 +208,7 @@ try {
             'usb-safe-5v',
             'usb-pps',
             'usb-epr',
+            'usb-epr-uninterrupted',
             'usb-epr-diagnostic',
             'usb-epr-50v',
             'usb-epr-text'
