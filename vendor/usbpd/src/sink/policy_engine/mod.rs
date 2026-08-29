@@ -311,6 +311,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Handle when hard reset is signaled by the driver itself.
                 (_, _, ProtocolError::RxError(RxError::HardReset) | ProtocolError::TxError(TxError::HardReset)) => {
                     self.hard_reset_origin = HardResetOrigin::Source;
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::HardReset,
+                        crate::numeric_trace::NumericTraceHardResetPhase::Received as u8,
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        self.hard_reset_counter.value(),
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                        0,
+                    ));
                     #[cfg(feature = "hard-reset-reasons")]
                     {
                         self.hard_reset_reason = HardResetReason::SourceSignaled;
@@ -892,13 +900,52 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     return Err(Error::PortPartnerUnresponsive);
                 }
 
+                #[cfg(feature = "numeric-trace")]
+                let trace_reason = {
+                    #[cfg(feature = "hard-reset-reasons")]
+                    {
+                        u16::from(*reason as u8)
+                    }
+                    #[cfg(not(feature = "hard-reset-reasons"))]
+                    {
+                        crate::numeric_trace::UNAVAILABLE_U16
+                    }
+                };
+
+                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                    crate::numeric_trace::NumericTraceEventKind::HardReset,
+                    crate::numeric_trace::NumericTraceHardResetPhase::TransmitStart as u8,
+                    crate::numeric_trace::UNAVAILABLE_U8,
+                    self.hard_reset_counter.value(),
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                    trace_reason,
+                ));
+
                 // Transmit Hard Reset Signaling
                 self.hard_reset_origin = HardResetOrigin::Sink;
                 #[cfg(feature = "hard-reset-reasons")]
                 {
                     self.hard_reset_reason = *reason;
                 }
+                #[cfg(not(feature = "numeric-trace"))]
                 self.protocol_layer.hard_reset().await?;
+                #[cfg(feature = "numeric-trace")]
+                {
+                    let hard_reset_result = self.protocol_layer.hard_reset().await;
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::HardReset,
+                        if hard_reset_result.is_ok() {
+                            crate::numeric_trace::NumericTraceHardResetPhase::TransmitComplete as u8
+                        } else {
+                            crate::numeric_trace::NumericTraceHardResetPhase::TransmitFailure as u8
+                        },
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        self.hard_reset_counter.value(),
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                        trace_reason,
+                    ));
+                    hard_reset_result?;
+                }
 
                 State::TransitionToDefault
             }
@@ -1339,11 +1386,41 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // - Entry: Send EPR_KeepAlive message, start SenderResponseTimer
                 // - On EPR_KeepAlive_Ack: transition to Ready (which restarts SinkEPRKeepAliveTimer)
                 // - On timeout: transition to HardReset
+                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                    crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                    crate::numeric_trace::NumericTraceEprKeepAlivePhase::Request as u8,
+                    crate::numeric_trace::UNAVAILABLE_U8,
+                    crate::numeric_trace::UNAVAILABLE_U8,
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                ));
+                #[cfg(not(feature = "numeric-trace"))]
                 self.protocol_layer
                     .transmit_extended_control_message(
                         crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAlive,
                     )
                     .await?;
+                #[cfg(feature = "numeric-trace")]
+                {
+                    let transmit_result = self
+                        .protocol_layer
+                        .transmit_extended_control_message(
+                            crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAlive,
+                        )
+                        .await;
+                    if transmit_result.is_err() {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
+                    }
+                    transmit_result?;
+                }
+                #[cfg(not(feature = "numeric-trace"))]
                 let message = self
                     .protocol_layer
                     .receive_message_type(
@@ -1351,18 +1428,77 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         TimerType::SenderResponse,
                     )
                     .await?;
+                #[cfg(feature = "numeric-trace")]
+                let message = {
+                    let response = self
+                        .protocol_layer
+                        .receive_message_type(
+                            &[MessageType::Extended(ExtendedMessageType::ExtendedControl)],
+                            TimerType::SenderResponse,
+                        )
+                        .await;
+                    match response {
+                        Ok(message) => message,
+                        Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                                crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                                crate::numeric_trace::NumericTraceEprKeepAlivePhase::Timeout as u8,
+                                crate::numeric_trace::UNAVAILABLE_U8,
+                                crate::numeric_trace::UNAVAILABLE_U8,
+                                crate::numeric_trace::UNAVAILABLE_U16,
+                                crate::numeric_trace::UNAVAILABLE_U16,
+                            ));
+                            return Err(ProtocolError::RxError(RxError::ReceiveTimeout).into());
+                        }
+                        Err(error) => {
+                            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                                crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                                crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
+                                crate::numeric_trace::UNAVAILABLE_U8,
+                                crate::numeric_trace::UNAVAILABLE_U8,
+                                crate::numeric_trace::UNAVAILABLE_U16,
+                                crate::numeric_trace::UNAVAILABLE_U16,
+                            ));
+                            return Err(error.into());
+                        }
+                    }
+                };
 
                 if let Some(Payload::Extended(extended::Extended::ExtendedControl(control))) = message.payload {
                     if control.message_type()
                         == crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAliveAck
                     {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::Acknowledged as u8,
+                            message.header.message_id(),
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            message.header.0,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
                         self.mode = Mode::Epr;
                         self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
                         State::Ready(*power_source)
                     } else {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::UnexpectedResponse as u8,
+                            message.header.message_id(),
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            message.header.0,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
                         State::SendNotSupported(*power_source)
                     }
                 } else {
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                        crate::numeric_trace::NumericTraceEprKeepAlivePhase::UnexpectedResponse as u8,
+                        message.header.message_id(),
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        message.header.0,
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                    ));
                     State::SendNotSupported(*power_source)
                 }
             }

@@ -137,6 +137,61 @@ pub enum TxValidationError {
     ExtendedMessageChunkingRequired,
 }
 
+#[cfg(feature = "numeric-trace")]
+fn emit_frame_event(kind: crate::numeric_trace::NumericTraceEventKind, frame: &[u8], counter: u8, code: Option<u8>) {
+    let mut event = crate::numeric_trace::NumericTraceEvent::from_frame(kind, frame, counter);
+    if let Some(code) = code {
+        event.code = code;
+    }
+    crate::numeric_trace::emit(event);
+}
+
+#[cfg(feature = "numeric-trace")]
+fn emit_protocol_error(error: &ProtocolError) {
+    use crate::numeric_trace::{NumericTraceEvent, NumericTraceEventKind, NumericTraceProtocolError, UNAVAILABLE_U8};
+
+    let (code, detail) = match error {
+        ProtocolError::RxError(RxError::Discarded) => (NumericTraceProtocolError::RxDiscarded, 0),
+        ProtocolError::RxError(RxError::Detached) => (NumericTraceProtocolError::RxDetached, 0),
+        ProtocolError::RxError(RxError::SoftReset) => (NumericTraceProtocolError::RxSoftReset, 0),
+        ProtocolError::RxError(RxError::HardReset) => (NumericTraceProtocolError::RxHardReset, 0),
+        ProtocolError::RxError(RxError::ReceiveTimeout) => (NumericTraceProtocolError::RxTimeout, 0),
+        ProtocolError::RxError(RxError::UnsupportedMessage) => (NumericTraceProtocolError::RxUnsupported, 0),
+        ProtocolError::RxError(RxError::ParseError(_)) => (NumericTraceProtocolError::RxParse, 0),
+        ProtocolError::RxError(RxError::AcknowledgeMismatch(message_id)) => {
+            (NumericTraceProtocolError::RxAcknowledgeMismatch, u16::from(*message_id))
+        }
+        ProtocolError::TxError(TxError::Discarded) => (NumericTraceProtocolError::TxDiscarded, 0),
+        ProtocolError::TxError(TxError::Detached) => (NumericTraceProtocolError::TxDetached, 0),
+        ProtocolError::TxError(TxError::HardReset) => (NumericTraceProtocolError::TxHardReset, 0),
+        ProtocolError::TxValidation(validation) => {
+            let detail = match validation {
+                TxValidationError::UnchunkedExtendedMessagesNotSupported => 1,
+                TxValidationError::AvsVoltageAlignmentInvalid => 2,
+                TxValidationError::ExtendedMessageChunkingRequired => 3,
+            };
+            (NumericTraceProtocolError::TxValidation, detail)
+        }
+        ProtocolError::TransmitRetriesExceeded(count) => {
+            (NumericTraceProtocolError::TxRetriesExceeded, u16::from(*count))
+        }
+        ProtocolError::UnexpectedMessage => (NumericTraceProtocolError::UnexpectedMessage, 0),
+    };
+    crate::numeric_trace::emit(NumericTraceEvent::new(
+        NumericTraceEventKind::ProtocolError,
+        code as u8,
+        UNAVAILABLE_U8,
+        UNAVAILABLE_U8,
+        crate::numeric_trace::UNAVAILABLE_U16,
+        detail,
+    ));
+}
+
+#[cfg(feature = "numeric-trace")]
+fn emit_tx_failure(frame: &[u8], counter: u8, reason: crate::numeric_trace::NumericTraceTxReason) {
+    emit_frame_event(crate::numeric_trace::NumericTraceEventKind::TxFailure, frame, counter, Some(reason as u8));
+}
+
 #[derive(Debug)]
 struct Counters {
     _busy: Counter,
@@ -247,6 +302,11 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             }
 
             let message = Message::from_bytes(&buffer[..length])?;
+            numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
+                crate::numeric_trace::NumericTraceEventKind::RxMessage,
+                &buffer[..length],
+                crate::numeric_trace::UNAVAILABLE_U8,
+            ));
             return Ok(message);
         }
     }
@@ -260,6 +320,14 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             let message = self.receive_simple().await?;
 
             if matches!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
+                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                    crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
+                    crate::numeric_trace::NumericTracePath::Software as u8,
+                    message.header.message_id(),
+                    self.counters.retry.value(),
+                    message.header.0,
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                ));
                 trace!(
                     "Received GoodCrc, TX message count: {}, expected: {}",
                     message.header.message_id(),
@@ -365,8 +433,17 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     pub async fn transmit(&mut self, message: Message) -> Result<(), ProtocolError> {
         assert_ne!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
 
-        // Validate outgoing message for spec compliance
+        // Validate outgoing message for spec compliance before entering the driver path.
+        #[cfg(not(feature = "numeric-trace"))]
         Self::validate_outgoing_message(&message)?;
+        #[cfg(feature = "numeric-trace")]
+        {
+            if let Err(validation) = Self::validate_outgoing_message(&message) {
+                let error = ProtocolError::TxValidation(validation);
+                emit_protocol_error(&error);
+                return Err(error);
+            }
+        }
 
         trace!("Transmit message: {:?}", message);
 
@@ -378,17 +455,74 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             // Call driver.transmit() directly (not transmit_inner()) because
             // Discarded here means all hardware retries exhausted — no point
             // retrying in software.
+            numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
+                crate::numeric_trace::NumericTraceEventKind::TxStart,
+                &buffer[..size],
+                self.counters.retry.value(),
+            ));
+            #[cfg(feature = "numeric-trace")]
+            emit_frame_event(
+                crate::numeric_trace::NumericTraceEventKind::TxHardwareRetry,
+                &buffer[..size],
+                self.counters.retry.max_value(),
+                Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+            );
             match self.driver.transmit(&buffer[..size]).await {
                 Ok(()) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
+                        &buffer[..size],
+                        self.counters.retry.value(),
+                        Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+                    );
                     self.counters.retry.reset();
                     _ = self.counters.tx_message.increment();
+                    #[cfg(feature = "numeric-trace")]
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::TxSuccess,
+                        &buffer[..size],
+                        0,
+                        Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+                    );
                     trace!("Transmit success (hardware retry)");
                     Ok(())
                 }
-                Err(DriverTxError::HardReset) => Err(TxError::HardReset.into()),
-                Err(DriverTxError::Detached) => Err(TxError::Detached.into()),
+                Err(DriverTxError::HardReset) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..size],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::HardReset,
+                    );
+                    let error = ProtocolError::from(TxError::HardReset);
+                    #[cfg(feature = "numeric-trace")]
+                    emit_protocol_error(&error);
+                    Err(error)
+                }
+                Err(DriverTxError::Detached) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..size],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::Detached,
+                    );
+                    let error = ProtocolError::from(TxError::Detached);
+                    #[cfg(feature = "numeric-trace")]
+                    emit_protocol_error(&error);
+                    Err(error)
+                }
                 Err(DriverTxError::Discarded) => {
-                    Err(ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value()))
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..size],
+                        self.counters.retry.max_value(),
+                        crate::numeric_trace::NumericTraceTxReason::RetriesExceeded,
+                    );
+                    let error = ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value());
+                    #[cfg(feature = "numeric-trace")]
+                    emit_protocol_error(&error);
+                    Err(error)
                 }
             }
         } else {
@@ -396,29 +530,112 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             self.counters.retry.reset();
 
             loop {
+                numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
+                    crate::numeric_trace::NumericTraceEventKind::TxStart,
+                    &buffer[..size],
+                    self.counters.retry.value(),
+                ));
                 match self.transmit_inner(&buffer[..size]).await {
-                    Ok(_) => match self.wait_for_good_crc().await {
-                        Ok(()) => {
-                            trace!("Transmit success");
-                            return Ok(());
+                    Ok(_) => {
+                        #[cfg(feature = "numeric-trace")]
+                        emit_frame_event(
+                            crate::numeric_trace::NumericTraceEventKind::GoodCrcWait,
+                            &buffer[..size],
+                            self.counters.retry.value(),
+                            Some(crate::numeric_trace::NumericTracePath::Software as u8),
+                        );
+                        match self.wait_for_good_crc().await {
+                            Ok(()) => {
+                                #[cfg(feature = "numeric-trace")]
+                                emit_frame_event(
+                                    crate::numeric_trace::NumericTraceEventKind::TxSuccess,
+                                    &buffer[..size],
+                                    0,
+                                    Some(crate::numeric_trace::NumericTracePath::Software as u8),
+                                );
+                                trace!("Transmit success");
+                                return Ok(());
+                            }
+                            Err(RxError::ReceiveTimeout) => match self.counters.retry.increment() {
+                                Ok(_) => {
+                                    #[cfg(feature = "numeric-trace")]
+                                    emit_frame_event(
+                                        crate::numeric_trace::NumericTraceEventKind::TxRetry,
+                                        &buffer[..size],
+                                        self.counters.retry.value(),
+                                        Some(crate::numeric_trace::NumericTraceTxReason::GoodCrcTimeout as u8),
+                                    );
+                                    // Retry transmission, until the retry counter is exceeded.
+                                }
+                                Err(CounterError::Exceeded) => {
+                                    #[cfg(feature = "numeric-trace")]
+                                    emit_tx_failure(
+                                        &buffer[..size],
+                                        self.counters.retry.max_value(),
+                                        crate::numeric_trace::NumericTraceTxReason::RetriesExceeded,
+                                    );
+                                    let error = ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value());
+                                    #[cfg(feature = "numeric-trace")]
+                                    emit_protocol_error(&error);
+                                    return Err(error);
+                                }
+                            },
+                            Err(other) => {
+                                #[cfg(feature = "numeric-trace")]
+                                let reason = match &other {
+                                    RxError::AcknowledgeMismatch(_) => {
+                                        crate::numeric_trace::NumericTraceTxReason::AcknowledgeMismatch
+                                    }
+                                    RxError::HardReset => crate::numeric_trace::NumericTraceTxReason::HardReset,
+                                    RxError::Detached => crate::numeric_trace::NumericTraceTxReason::Detached,
+                                    _ => crate::numeric_trace::NumericTraceTxReason::Other,
+                                };
+                                #[cfg(feature = "numeric-trace")]
+                                emit_tx_failure(&buffer[..size], self.counters.retry.value(), reason);
+                                let error = ProtocolError::from(other);
+                                #[cfg(feature = "numeric-trace")]
+                                emit_protocol_error(&error);
+                                return Err(error);
+                            }
                         }
-                        Err(RxError::ReceiveTimeout) => match self.counters.retry.increment() {
-                            Ok(_) => {
-                                // Retry transmission, until the retry counter is exceeded.
-                            }
-                            Err(CounterError::Exceeded) => {
-                                return Err(ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value()));
-                            }
-                        },
-                        Err(other) => return Err(other.into()),
-                    },
+                    }
                     Err(TxError::Discarded) => match self.counters.retry.increment() {
-                        Ok(_) => {}
+                        Ok(_) => {
+                            #[cfg(feature = "numeric-trace")]
+                            emit_frame_event(
+                                crate::numeric_trace::NumericTraceEventKind::TxRetry,
+                                &buffer[..size],
+                                self.counters.retry.value(),
+                                Some(crate::numeric_trace::NumericTraceTxReason::DriverDiscarded as u8),
+                            );
+                        }
                         Err(CounterError::Exceeded) => {
-                            return Err(ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value()));
+                            #[cfg(feature = "numeric-trace")]
+                            emit_tx_failure(
+                                &buffer[..size],
+                                self.counters.retry.max_value(),
+                                crate::numeric_trace::NumericTraceTxReason::RetriesExceeded,
+                            );
+                            let error = ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value());
+                            #[cfg(feature = "numeric-trace")]
+                            emit_protocol_error(&error);
+                            return Err(error);
                         }
                     },
-                    Err(other) => return Err(other.into()),
+                    Err(other) => {
+                        #[cfg(feature = "numeric-trace")]
+                        let reason = match &other {
+                            TxError::HardReset => crate::numeric_trace::NumericTraceTxReason::HardReset,
+                            TxError::Detached => crate::numeric_trace::NumericTraceTxReason::Detached,
+                            TxError::Discarded => crate::numeric_trace::NumericTraceTxReason::DriverDiscarded,
+                        };
+                        #[cfg(feature = "numeric-trace")]
+                        emit_tx_failure(&buffer[..size], self.counters.retry.value(), reason);
+                        let error = ProtocolError::from(other);
+                        #[cfg(feature = "numeric-trace")]
+                        emit_protocol_error(&error);
+                        return Err(error);
+                    }
                 }
             }
         }
@@ -437,7 +654,30 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         ))
         .to_bytes(&mut buffer);
 
-        Ok(self.transmit_inner(&buffer[..size]).await?)
+        #[cfg(not(feature = "numeric-trace"))]
+        {
+            Ok(self.transmit_inner(&buffer[..size]).await?)
+        }
+        #[cfg(feature = "numeric-trace")]
+        {
+            let result = self.transmit_inner(&buffer[..size]).await;
+            match result {
+                Ok(()) => {
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::GoodCrcTransmitted,
+                        &buffer[..size],
+                        self.counters.retry.value(),
+                        Some(crate::numeric_trace::NumericTracePath::Software as u8),
+                    );
+                    Ok(())
+                }
+                Err(error) => {
+                    let error = ProtocolError::from(error);
+                    emit_protocol_error(&error);
+                    Err(error)
+                }
+            }
+        }
     }
 
     /// Handle acknowledgement and retransmission detection for a received message.
@@ -456,6 +696,26 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                 Err(ProtocolError::TxError(TxError::Detached)) => return Err(RxError::Detached),
                 Err(_) => return Err(RxError::UnsupportedMessage),
             }
+        } else if DRIVER::HAS_AUTO_GOOD_CRC && !is_good_crc {
+            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                crate::numeric_trace::NumericTraceEventKind::GoodCrcTransmitted,
+                crate::numeric_trace::NumericTracePath::Hardware as u8,
+                message.header.message_id(),
+                crate::numeric_trace::UNAVAILABLE_U8,
+                message.header.0,
+                crate::numeric_trace::UNAVAILABLE_U16,
+            ));
+        }
+
+        if is_retransmission {
+            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                crate::numeric_trace::NumericTraceEventKind::RxRetransmission,
+                crate::numeric_trace::UNAVAILABLE_U8,
+                message.header.message_id(),
+                crate::numeric_trace::UNAVAILABLE_U8,
+                message.header.0,
+                crate::numeric_trace::UNAVAILABLE_U16,
+            ));
         }
 
         Ok(is_retransmission)
@@ -496,6 +756,11 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             // Parse header early to handle chunking.
             let header = Header::from_bytes(&buffer[..MSG_HEADER_SIZE])?;
             Message::validate_frame_length(&buffer[..length], header)?;
+            numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
+                crate::numeric_trace::NumericTraceEventKind::RxMessage,
+                &buffer[..length],
+                crate::numeric_trace::UNAVAILABLE_U8,
+            ));
             let message_type = header.message_type();
 
             if matches!(message_type, MessageType::Extended(_)) {
@@ -640,7 +905,18 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
 
     /// Receive a message.
     pub async fn receive_message(&mut self) -> Result<Message, ProtocolError> {
-        self.receive_message_inner().await.map_err(|err| err.into())
+        #[cfg(not(feature = "numeric-trace"))]
+        {
+            self.receive_message_inner().await.map_err(|err| err.into())
+        }
+        #[cfg(feature = "numeric-trace")]
+        {
+            let result = self.receive_message_inner().await.map_err(|err| err.into());
+            if let Err(error) = &result {
+                emit_protocol_error(error);
+            }
+            result
+        }
     }
 
     /// Updates the received message counter.
@@ -727,9 +1003,23 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             }
         };
 
-        match select(timeout_fut, receive_fut).await {
-            Either::First(_) => Err(RxError::ReceiveTimeout.into()),
-            Either::Second(receive_result) => receive_result,
+        #[cfg(not(feature = "numeric-trace"))]
+        {
+            match select(timeout_fut, receive_fut).await {
+                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
+                Either::Second(receive_result) => receive_result,
+            }
+        }
+        #[cfg(feature = "numeric-trace")]
+        {
+            let result = match select(timeout_fut, receive_fut).await {
+                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
+                Either::Second(receive_result) => receive_result,
+            };
+            if let Err(error) = &result {
+                emit_protocol_error(error);
+            }
+            result
         }
     }
 
@@ -745,7 +1035,16 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                 Ok(_) | Err(DriverTxError::HardReset) => break,
                 Err(DriverTxError::Detached) => return Err(TxError::Detached.into()),
                 Err(DriverTxError::Discarded) => match self.counters.retry.increment() {
-                    Ok(_) => {}
+                    Ok(_) => {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::HardReset,
+                            crate::numeric_trace::NumericTraceHardResetPhase::TransmitRetry as u8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            self.counters.retry.value(),
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
+                    }
                     Err(CounterError::Exceeded) => {
                         return Err(ProtocolError::TransmitRetriesExceeded(self.counters.retry.max_value()));
                     }
@@ -844,23 +1143,129 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         offset += 2;
 
         // Transmit and wait for GoodCRC
+        numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
+            crate::numeric_trace::NumericTraceEventKind::TxStart,
+            &buffer[..offset],
+            self.counters.retry.value(),
+        ));
         if DRIVER::HAS_AUTO_RETRY {
+            #[cfg(feature = "numeric-trace")]
+            emit_frame_event(
+                crate::numeric_trace::NumericTraceEventKind::TxHardwareRetry,
+                &buffer[..offset],
+                self.counters.retry.max_value(),
+                Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+            );
             match self.driver.transmit(&buffer[..offset]).await {
                 Ok(()) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+                    );
                     self.counters.retry.reset();
                     _ = self.counters.tx_message.increment();
+                    #[cfg(feature = "numeric-trace")]
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::TxSuccess,
+                        &buffer[..offset],
+                        0,
+                        Some(crate::numeric_trace::NumericTracePath::Hardware as u8),
+                    );
                     Ok(())
                 }
-                Err(DriverTxError::HardReset) => Err(RxError::HardReset),
-                Err(DriverTxError::Detached) => Err(RxError::Detached),
-                Err(DriverTxError::Discarded) => Err(RxError::ReceiveTimeout),
+                Err(DriverTxError::HardReset) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::HardReset,
+                    );
+                    Err(RxError::HardReset)
+                }
+                Err(DriverTxError::Detached) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::Detached,
+                    );
+                    Err(RxError::Detached)
+                }
+                Err(DriverTxError::Discarded) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.max_value(),
+                        crate::numeric_trace::NumericTraceTxReason::RetriesExceeded,
+                    );
+                    Err(RxError::ReceiveTimeout)
+                }
             }
         } else {
             match self.transmit_inner(&buffer[..offset]).await {
-                Ok(_) => self.wait_for_good_crc().await,
-                Err(TxError::HardReset) => Err(RxError::HardReset),
-                Err(TxError::Detached) => Err(RxError::Detached),
-                Err(TxError::Discarded) => Err(RxError::ReceiveTimeout),
+                Ok(_) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_frame_event(
+                        crate::numeric_trace::NumericTraceEventKind::GoodCrcWait,
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        Some(crate::numeric_trace::NumericTracePath::Software as u8),
+                    );
+                    let result = self.wait_for_good_crc().await;
+                    if result.is_ok() {
+                        #[cfg(feature = "numeric-trace")]
+                        emit_frame_event(
+                            crate::numeric_trace::NumericTraceEventKind::TxSuccess,
+                            &buffer[..offset],
+                            0,
+                            Some(crate::numeric_trace::NumericTracePath::Software as u8),
+                        );
+                    }
+                    #[cfg(feature = "numeric-trace")]
+                    if let Err(error) = &result {
+                        let reason = match error {
+                            RxError::ReceiveTimeout => crate::numeric_trace::NumericTraceTxReason::GoodCrcTimeout,
+                            RxError::AcknowledgeMismatch(_) => {
+                                crate::numeric_trace::NumericTraceTxReason::AcknowledgeMismatch
+                            }
+                            RxError::HardReset => crate::numeric_trace::NumericTraceTxReason::HardReset,
+                            RxError::Detached => crate::numeric_trace::NumericTraceTxReason::Detached,
+                            _ => crate::numeric_trace::NumericTraceTxReason::Other,
+                        };
+                        emit_tx_failure(&buffer[..offset], self.counters.retry.value(), reason);
+                    }
+                    result
+                }
+                Err(TxError::HardReset) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::HardReset,
+                    );
+                    Err(RxError::HardReset)
+                }
+                Err(TxError::Detached) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::Detached,
+                    );
+                    Err(RxError::Detached)
+                }
+                Err(TxError::Discarded) => {
+                    #[cfg(feature = "numeric-trace")]
+                    emit_tx_failure(
+                        &buffer[..offset],
+                        self.counters.retry.value(),
+                        crate::numeric_trace::NumericTraceTxReason::DriverDiscarded,
+                    );
+                    Err(RxError::ReceiveTimeout)
+                }
             }
         }
     }
@@ -1095,6 +1500,14 @@ mod tests {
     };
     use crate::protocol_layer::message::Payload;
 
+    #[cfg(feature = "numeric-trace")]
+    fn assert_event_kinds(
+        events: &[crate::numeric_trace::NumericTraceEvent],
+        expected: &[crate::numeric_trace::NumericTraceEventKind],
+    ) {
+        assert!(events.iter().map(|event| event.kind).eq(expected.iter().copied()));
+    }
+
     fn get_protocol_layer() -> SinkProtocolLayer<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer> {
         SinkProtocolLayer(ProtocolLayer::new(
             DummyDriver::new(),
@@ -1138,6 +1551,8 @@ mod tests {
 
     #[tokio::test]
     async fn invalid_local_request_never_reaches_the_driver() {
+        #[cfg(feature = "numeric-trace")]
+        let capture = crate::numeric_trace::test_support::CaptureGuard::start();
         let mut protocol_layer = get_protocol_layer();
         let invalid_request = PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23)));
 
@@ -1146,5 +1561,124 @@ mod tests {
             Err(ProtocolError::TxValidation(TxValidationError::UnchunkedExtendedMessagesNotSupported))
         ));
         assert!(!protocol_layer.driver().has_transmitted_data());
+        #[cfg(feature = "numeric-trace")]
+        {
+            let events = capture.events();
+            assert_event_kinds(&events, &[crate::numeric_trace::NumericTraceEventKind::ProtocolError]);
+            assert_eq!(events[0].code, crate::numeric_trace::NumericTraceProtocolError::TxValidation as u8);
+            assert_eq!(events[0].detail, 1);
+        }
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    #[tokio::test]
+    async fn numeric_trace_orders_software_tx_and_good_crc() {
+        use crate::counters::{Counter, CounterType};
+        use crate::numeric_trace::{
+            NumericTraceEventKind as Kind, NumericTracePath, UNAVAILABLE_U16, test_support::CaptureGuard,
+        };
+        use crate::protocol_layer::message::Message;
+        use crate::protocol_layer::message::header::ControlMessageType;
+
+        let mut protocol_layer = get_protocol_layer();
+        let good_crc = Message::new(Header::new_control(
+            *protocol_layer.header(),
+            Counter::new_from_value(CounterType::MessageId, 0),
+            ControlMessageType::GoodCRC,
+        ));
+        let mut buffer = [0; MAX_DATA_MESSAGE_SIZE];
+        let length = good_crc.to_bytes(&mut buffer);
+        protocol_layer.driver.inject_received_data(&buffer[..length]);
+
+        let capture = CaptureGuard::start();
+        protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await.unwrap();
+        let events = capture.events();
+
+        assert_event_kinds(
+            &events,
+            &[Kind::TxStart, Kind::GoodCrcWait, Kind::RxMessage, Kind::GoodCrcReceived, Kind::TxSuccess],
+        );
+        assert_eq!(events[0].header & 0x1f, ControlMessageType::GetSourceCap as u16);
+        assert_eq!(events[0].message_id, 0);
+        assert_eq!(events[0].counter, 0);
+        assert_eq!(events[0].detail, UNAVAILABLE_U16);
+        assert_eq!(events[3].code, NumericTracePath::Software as u8);
+        assert_eq!(events[3].message_id, 0);
+        assert_eq!(events[4].code, NumericTracePath::Software as u8);
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    struct AutoRetryDriver {
+        outcome: Result<(), usbpd_traits::DriverTxError>,
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    impl usbpd_traits::Driver for AutoRetryDriver {
+        const HAS_AUTO_GOOD_CRC: bool = true;
+        const HAS_AUTO_RETRY: bool = true;
+
+        async fn wait_for_vbus(&mut self) {}
+
+        async fn receive(&mut self, _buffer: &mut [u8]) -> Result<usize, usbpd_traits::DriverRxError> {
+            core::future::pending().await
+        }
+
+        async fn transmit(&mut self, _data: &[u8]) -> Result<(), usbpd_traits::DriverTxError> {
+            self.outcome
+        }
+
+        async fn transmit_hard_reset(&mut self) -> Result<(), usbpd_traits::DriverTxError> {
+            Ok(())
+        }
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    fn auto_retry_protocol_layer(
+        outcome: Result<(), usbpd_traits::DriverTxError>,
+    ) -> SinkProtocolLayer<AutoRetryDriver, DummyTimer> {
+        SinkProtocolLayer(ProtocolLayer::new(
+            AutoRetryDriver { outcome },
+            Header::new_template(
+                crate::DataRole::Ufp,
+                crate::PowerRole::Sink,
+                super::message::header::SpecificationRevision::R3_X,
+            ),
+        ))
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    #[tokio::test]
+    async fn numeric_trace_reports_hardware_retry_success_and_failure() {
+        use crate::numeric_trace::{
+            NumericTraceEventKind as Kind, NumericTracePath, NumericTraceProtocolError, NumericTraceTxReason,
+            test_support::CaptureGuard,
+        };
+        use crate::protocol_layer::message::header::ControlMessageType;
+        use usbpd_traits::DriverTxError;
+
+        {
+            let capture = CaptureGuard::start();
+            auto_retry_protocol_layer(Ok(())).transmit_control_message(ControlMessageType::GetSourceCap).await.unwrap();
+            let events = capture.events();
+            assert_event_kinds(
+                &events,
+                &[Kind::TxStart, Kind::TxHardwareRetry, Kind::GoodCrcReceived, Kind::TxSuccess],
+            );
+            assert_eq!(events[1].code, NumericTracePath::Hardware as u8);
+            assert_eq!(events[2].code, NumericTracePath::Hardware as u8);
+            assert_eq!(events[3].code, NumericTracePath::Hardware as u8);
+        }
+
+        {
+            let capture = CaptureGuard::start();
+            let error = auto_retry_protocol_layer(Err(DriverTxError::Discarded))
+                .transmit_control_message(ControlMessageType::GetSourceCap)
+                .await;
+            assert!(matches!(error, Err(ProtocolError::TransmitRetriesExceeded(_))));
+            let events = capture.events();
+            assert_event_kinds(&events, &[Kind::TxStart, Kind::TxHardwareRetry, Kind::TxFailure, Kind::ProtocolError]);
+            assert_eq!(events[2].code, NumericTraceTxReason::RetriesExceeded as u8);
+            assert_eq!(events[3].code, NumericTraceProtocolError::TxRetriesExceeded as u8);
+        }
     }
 }

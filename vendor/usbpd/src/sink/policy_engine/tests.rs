@@ -342,6 +342,107 @@ fn simulate_epr_keep_alive_ack<DPM: crate::sink::device_policy_manager::DevicePo
     result
 }
 
+#[cfg(feature = "numeric-trace")]
+fn assert_trace_kinds(
+    events: &[crate::numeric_trace::NumericTraceEvent],
+    expected: &[crate::numeric_trace::NumericTraceEventKind],
+) {
+    assert!(events.iter().map(|event| event.kind).eq(expected.iter().copied()));
+}
+
+#[cfg(feature = "numeric-trace")]
+#[tokio::test]
+async fn numeric_trace_orders_successful_epr_keep_alive() {
+    use crate::dummy::get_source_capability_request;
+    use crate::numeric_trace::{
+        NumericTraceEprKeepAlivePhase, NumericTraceEventKind as Kind, test_support::CaptureGuard,
+    };
+    use crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType;
+    use crate::sink::policy_engine::Mode;
+
+    let mut policy_engine = get_policy_engine();
+    policy_engine.mode = Mode::Epr;
+    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+    simulate_epr_keep_alive_ack(&mut policy_engine, 0);
+
+    let capture = CaptureGuard::start();
+    policy_engine.run_step().await.unwrap();
+    let events = capture.events();
+
+    assert_trace_kinds(
+        &events,
+        &[
+            Kind::EprKeepAlive,
+            Kind::TxStart,
+            Kind::GoodCrcWait,
+            Kind::RxMessage,
+            Kind::GoodCrcReceived,
+            Kind::TxSuccess,
+            Kind::RxMessage,
+            Kind::GoodCrcTransmitted,
+            Kind::EprKeepAlive,
+        ],
+    );
+    assert_eq!(events[0].code, NumericTraceEprKeepAlivePhase::Request as u8);
+    assert_eq!(events[1].code, u8::from(ExtendedControlMessageType::EprKeepAlive));
+    assert_eq!(events[6].code, u8::from(ExtendedControlMessageType::EprKeepAliveAck));
+    assert_eq!(events[8].code, NumericTraceEprKeepAlivePhase::Acknowledged as u8);
+    assert!(matches!(policy_engine.state, State::Ready(_)));
+}
+
+#[cfg(all(feature = "numeric-trace", feature = "hard-reset-reasons"))]
+#[tokio::test]
+async fn numeric_trace_reports_keep_alive_timeout_and_hard_reset_reason() {
+    use crate::dummy::get_source_capability_request;
+    use crate::numeric_trace::{
+        NumericTraceEprKeepAlivePhase, NumericTraceEventKind as Kind, NumericTraceHardResetPhase,
+        NumericTraceProtocolError, test_support::CaptureGuard,
+    };
+    use crate::sink::device_policy_manager::HardResetReason;
+    use crate::sink::policy_engine::Mode;
+
+    let mut policy_engine = get_policy_engine();
+    policy_engine.mode = Mode::Epr;
+    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+
+    let capture = CaptureGuard::start();
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::HardReset(HardResetReason::EprKeepAliveFailed)));
+    policy_engine.run_step().await.unwrap();
+    let events = capture.events();
+
+    let timeout = events
+        .iter()
+        .position(|event| {
+            event.kind == Kind::EprKeepAlive && event.code == NumericTraceEprKeepAlivePhase::Timeout as u8
+        })
+        .unwrap();
+    let protocol_timeout = events
+        .iter()
+        .position(|event| event.kind == Kind::ProtocolError && event.code == NumericTraceProtocolError::RxTimeout as u8)
+        .unwrap();
+    let reset_start = events
+        .iter()
+        .position(|event| {
+            event.kind == Kind::HardReset && event.code == NumericTraceHardResetPhase::TransmitStart as u8
+        })
+        .unwrap();
+    let reset_complete = events
+        .iter()
+        .position(|event| {
+            event.kind == Kind::HardReset && event.code == NumericTraceHardResetPhase::TransmitComplete as u8
+        })
+        .unwrap();
+
+    assert!(protocol_timeout < timeout);
+    assert!(timeout < reset_start);
+    assert!(reset_start < reset_complete);
+    assert_eq!(events[reset_start].detail, HardResetReason::EprKeepAliveFailed as u16);
+    assert_eq!(events[reset_start].counter, 1);
+}
+
 #[tokio::test]
 async fn test_negotiation() {
     // Instantiated in `Discovery` state

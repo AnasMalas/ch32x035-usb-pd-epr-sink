@@ -23,6 +23,7 @@ ch32x035g8r6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32
 ch32x035g8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035g8u6"]
 ch32x035r8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035r8t6"]
 hard-reset-reasons = ["usbpd/hard-reset-reasons"]
+numeric-trace = ["usbpd/numeric-trace"]
 
 [dependencies]
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["embassy"], optional = true }
@@ -31,4 +32,5 @@ usbpd = { path = "../../vendor/usbpd" }
 usbpd-traits = { path = "../../vendor/usbpd-traits", optional = true }
 
 [dev-dependencies]
+critical-section = { version = "1.2.0", features = ["std"] }
 heapless = "0.9.2"

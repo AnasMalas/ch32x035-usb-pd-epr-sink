@@ -71,6 +71,7 @@ $textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
 $rev0UsbSafeFeatures = "$rev0Chip,usb-control,output-default-off,rev0-board"
 $rev0UsbPpsFeatures = "$rev0Chip,usb-control,pps-capable-hardware,output-default-off,rev0-board"
 $rev0UsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
+$rev0UsbEprTraceFeatures = "$rev0UsbEprFeatures,numeric-trace"
 $rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control",
@@ -141,6 +142,9 @@ try {
     cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget --features numeric-trace,hard-reset-reasons -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $usbControlEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "USB-control EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
@@ -153,6 +157,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 compact EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprTraceFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 numeric-trace EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
@@ -161,6 +168,15 @@ try {
 
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd tests failed with exit code $LASTEXITCODE" }
+
+    cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --features numeric-trace,hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace tests failed with exit code $LASTEXITCODE" }
+
+    cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "feature-off public library tests failed with exit code $LASTEXITCODE" }
+
+    cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features numeric-trace,hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "public numeric-trace tests failed with exit code $LASTEXITCODE" }
 
     foreach ($chip in $supportedChips) {
         # F7P6 has only 48 KiB of application flash. Prove its complete

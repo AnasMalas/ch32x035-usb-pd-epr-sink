@@ -47,6 +47,16 @@ pub mod contract;
 pub mod control;
 pub mod controller;
 pub mod load_control;
+#[cfg(feature = "numeric-trace")]
+pub mod numeric_trace {
+    //! Formatter-free numeric tracing from the maintained USB-PD stack.
+
+    pub use usbpd::numeric_trace::{
+        set_numeric_trace_callback, NumericTraceCallback, NumericTraceEprKeepAlivePhase, NumericTraceEvent,
+        NumericTraceEventKind, NumericTraceHardResetPhase, NumericTracePath, NumericTraceProtocolError,
+        NumericTraceTxReason, NUMERIC_TRACE_ABI_VERSION, UNAVAILABLE_U16, UNAVAILABLE_U8,
+    };
+}
 pub mod request;
 pub mod runtime;
 pub mod safety;

@@ -20,7 +20,21 @@
 // This mod MUST go first, so that the others see its macros.
 pub(crate) mod fmt;
 
+#[cfg(feature = "numeric-trace")]
+macro_rules! numeric_trace {
+    ($event:expr) => {
+        $crate::numeric_trace::emit($event)
+    };
+}
+
+#[cfg(not(feature = "numeric-trace"))]
+macro_rules! numeric_trace {
+    ($event:expr) => {};
+}
+
 pub(crate) mod counters;
+#[cfg(feature = "numeric-trace")]
+pub mod numeric_trace;
 pub mod protocol_layer;
 pub mod sink;
 pub mod source;
