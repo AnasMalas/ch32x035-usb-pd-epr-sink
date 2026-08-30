@@ -2,6 +2,12 @@
 
 Choose the document by what you are trying to do:
 
+## Debug real hardware
+
+- [Debugging real USB-PD hardware](debugging.md) gives a symptom-driven
+  isolation workflow, nonintrusive trace design, numeric event decoder, and
+  issue-report checklist for timing and power failures.
+
 ## Use or integrate
 
 - [Integrating the sink library](integration.md) explains the application

@@ -10,7 +10,10 @@ those pins or transports are requirements of the core crate.
 Run the commands below from the repository root. Read the
 [hardware interface](docs/hardware_interface.md) and
 [first-board verification](docs/first_board_verification.md) before enabling
-PPS or EPR on a new board.
+PPS or EPR on a new board. If behavior changes with a cable, Source, USB host,
+or application workload, start with the repository-wide
+[hardware debugging guide](../../docs/debugging.md) before adding synchronous
+logging or changing PD timers.
 
 For the public CH32X035G8U6 rev0 board, use the dedicated
 [rev0 validation procedure](docs/rev0_validation.md). It is fixed at 5 V,

@@ -23,6 +23,7 @@ The crate is under API review and is not published to crates.io.
 | Build and flash a CH32X035 sink | [Reference firmware: first safe run](examples/ch32x035-usb-pd-sink-firmware/README.md#first-safe-run-on-windows) |
 | Add the sink to another firmware | [Library crate guide](crates/pd-sink/README.md) |
 | Control an already-flashed board | [Browser control client](examples/browser-usb-pd-control-client/README.md#start) |
+| Isolate a real hardware failure | [Hardware debugging guide](docs/debugging.md) |
 | Characterize the experimental CC wake interrupt | [No-load CC wake probe](examples/ch32x035-usbpd-cc-wake-probe/README.md) |
 | Understand or change the internals | [Documentation index](docs/README.md) and [contributing guide](CONTRIBUTING.md) |
 
@@ -141,6 +142,7 @@ policies; physical fault and detector cutoffs remain unconditional.
 | Build and flash the example | [CH32X035 firmware](examples/ch32x035-usb-pd-sink-firmware/README.md) |
 | Design the board interface | [Hardware interface](examples/ch32x035-usb-pd-sink-firmware/docs/hardware_interface.md) |
 | Validate a new board | [First-board verification](examples/ch32x035-usb-pd-sink-firmware/docs/first_board_verification.md) |
+| Debug timing, resets, or lost messages | [Hardware debugging](docs/debugging.md) |
 | Use the GUI | [Browser control client](examples/browser-usb-pd-control-client/README.md) |
 | Implement another host | [Compact control protocol](docs/control_protocol.md) |
 | Understand the layers | [Architecture](docs/architecture.md) |
