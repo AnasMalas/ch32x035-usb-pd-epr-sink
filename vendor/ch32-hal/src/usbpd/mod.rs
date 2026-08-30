@@ -21,6 +21,10 @@ use crate::mode::{Async, Blocking, Mode};
 use crate::pac::usbpd::vals;
 use crate::{interrupt, pac, Peri, PeripheralType, RccPeripheral};
 
+mod turnaround;
+
+use turnaround::TransferState;
+
 /// Maximum PD message size excluding the four-byte CRC appended by the PHY.
 pub const MAX_MESSAGE_BYTES: usize = 30;
 const RX_DMA_BYTES: usize = MAX_MESSAGE_BYTES + 4;
@@ -70,6 +74,16 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         if status.if_tx_end() {
             T::REGS.config().modify(|w| w.set_ie_tx_end(false));
+
+            // WCH's sink sequence switches directly from TX to RX. For an
+            // ordinary message, do that here before waking the executor so an
+            // immediate GoodCRC or Source response cannot begin in a blind
+            // window. GoodCRC and Hard Reset transmissions do not request it.
+            T::state().transfer.complete_transmit(!status.buf_err(), || {
+                T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
+                T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
+                arm_turnaround_receive::<T>();
+            });
         }
 
         if status.if_rx_act() {
@@ -99,6 +113,29 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
     }
 }
 
+/// Switch the peripheral from TX to RX using its stable singleton DMA buffer.
+///
+/// Called only from the TX-end interrupt before the waiting task is woken.
+fn arm_turnaround_receive<T: Instance>() {
+    let usbpd = T::REGS;
+
+    usbpd.config().modify(|w| w.set_pd_all_clr(true));
+    usbpd.config().modify(|w| {
+        w.set_pd_all_clr(false);
+        w.set_ie_tx_end(false);
+        w.set_ie_rx_act(true);
+        w.set_ie_rx_reset(true);
+    });
+
+    // SAFETY: State owns the stable, aligned singleton buffer. The transfer
+    // lifecycle serializes DMA, ISR, and task access to it.
+    let buffer = unsafe { &mut *T::state().transfer.buffer_ptr() };
+    usbpd.dma().write_value(buffer.mut_address());
+    usbpd.control().modify(|w| w.set_pd_tx_en(false));
+    usbpd.bmc_clk_cnt().modify(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_rx()));
+    usbpd.control().modify(|w| w.set_bmc_start(true));
+}
+
 /// Interrupt handler for the USB-PD port-level wake input.
 ///
 /// The CH32X0 reference manual documents a wake level selected by
@@ -125,7 +162,7 @@ struct UsbPdMsg {
     pub data: [u8; RX_DMA_BYTES],
 }
 impl UsbPdMsg {
-    fn new() -> Self {
+    const fn new() -> Self {
         Self {
             data: [0u8; RX_DMA_BYTES],
         }
@@ -148,7 +185,6 @@ pub struct UsbPdPhy<'d, T: Instance, M: Mode> {
     _marker: PhantomData<(&'d mut T, M)>,
     cc1: vals::CcSel,
     cc2: vals::CcSel,
-    buffer: UsbPdMsg,
 }
 
 /// Read-only active-CC observation paired with a [`UsbPdPhy`].
@@ -318,8 +354,10 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     ///
     /// Returns the SOP and number of received bytes, or an error.
     pub async fn receive(&mut self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
-        self.enable_rx_interrupt();
-        self.prepare_receive();
+        if !T::state().transfer.take_prearmed_receive() {
+            self.enable_rx_interrupt();
+            self.prepare_receive();
+        }
 
         poll_fn(|cx| {
             T::state().waker.register(cx.waker());
@@ -343,10 +381,26 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     }
 
     pub async fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {
+        self.transmit_configured(buf, false).await
+    }
+
+    /// Transmit an ordinary PD message and arm RX in the TX-end interrupt so
+    /// the following [`Self::receive`] can capture its immediate GoodCRC or
+    /// Source response.
+    pub async fn transmit_with_rx_turnaround(&mut self, buf: &[u8]) -> Result<(), Error> {
+        self.transmit_configured(buf, true).await
+    }
+
+    async fn transmit_configured(&mut self, buf: &[u8], request_turnaround: bool) -> Result<(), Error> {
         validate_message_length(buf.len())?;
+        T::state().transfer.begin_transmit(request_turnaround);
         self.enable_tx_interrupt();
         self.transmit_inner(Sop::Sop, buf);
         let result = self.wait_for_tx_complete().await;
+
+        if result.is_err() {
+            T::state().transfer.cancel();
+        }
 
         T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
         T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
@@ -356,6 +410,7 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
 
     /// Transmit a hard reset.
     pub async fn transmit_hardreset(&mut self) -> Result<(), Error> {
+        T::state().transfer.cancel();
         self.enable_tx_interrupt();
         self.transmit_inner(Sop::HardReset, &[]);
         let result = self.wait_for_tx_complete().await;
@@ -497,13 +552,13 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
             _marker: PhantomData,
             cc1: cc1.port_sel(),
             cc2: cc2.port_sel(),
-            buffer: UsbPdMsg::new(),
         };
 
         this
     }
 
     pub fn reset(&mut self) -> Result<(), Error> {
+        T::state().transfer.cancel();
         T::enable_and_reset();
 
         T::REGS.config().write(|w| {
@@ -579,7 +634,10 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
         T::REGS.config().modify(|w| w.set_pd_all_clr(true));
         T::REGS.config().modify(|w| w.set_pd_all_clr(false));
 
-        T::REGS.dma().write_value(self.buffer.mut_address());
+        // SAFETY: the singleton peripheral permits only one live PHY and all
+        // transfer methods require exclusive access to it.
+        let buffer = unsafe { &mut *T::state().transfer.buffer_ptr() };
+        T::REGS.dma().write_value(buffer.mut_address());
 
         T::REGS.control().modify(|w| w.set_pd_tx_en(false)); // RX
         T::REGS
@@ -605,7 +663,9 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
                 available: buf.len(),
             });
         }
-        buf[..byte_count].copy_from_slice(&self.buffer.to_slice()[..byte_count]);
+        // SAFETY: DMA reception completed before this method is called.
+        let received = unsafe { &*T::state().transfer.buffer_ptr() };
+        buf[..byte_count].copy_from_slice(&received.to_slice()[..byte_count]);
         match T::REGS.status().read().bmc_aux() {
             vals::BmcAux::SOP0 => Ok((Sop::Sop, byte_count)),
             vals::BmcAux::SOP1 => Ok((Sop::SopPrime, byte_count)),
@@ -626,8 +686,10 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
             T::REGS.dma().write_value(0);
         } else {
             // We use our own buffer to ensure it is 4-byte aligned, as required by the hardware.
-            self.buffer.data[..buf.len()].copy_from_slice(buf);
-            T::REGS.dma().write_value(self.buffer.address());
+            // SAFETY: the singleton peripheral serializes all transfers.
+            let transmit = unsafe { &mut *T::state().transfer.buffer_ptr() };
+            transmit.data[..buf.len()].copy_from_slice(buf);
+            T::REGS.dma().write_value(transmit.address());
         }
 
         T::REGS.tx_sel().write(|w| w.0 = sop as u8);
@@ -663,6 +725,7 @@ struct State {
     waker: AtomicWaker,
     // Set by the ISR on BUF_ERR; cleared at the start of each transfer.
     buf_err: AtomicBool,
+    transfer: TransferState<UsbPdMsg>,
 }
 
 impl State {
@@ -670,6 +733,7 @@ impl State {
         Self {
             waker: AtomicWaker::new(),
             buf_err: AtomicBool::new(false),
+            transfer: TransferState::new(UsbPdMsg::new()),
         }
     }
 }

@@ -42,6 +42,16 @@ pub mod capabilities;
     feature = "ch32x035r8t6"
 ))]
 pub mod ch32x035;
+#[cfg(any(
+    test,
+    feature = "ch32x035c8t6",
+    feature = "ch32x035f7p6",
+    feature = "ch32x035f8u6",
+    feature = "ch32x035g8r6",
+    feature = "ch32x035g8u6",
+    feature = "ch32x035r8t6"
+))]
+mod ch32x035_frame;
 pub mod command;
 pub mod contract;
 pub mod control;
