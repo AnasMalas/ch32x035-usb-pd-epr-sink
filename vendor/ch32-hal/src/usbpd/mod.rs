@@ -23,7 +23,7 @@ use crate::{interrupt, pac, Peri, PeripheralType, RccPeripheral};
 
 mod turnaround;
 
-use turnaround::TransferState;
+use turnaround::{needs_rx_turnaround, TransferState};
 
 /// Maximum PD message size excluding the four-byte CRC appended by the PHY.
 pub const MAX_MESSAGE_BYTES: usize = 30;
@@ -72,6 +72,13 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         let status = usbpd.status().read();
 
+        if status.if_tx_end() || status.buf_err() {
+            // TX has stopped (or faulted), so release the CC transmitter
+            // before any ordinary-message receive turnaround is armed.
+            T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
+            T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
+        }
+
         if status.if_tx_end() {
             T::REGS.config().modify(|w| w.set_ie_tx_end(false));
 
@@ -79,11 +86,9 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             // ordinary message, do that here before waking the executor so an
             // immediate GoodCRC or Source response cannot begin in a blind
             // window. GoodCRC and Hard Reset transmissions do not request it.
-            T::state().transfer.complete_transmit(!status.buf_err(), || {
-                T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
-                T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
-                arm_turnaround_receive::<T>();
-            });
+            if !status.buf_err() {
+                T::state().transfer.complete_transmit(|| prepare_receive::<T, true>());
+            }
         }
 
         if status.if_rx_act() {
@@ -115,16 +120,19 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
 /// Switch the peripheral from TX to RX using its stable singleton DMA buffer.
 ///
-/// Called only from the TX-end interrupt before the waiting task is woken.
-fn arm_turnaround_receive<T: Instance>() {
+/// The asynchronous path enables receive interrupts; the blocking path polls
+/// the same hardware sequence with the USBPD interrupt disabled.
+fn prepare_receive<T: Instance, const ENABLE_INTERRUPTS: bool>() {
     let usbpd = T::REGS;
 
     usbpd.config().modify(|w| w.set_pd_all_clr(true));
     usbpd.config().modify(|w| {
         w.set_pd_all_clr(false);
-        w.set_ie_tx_end(false);
-        w.set_ie_rx_act(true);
-        w.set_ie_rx_reset(true);
+        if ENABLE_INTERRUPTS {
+            w.set_ie_tx_end(false);
+            w.set_ie_rx_act(true);
+            w.set_ie_rx_reset(true);
+        }
     });
 
     // SAFETY: State owns the stable, aligned singleton buffer. The transfer
@@ -328,17 +336,6 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         (phy, UsbPdCcMonitor { _marker: PhantomData })
     }
 
-    fn enable_rx_interrupt(&mut self) {
-        // Clear stale BUF_ERR (HW W1C, then latch) before re-arming IEs.
-        T::REGS.status().write(|w| w.set_buf_err(true));
-        T::state().buf_err.store(false, Ordering::Release);
-        T::REGS.config().modify(|w| {
-            w.set_ie_rx_act(true); // Receive completion interrupt enable
-            w.set_ie_rx_reset(true); // Receive reset interrupt enable
-            w.set_ie_tx_end(false); // End-of-transmit interrupt disable
-        });
-    }
-
     fn enable_tx_interrupt(&mut self) {
         // Clear stale BUF_ERR (HW W1C, then latch) before re-arming IEs.
         T::REGS.status().write(|w| w.set_buf_err(true));
@@ -355,8 +352,10 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     /// Returns the SOP and number of received bytes, or an error.
     pub async fn receive(&mut self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
         if !T::state().transfer.take_prearmed_receive() {
-            self.enable_rx_interrupt();
-            self.prepare_receive();
+            // Clear stale BUF_ERR (HW W1C, then latch) before re-arming RX.
+            T::REGS.status().write(|w| w.set_buf_err(true));
+            T::state().buf_err.store(false, Ordering::Release);
+            prepare_receive::<T, true>();
         }
 
         poll_fn(|cx| {
@@ -381,19 +380,8 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     }
 
     pub async fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {
-        self.transmit_configured(buf, false).await
-    }
-
-    /// Transmit an ordinary PD message and arm RX in the TX-end interrupt so
-    /// the following [`Self::receive`] can capture its immediate GoodCRC or
-    /// Source response.
-    pub async fn transmit_with_rx_turnaround(&mut self, buf: &[u8]) -> Result<(), Error> {
-        self.transmit_configured(buf, true).await
-    }
-
-    async fn transmit_configured(&mut self, buf: &[u8], request_turnaround: bool) -> Result<(), Error> {
         validate_message_length(buf.len())?;
-        T::state().transfer.begin_transmit(request_turnaround);
+        T::state().transfer.begin_transmit(false);
         self.enable_tx_interrupt();
         self.transmit_inner(Sop::Sop, buf);
         let result = self.wait_for_tx_complete().await;
@@ -402,8 +390,23 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
             T::state().transfer.cancel();
         }
 
-        T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
-        T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
+        result
+    }
+
+    /// Transmit an ordinary PD message and arm RX in the TX-end interrupt so
+    /// the following [`Self::receive`] can capture its immediate GoodCRC or
+    /// Source response. An exact GoodCRC automatically skips turnaround
+    /// because it is never acknowledged.
+    pub async fn transmit_with_rx_turnaround(&mut self, buf: &[u8]) -> Result<(), Error> {
+        validate_message_length(buf.len())?;
+        T::state().transfer.begin_transmit(needs_rx_turnaround(buf));
+        self.enable_tx_interrupt();
+        self.transmit_inner(Sop::Sop, buf);
+        let result = self.wait_for_tx_complete().await;
+
+        if result.is_err() {
+            T::state().transfer.cancel();
+        }
 
         result
     }
@@ -414,9 +417,6 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         self.enable_tx_interrupt();
         self.transmit_inner(Sop::HardReset, &[]);
         let result = self.wait_for_tx_complete().await;
-
-        T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
-        T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
 
         result
     }
@@ -451,7 +451,7 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::disable_interrupt(interrupt::USBPD.number() as _);
         }
-        self.prepare_receive();
+        prepare_receive::<T, false>();
 
         let outcome = loop {
             let status = T::REGS.status().read();
@@ -626,25 +626,6 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
         let allowed = cc.read().pa_cc_ai();
         cc.modify(|w| w.set_cc_ce(vals::PortCcCe::V0_66));
         allowed
-    }
-
-    /// Prepares the PHY for receiving a PD message into a buffer.
-    fn prepare_receive(&mut self) {
-        // set rx mode
-        T::REGS.config().modify(|w| w.set_pd_all_clr(true));
-        T::REGS.config().modify(|w| w.set_pd_all_clr(false));
-
-        // SAFETY: the singleton peripheral permits only one live PHY and all
-        // transfer methods require exclusive access to it.
-        let buffer = unsafe { &mut *T::state().transfer.buffer_ptr() };
-        T::REGS.dma().write_value(buffer.mut_address());
-
-        T::REGS.control().modify(|w| w.set_pd_tx_en(false)); // RX
-        T::REGS
-            .bmc_clk_cnt()
-            .modify(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_rx()));
-
-        T::REGS.control().modify(|w| w.set_bmc_start(true));
     }
 
     /// Decodes the received PD message and returns a tuple (Sop, length) or an error.

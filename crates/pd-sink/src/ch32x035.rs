@@ -17,8 +17,8 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 
 use crate::session::{classify_sink_error, SinkSessionRetry, RESET_RETRY_MS};
 use crate::{
-    ch32x035_frame::needs_rx_turnaround, RecoveryInitError, RecoveryIntent, SinkConfig, SinkConfigError, SinkDevice,
-    SinkRuntime, SinkSessionEvent, SinkSessionTerminalError,
+    RecoveryInitError, RecoveryIntent, SinkConfig, SinkConfigError, SinkDevice, SinkRuntime, SinkSessionEvent,
+    SinkSessionTerminalError,
 };
 
 /// Low-level observations useful for diagnostics but irrelevant to policy.
@@ -318,20 +318,13 @@ impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
             return Err(self.detached_tx());
         }
 
-        // A GoodCRC is never acknowledged. Every other ordinary PD message
-        // needs the PHY listening before the executor returns from TX-end.
-        let transmit = async {
-            if needs_rx_turnaround(data) {
-                self.usbpd.transmit_with_rx_turnaround(data).await
-            } else {
-                self.usbpd.transmit(data).await
-            }
-        };
-
-        let transmitted = match select(transmit, self.port.wait_for_vbus_absent()).await {
-            Either::First(transmitted) => transmitted,
-            Either::Second(()) => return Err(self.detached_tx()),
-        };
+        // The HAL skips turnaround for GoodCRC and pre-arms RX for every other
+        // ordinary message before the TX-end ISR wakes this task.
+        let transmitted =
+            match select(self.usbpd.transmit_with_rx_turnaround(data), self.port.wait_for_vbus_absent()).await {
+                Either::First(transmitted) => transmitted,
+                Either::Second(()) => return Err(self.detached_tx()),
+            };
 
         if !self.port.vbus_present() {
             return Err(self.detached_tx());
