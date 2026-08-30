@@ -161,11 +161,11 @@ assert.deepEqual(eventLines(0x91, [1, 3]), [
 ]);
 
 assert.deepEqual(eventLines(0x92, [2, ...u32(5000), ...u32(2000), ...u32(5000), ...u32(3000)]), [
-  "Contract transition: same-voltage-sufficient-current 5000mV/2000mA -> 5000mV/3000mA load=continuous",
+  "Contract transition: same-voltage-sufficient-current 5000mV/2000mA -> 5000mV/3000mA load-safety=continuity-compatible",
 ]);
 
 assert.deepEqual(eventLines(0x92, [0, ...u32(0xffffffff), ...u32(0xffffffff), ...u32(5000), ...u32(3000)]), [
-  "Contract transition: initial/no-confirmed-contract none -> 5000mV/3000mA load=inhibited",
+  "Contract transition: initial/no-confirmed-contract none -> 5000mV/3000mA load-safety=inhibit-recommended",
 ]);
 
 assert.deepEqual(eventLines(0x85, [6, ...u32(1), ...u32(0)]), [

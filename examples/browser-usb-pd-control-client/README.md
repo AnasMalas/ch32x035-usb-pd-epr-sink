@@ -90,6 +90,11 @@ latch. They do not request another USB-PD voltage, change the desired contract,
 or enter/exit EPR. PD safety permission, VBUS presence, and hardware health
 still override Output On.
 
+Contract-transition lines report the library's conservative `load-safety`
+classification, not a measurement of the output pin. The selected firmware
+profile decides whether an `inhibit-recommended` transition actually inhibits
+the load; `usb-epr-uninterrupted` deliberately keeps it asserted.
+
 ## Transport selection
 
 The page waits for device output before sending a command. A valid `PD`,

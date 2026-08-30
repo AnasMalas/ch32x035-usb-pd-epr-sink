@@ -358,8 +358,9 @@
     const from = fromVoltage === NONE_U32 || fromCurrent === NONE_U32
       ? "none"
       : `${fromVoltage}mV/${fromCurrent}mA`;
-    const inhibited = [0, 3, 4, 5].includes(payload[0]);
-    return `Contract transition: ${kinds[payload[0]] ?? `kind-${payload[0]}`} ${from} -> ${readU32(payload, 9)}mV/${readU32(payload, 13)}mA load=${inhibited ? "inhibited" : "continuous"}`;
+    const inhibitRecommended = [0, 3, 4, 5].includes(payload[0]);
+    const loadSafety = inhibitRecommended ? "inhibit-recommended" : "continuity-compatible";
+    return `Contract transition: ${kinds[payload[0]] ?? `kind-${payload[0]}`} ${from} -> ${readU32(payload, 9)}mV/${readU32(payload, 13)}mA load-safety=${loadSafety}`;
   }
 
   function validityName(validity) {
