@@ -310,7 +310,9 @@ macro_rules! logln {
         #[cfg(feature = "dev-text-console")]
         enqueue_console_log(core::format_args!($($arg)*));
         #[cfg(not(any(feature = "sdi-log", feature = "dev-text-console")))]
-        let _ = core::format_args!($($arg)*);
+        if false {
+            let _ = core::format_args!($($arg)*);
+        }
     }};
 }
 
