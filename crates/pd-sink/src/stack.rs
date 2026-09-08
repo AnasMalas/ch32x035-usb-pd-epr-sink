@@ -29,13 +29,8 @@ pub fn capabilities_from_stack(
         return Err(CapabilityListError::TooMany { supplied: count, maximum: crate::capabilities::MAX_SOURCE_PDOS });
     }
 
-    let mut pdos = [0u32; crate::capabilities::MAX_SOURCE_PDOS];
-    for (destination, source) in pdos.iter_mut().zip(capabilities.raw_pdos()) {
-        *destination = *source;
-    }
-
     let kind = if capabilities.is_epr_capabilities() { CapabilitiesKind::Epr } else { CapabilitiesKind::Spr };
-    SourceCapabilities::new(kind, &pdos[..count])
+    SourceCapabilities::new(kind, capabilities.raw_pdos())
 }
 
 /// Convert a validated public request plan into the exact stack request type
