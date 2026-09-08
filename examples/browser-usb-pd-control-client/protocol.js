@@ -453,7 +453,7 @@
     const flags = payload[8];
     return [
       `Device id=${identity}`,
-      `Device limits: max=${readU32(payload, 9)}mV current=${readU32(payload, 13)}mA power=${readU32(payload, 17)}mW PPS=${Boolean(flags & 1)} EPR=${Boolean(flags & 2)}`,
+      `Device limits: max=${readU32(payload, 9)}mV current=${readU32(payload, 13)}mA power=${readU32(payload, 17)}mW PPS=${Boolean(flags & 1)} EPR=${Boolean(flags & 2)} TELEMETRY=${flags & 4 ? "rich" : "basic"}`,
     ];
   }
 

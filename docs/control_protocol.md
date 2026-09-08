@@ -35,6 +35,24 @@ complete 11-object EPR capability list is one event containing eleven raw
 32-bit PDOs. A host validates and decodes those words for its own presentation.
 This lets embedded applications avoid carrying text formatting and queues.
 
+## Optional rich telemetry
+
+The default-on `rich-telemetry` crate feature owns the host-facing raw
+capability list, plan previews, Source_Info, Alert, general Source Status, PPS
+Status, and their explicit query commands. A size-constrained application can
+disable that feature while retaining compact USB control, voltage and PDO
+requests, EPR control, contract/transition reports, output commands, and all
+lifecycle, fault, recovery, and Hard Reset events. The PD engine still parses
+Source_Info and status messages and still follows Alerts as required; only
+their optional host presentation is removed.
+
+Protocol v1 does not change. Without `rich-telemetry`, command IDs `0x02`,
+`0x03`, `0x04`, `0x0a`, and `0x0b` return the existing Unsupported command
+status, and the corresponding rich event kinds are not emitted. Bit 2
+(`RICH_TELEMETRY_SUPPORTED`) in `DeviceInfo.flags` tells a host whether to show
+those controls or poll PPS Status. The reference browser accepts older
+firmware without this bit and treats it as rich-capable for compatibility.
+
 The reusable framing and data model live in
 [`crates/pd-sink/src/control.rs`](../crates/pd-sink/src/control.rs). The library
 also emits typed `SinkEvent` values. Human-readable line formatting, the

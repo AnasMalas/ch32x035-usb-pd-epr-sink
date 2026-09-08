@@ -1,12 +1,18 @@
+#[cfg(not(feature = "rich-telemetry"))]
+use pd_sink::ControlCommandDecodeError;
 use pd_sink::{
-    decode_control_command, encode_control_event, encode_control_event_packet, encode_control_frame, CapabilitiesKind,
-    Command, CommandStatus, ContractOperatingPoint, ContractTransition, ContractTransitionKind, ControlCommandKind,
-    ControlCommandStreamDecoder, ControlEprEvent, ControlEvent, ControlEventKind, ControlFrameDecoder,
-    ControlFrameError, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, ControllerError,
-    CurrentConfidence, Demand, DeviceInfo, EprEntryRefusal, EprExitRefusal, HardResetCause, HardResetDirection,
-    LimitReason, Milliamps, Millivolts, Milliwatts, PdoValidity, PlannedOperating, PlannedVoltage, PpsStatus,
-    Preference, RequestMessage, RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery,
-    StatusQueryFailure, SupplyKind, UserRequest, CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
+    decode_control_command, encode_control_event, encode_control_frame, Command, CommandStatus, ControlCommandKind,
+    ControlCommandStreamDecoder, ControlEvent, ControlFrameDecoder, ControlFrameError, ControlPlanStage, Demand,
+    DeviceInfo, HardResetCause, HardResetDirection, Milliamps, Millivolts, Milliwatts, Preference, UserRequest,
+    CONTROL_MAX_FRAME_LEN, CONTROL_PROTOCOL_VERSION,
+};
+#[cfg(feature = "rich-telemetry")]
+use pd_sink::{
+    encode_control_event_packet, CapabilitiesKind, ContractOperatingPoint, ContractTransition, ContractTransitionKind,
+    ControlEprEvent, ControlEventKind, ControlIntegrationError, ControlLifecycleEvent, ControllerError,
+    CurrentConfidence, EprEntryRefusal, EprExitRefusal, LimitReason, PdoValidity, PlannedOperating, PlannedVoltage,
+    PpsStatus, RequestMessage, RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery,
+    StatusQueryFailure, SupplyKind,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -125,6 +131,7 @@ fn decoder_rejects_corruption_and_recovers_for_the_next_frame() {
 }
 
 #[test]
+#[cfg(feature = "rich-telemetry")]
 fn all_epr_capabilities_fit_in_one_usb_packet() {
     let pdos = [
         0x0a91_912c,
@@ -155,7 +162,7 @@ fn device_and_empty_contract_events_are_versioned_frames() {
     let len = encode_control_event(
         ControlEvent::Device(DeviceInfo {
             uid: [0xcd, 0xab, 0x0b, 0x92, 0x7a, 0xbd, 0x52, 0xfb],
-            flags: DeviceInfo::PPS_SUPPORTED | DeviceInfo::EPR_SUPPORTED,
+            flags: DeviceInfo::PPS_SUPPORTED | DeviceInfo::EPR_SUPPORTED | DeviceInfo::RICH_TELEMETRY_SUPPORTED,
             max_voltage: Millivolts(48_000),
             max_current: Milliamps(5_000),
             max_power: Milliwatts(140_000),
@@ -168,6 +175,7 @@ fn device_and_empty_contract_events_are_versioned_frames() {
     assert_eq!(frame.version, CONTROL_PROTOCOL_VERSION);
     assert_eq!(frame.sequence, 9);
     assert_eq!(&frame.payload()[..8], &[0xcd, 0xab, 0x0b, 0x92, 0x7a, 0xbd, 0x52, 0xfb]);
+    assert_eq!(frame.payload()[8], 0x07);
 
     let len = encode_control_event(ControlEvent::Plan { stage: ControlPlanStage::Contract, plan: None }, 0, &mut bytes)
         .unwrap();
@@ -201,6 +209,7 @@ fn hard_reset_event_appends_a_stable_cause_code() {
 }
 
 #[test]
+#[cfg(feature = "rich-telemetry")]
 fn status_commands_and_events_use_compact_stable_payloads() {
     let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
     let len =
@@ -316,6 +325,7 @@ fn event_encoder_accepts_the_exact_frame_size() {
 }
 
 #[test]
+#[cfg(feature = "rich-telemetry")]
 fn packet_event_encoder_keeps_protocol_v1_payloads() {
     let plan = RequestPlan {
         object_position: 10,
@@ -411,5 +421,22 @@ fn packet_event_encoder_keeps_protocol_v1_payloads() {
         let mut slice = [0; CONTROL_MAX_FRAME_LEN];
         let slice_len = encode_control_event(event, 33, &mut slice).unwrap();
         assert_eq!(&slice[..slice_len], &packet[..packet_len]);
+    }
+}
+
+#[test]
+#[cfg(not(feature = "rich-telemetry"))]
+fn rich_telemetry_commands_are_explicitly_unsupported() {
+    for kind in [
+        ControlCommandKind::Capabilities,
+        ControlCommandKind::Plans,
+        ControlCommandKind::SourceInfo,
+        ControlCommandKind::SourceStatus,
+        ControlCommandKind::PpsStatus,
+    ] {
+        let mut bytes = [0; CONTROL_MAX_FRAME_LEN];
+        let len = encode_control_frame(CONTROL_PROTOCOL_VERSION, kind as u8, 1, &[], &mut bytes).unwrap();
+        assert_eq!(decode_control_command(&decode_one(&bytes[..len])), Err(ControlCommandDecodeError::UnknownCommand));
+        assert_eq!(decode_stream_command(&bytes[..len]).command, Err(ControlCommandDecodeError::UnknownCommand));
     }
 }

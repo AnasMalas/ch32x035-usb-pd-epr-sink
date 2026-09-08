@@ -98,6 +98,15 @@ OPA1/PB1/PB5 bonded-pad detector is package-specific:
 Omitting `-Profile`, or building the firmware package with Cargo defaults,
 selects this compact `usb-safe-5v` G8U6 rev0 configuration.
 
+The scripted USB profiles retain the full GUI capability/status surface by
+enabling `rich-telemetry`. A product that needs the same compact control,
+contract, safety, PPS, and EPR behavior but can omit raw capability tables,
+plan previews, and live source-status presentation may leave that feature out
+of a direct Cargo build. The reference browser reads the advertised device
+flag, disables the unavailable controls, and does not poll them. At this
+revision that choice reduces the complete G8U6 EPR reference by 1,272 flash
+bytes with no static-RAM change.
+
 The `safe-5v` PA6/PA7 profile and direct Cargo builds still support
 `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`,
 `ch32x035g8u6`, and `ch32x035r8t6`. CH32X033 is not supported because it has

@@ -15,7 +15,7 @@ name = "pd_sink"
 path = "src/lib.rs"
 
 [features]
-default = ["hard-reset-reasons"]
+default = ["hard-reset-reasons", "rich-telemetry"]
 ch32x035c8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035c8t6"]
 ch32x035f7p6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035f7p6"]
 ch32x035f8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035f8u6"]
@@ -24,6 +24,7 @@ ch32x035g8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32
 ch32x035r8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035r8t6"]
 hard-reset-reasons = ["usbpd/hard-reset-reasons"]
 numeric-trace = ["usbpd/numeric-trace"]
+rich-telemetry = []
 
 [dependencies]
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["embassy"], optional = true }

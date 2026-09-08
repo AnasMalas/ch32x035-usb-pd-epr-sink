@@ -125,10 +125,14 @@ assert.match(protocol.pdoLine(1, 8, 0xd3ea968c), /malformed/);
 
 {
   const uid = [0xcd, 0xab, 0x0b, 0x92, 0x7a, 0xbd, 0x52, 0xfb];
-  assert.deepEqual(eventLines(0x81, [...uid, 3, ...u32(48000), ...u32(5000), ...u32(140000)]), [
+  assert.deepEqual(eventLines(0x81, [...uid, 7, ...u32(48000), ...u32(5000), ...u32(140000)]), [
     "Device id=cdab0b927abd52fb",
-    "Device limits: max=48000mV current=5000mA power=140000mW PPS=true EPR=true",
+    "Device limits: max=48000mV current=5000mA power=140000mW PPS=true EPR=true TELEMETRY=rich",
   ]);
+  assert.equal(
+    eventLines(0x81, [...uid, 3, ...u32(48000), ...u32(5000), ...u32(140000)])[1],
+    "Device limits: max=48000mV current=5000mA power=140000mW PPS=true EPR=true TELEMETRY=basic",
+  );
 }
 
 {

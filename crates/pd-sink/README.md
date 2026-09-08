@@ -43,12 +43,21 @@ dependency for peripheral setup, aligned with the
 | `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
 | `numeric-trace` | Adds the formatter-free numeric protocol trace hook described below |
+| `rich-telemetry` | Adds compact-control raw capabilities, plan previews, Source_Info, Alert, Source Status, and PPS Status commands/events |
 
-The default build enables `hard-reset-reasons` but no MCU integration.
+The default build enables `hard-reset-reasons` and `rich-telemetry`, but no MCU
+integration.
 Applications that need the CH32 adapter normally use
 `default-features = false` with exactly one package feature and enable
-`hard-reset-reasons` only when that diagnostic detail is worth the firmware
-space.
+only the diagnostics and control surface their product needs.
+
+Omitting `rich-telemetry` leaves negotiation, contract tracking, PPS/EPR,
+keepalives, recovery, transition classification, load control, and typed
+`SinkRuntime` source-status observations intact. It only removes the optional
+rich fields from the compact host protocol. The corresponding protocol-v1
+query IDs are reported as unsupported, and `DeviceInfo` clears
+`RICH_TELEMETRY_SUPPORTED`. In the complete G8U6 EPR reference this saves
+1,272 flash bytes (49,744 to 48,472) with no static-RAM change.
 
 All six USB-PD-capable CH32X035 package variants are supported. CH32X033 is
 not: despite sharing much of the family, it has USB but no integrated USB-PD

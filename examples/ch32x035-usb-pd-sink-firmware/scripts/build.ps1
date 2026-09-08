@@ -62,12 +62,12 @@ try {
     $profileFeatures = switch ($Profile) {
         'safe-5v' { 'sdi-log' }
         'rev0-validation' { 'dev-text-console,output-default-off,rev0-validation' }
-        'usb-safe-5v' { 'usb-control,output-default-off,rev0-board' }
-        'usb-pps' { 'usb-control,pps-capable-hardware,output-default-off,rev0-board' }
-        'usb-epr' { 'usb-control,epr-capable-hardware,output-default-off,rev0-board' }
-        'usb-epr-uninterrupted' { 'usb-control,epr-capable-hardware,output-default-off,uninterrupted-load-transitions,rev0-board' }
-        'usb-epr-diagnostic' { 'usb-control,epr-capable-hardware,output-default-off,rev0-board' }
-        'usb-epr-50v' { 'usb-control,epr-50v-compatible-hardware,output-default-off,rev0-board' }
+        'usb-safe-5v' { 'usb-control,rich-telemetry,output-default-off,rev0-board' }
+        'usb-pps' { 'usb-control,rich-telemetry,pps-capable-hardware,output-default-off,rev0-board' }
+        'usb-epr' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board' }
+        'usb-epr-uninterrupted' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,uninterrupted-load-transitions,rev0-board' }
+        'usb-epr-diagnostic' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board' }
+        'usb-epr-50v' { 'usb-control,rich-telemetry,epr-50v-compatible-hardware,output-default-off,rev0-board' }
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware,output-default-off,rev0-board' }
     }
     $selectedFeatures = "$Chip,$profileFeatures"

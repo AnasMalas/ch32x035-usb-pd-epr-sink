@@ -65,24 +65,26 @@ $supportedChips = @(
     'ch32x035g8u6',
     'ch32x035r8t6'
 )
-$usbControlEprFeatures = "$referenceChip,usb-control,epr-capable-hardware"
-$diagnosticEprFeatures = "$referenceChip,usb-control,epr-capable-hardware,output-default-off"
+$usbControlEprFeatures = "$referenceChip,usb-control,rich-telemetry,epr-capable-hardware"
+$diagnosticEprFeatures = "$referenceChip,usb-control,rich-telemetry,epr-capable-hardware,output-default-off"
 $textConsoleEprFeatures = "$referenceChip,dev-text-console,epr-capable-hardware"
-$rev0UsbSafeFeatures = "$rev0Chip,usb-control,output-default-off,rev0-board"
-$rev0UsbPpsFeatures = "$rev0Chip,usb-control,pps-capable-hardware,output-default-off,rev0-board"
-$rev0UsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
+$rev0UsbSafeFeatures = "$rev0Chip,usb-control,rich-telemetry,output-default-off,rev0-board"
+$rev0UsbPpsFeatures = "$rev0Chip,usb-control,rich-telemetry,pps-capable-hardware,output-default-off,rev0-board"
+$rev0UsbEprFeatures = "$rev0Chip,usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board"
+$rev0LeanUsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
 $rev0UsbEprTraceFeatures = "$rev0UsbEprFeatures,numeric-trace"
 $rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
-    "$referenceChip,usb-control",
-    "$referenceChip,usb-control,pps-capable-hardware",
+    "$referenceChip,usb-control,rich-telemetry",
+    "$referenceChip,usb-control,rich-telemetry,pps-capable-hardware",
     $usbControlEprFeatures,
     $diagnosticEprFeatures,
-    "$referenceChip,usb-control,epr-50v-compatible-hardware",
+    "$referenceChip,usb-control,rich-telemetry,epr-50v-compatible-hardware",
     $textConsoleEprFeatures,
     $rev0UsbSafeFeatures,
     $rev0UsbPpsFeatures,
     $rev0UsbEprFeatures,
+    $rev0LeanUsbEprFeatures,
     $rev0ValidationFeatures
 )
 
@@ -157,6 +159,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 compact EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0LeanUsbEprFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 basic-telemetry EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprTraceFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 numeric-trace EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
@@ -188,7 +193,7 @@ try {
             $chip
         }
         else {
-            "$chip,usb-control,epr-capable-hardware"
+            "$chip,usb-control,rich-telemetry,epr-capable-hardware"
         }
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $packageCheckFeatures
         if ($LASTEXITCODE -ne 0) { throw "$chip reference firmware build failed with exit code $LASTEXITCODE" }
@@ -209,7 +214,7 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
-        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0ValidationFeatures)) {
+        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0ValidationFeatures)) {
             $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $firmwareElf `

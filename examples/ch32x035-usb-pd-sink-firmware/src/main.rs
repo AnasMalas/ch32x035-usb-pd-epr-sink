@@ -32,6 +32,8 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use panic_halt as _;
+#[cfg(all(feature = "rich-telemetry", not(feature = "dev-text-console")))]
+use pd_sink::CapabilityPlan;
 use pd_sink::PlanError;
 use pd_sink::{
     CapabilitiesKind, Ch32x035Port, Ch32x035SessionTimer, Ch32x035SinkSession, Command, ContractTransition,
@@ -42,13 +44,13 @@ use pd_sink::{
     SourceCapabilities as ProductSourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure,
     TransitionLoadPolicy,
 };
-#[cfg(not(feature = "dev-text-console"))]
-use pd_sink::{CapabilityPlan, PdoValidity, SourceSupply};
 #[cfg(feature = "usb-control")]
 use pd_sink::{
     ControlEprEvent, ControlEvent, ControlIntegrationError, ControlLifecycleEvent, ControlPlanStage, DeviceInfo,
     HardResetCause,
 };
+#[cfg(not(feature = "dev-text-console"))]
+use pd_sink::{PdoValidity, SourceSupply};
 
 #[cfg(all(feature = "usb-control", feature = "dev-text-console"))]
 compile_error!("usb-control and dev-text-console are separate wire protocols; select only one");
@@ -296,7 +298,8 @@ fn device_info() -> DeviceInfo {
     DeviceInfo {
         uid: programmed_device_uid().unwrap_or([0; 8]),
         flags: (u8::from(pps_capable) * DeviceInfo::PPS_SUPPORTED)
-            | (u8::from(epr_capable) * DeviceInfo::EPR_SUPPORTED),
+            | (u8::from(epr_capable) * DeviceInfo::EPR_SUPPORTED)
+            | (u8::from(cfg!(feature = "rich-telemetry")) * DeviceInfo::RICH_TELEMETRY_SUPPORTED),
         max_voltage: limits.max_voltage.unwrap_or(Millivolts(5_000)),
         max_current: limits.board_max_current.unwrap_or(Milliamps(3_000)),
         max_power: limits.max_power.unwrap_or(Milliwatts(15_000)),
@@ -1013,7 +1016,7 @@ impl SinkRuntime for FirmwareRuntime {
 
     #[inline(always)]
     fn capability_plans_enabled(&self) -> bool {
-        !cfg!(feature = "dev-text-console")
+        cfg!(all(feature = "rich-telemetry", not(feature = "dev-text-console")))
     }
 
     async fn wait_for_command(&mut self) -> Command {
@@ -1025,11 +1028,12 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_source_capabilities(&mut self, capabilities: ProductSourceCapabilities) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::Capabilities(capabilities));
         log_product_capabilities(&capabilities);
     }
 
-    #[cfg(not(feature = "dev-text-console"))]
+    #[cfg(all(feature = "rich-telemetry", not(feature = "dev-text-console")))]
     fn on_capability_plans_started(&mut self, count: u8) {
         control_event!(ControlEvent::CapabilityPlansStarted { count });
         logln!("Capability plans: count={} (live contract unchanged)", count);
@@ -1052,7 +1056,7 @@ impl SinkRuntime for FirmwareRuntime {
         );
     }
 
-    #[cfg(not(feature = "dev-text-console"))]
+    #[cfg(all(feature = "rich-telemetry", not(feature = "dev-text-console")))]
     fn on_capability_plan(&mut self, plan: CapabilityPlan) {
         match plan {
             CapabilityPlan::Unavailable { position, validity } => {
@@ -1110,16 +1114,19 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_source_info(&mut self, present_watts: u8, maximum_watts: u8, reported_watts: u8) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::SourceInfo { present_watts, maximum_watts, reported_watts });
         logln!("Source_Info: present={} W, maximum={} W, reported={} W", present_watts, maximum_watts, reported_watts);
     }
 
     fn on_source_alert(&mut self, alert: SourceAlert) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::SourceAlert(alert));
         logln!("Alert: raw={:#010x}", alert.raw());
     }
 
     fn on_source_status(&mut self, status: SourceStatus) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::SourceStatus(status));
         let raw = status.raw_bytes();
         logln!(
@@ -1136,11 +1143,13 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_pps_status(&mut self, status: PpsStatus) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::PpsStatus(status));
         logln!("PPS_Status: raw={:#010x}", u32::from_le_bytes(status.raw_bytes()));
     }
 
     fn on_status_query_failed(&mut self, query: StatusQuery, failure: StatusQueryFailure) {
+        #[cfg(feature = "rich-telemetry")]
         control_event!(ControlEvent::StatusQueryFailed { query, failure });
         logln!("Status query failed: kind={} reason={}", query as u8, failure as u8);
     }

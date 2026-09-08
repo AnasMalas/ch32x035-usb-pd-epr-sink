@@ -100,6 +100,7 @@ const state = {
   usbId: null,
   deviceUid: null,
   deviceMaxVoltageMillivolts: null,
+  richTelemetrySupported: null,
   maxVoltageMillivolts: 5000,
 };
 
@@ -199,7 +200,9 @@ function clearSourceTelemetry() {
   ui.sourceEvents.textContent = "None reported";
   ui.sourceLimits.textContent = "No active limits reported";
   ui.ppsMaintenanceState.textContent = "PPS contract maintenance: waiting for a PPS contract";
-  ui.telemetryNote.textContent = "A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.";
+  ui.telemetryNote.textContent = state.richTelemetrySupported === false
+    ? "This firmware keeps control, contract, and safety events but omits capability and live source telemetry to save flash."
+    : "A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.";
 }
 
 function transportLabel() {
@@ -271,6 +274,7 @@ async function pollPpsStatus() {
     state.ppsQueryPending
     || !state.connected
     || state.transport === null
+    || state.richTelemetrySupported === false
     || state.contractSupplyType !== "PPS"
     || Date.now() < state.ppsPollingPausedUntil
   ) return;
@@ -292,6 +296,7 @@ function configurePpsPolling() {
   const running = ui.livePps.checked
     && state.connected
     && state.transport !== null
+    && state.richTelemetrySupported !== false
     && state.contractSupplyType === "PPS";
   ui.telemetryToggle.textContent = running ? "Stop telemetry" : "Start telemetry";
   ui.telemetryToggle.setAttribute("aria-pressed", String(running));
@@ -310,17 +315,23 @@ function updateActionAvailability() {
   document.querySelectorAll(".command-button, .request-submit").forEach((button) => {
     button.disabled = !ready;
   });
+  const richTelemetry = state.richTelemetrySupported !== false;
+  document.querySelectorAll('[data-command="caps"], [data-command="plans"], [data-command="source-info"], [data-command="source-status"], [data-command="pps-status"]').forEach((button) => {
+    button.disabled = !ready || !richTelemetry;
+  });
   ui.rawCommand.disabled = !ready;
   ui.rawCommandForm.querySelector("button").disabled = !ready;
   ui.enterEprButton.disabled = !ready || state.inEpr || !state.sourceEprCapable;
   ui.eprCapsButton.disabled = !ready || !state.inEpr;
   ui.exitEprButton.disabled = !ready || !state.inEpr;
-  ui.plansButton.disabled = !ready || state.transport === "dev-text-console";
-  ui.plansButton.title = state.transport === "dev-text-console"
-    ? "The text-console profile omits this flash-heavy preview; flash usb-epr to use it."
-    : "";
-  ui.livePps.disabled = !ready || state.contractSupplyType !== "PPS";
-  ui.telemetryToggle.disabled = !ready || state.contractSupplyType !== "PPS";
+  ui.plansButton.disabled = !ready || state.transport === "dev-text-console" || !richTelemetry;
+  ui.plansButton.title = !richTelemetry
+    ? "This firmware omits rich telemetry to save flash."
+    : state.transport === "dev-text-console"
+      ? "The text-console profile omits this flash-heavy preview; flash usb-epr to use it."
+      : "";
+  ui.livePps.disabled = !ready || !richTelemetry || state.contractSupplyType !== "PPS";
+  ui.telemetryToggle.disabled = !ready || !richTelemetry || state.contractSupplyType !== "PPS";
 }
 
 function setConnected(connected) {
@@ -343,6 +354,7 @@ function setConnected(connected) {
     state.usbId = null;
     state.deviceUid = null;
     state.deviceMaxVoltageMillivolts = null;
+    state.richTelemetrySupported = null;
     state.ppsQueryPending = false;
     setVoltageCeiling(5000);
     ui.deviceDescription.textContent = "Connect USB-control or development text-console firmware to begin.";
@@ -570,9 +582,11 @@ async function initializeTransport() {
     await new Promise((resolve) => setTimeout(resolve, 40));
     await sendCommand("status", { echo: false });
     await new Promise((resolve) => setTimeout(resolve, 80));
-    await sendCommand("caps", { echo: false });
-    await new Promise((resolve) => setTimeout(resolve, 80));
-    await sendCommand("source-status", { echo: false });
+    if (state.richTelemetrySupported !== false) {
+      await sendCommand("caps", { echo: false });
+      await new Promise((resolve) => setTimeout(resolve, 80));
+      await sendCommand("source-status", { echo: false });
+    }
   } catch (error) {
     if (state.connected) addLog(`Device initialization failed: ${error.message}`, "system", "error");
   }
@@ -779,9 +793,13 @@ function parseDeviceLine(line) {
     return;
   }
 
-  const deviceLimits = line.match(/^Device limits: max=(\d+)mV current=(\d+)mA power=(\d+)mW PPS=(true|false) EPR=(true|false)$/);
+  const deviceLimits = line.match(/^Device limits: max=(\d+)mV current=(\d+)mA power=(\d+)mW PPS=(true|false) EPR=(true|false)(?: TELEMETRY=(rich|basic))?$/);
   if (deviceLimits) {
     state.deviceMaxVoltageMillivolts = Number(deviceLimits[1]);
+    state.richTelemetrySupported = deviceLimits[6] !== "basic";
+    if (!state.richTelemetrySupported) {
+      ui.telemetryNote.textContent = "This firmware keeps control, contract, and safety events but omits capability and live source telemetry to save flash.";
+    }
     const requestedCeiling = state.deviceUid ? savedVoltageCeiling(state.deviceUid) : state.maxVoltageMillivolts;
     setVoltageCeiling(requestedCeiling);
     updateActionAvailability();
@@ -1058,6 +1076,7 @@ function initializeConnectedTransport(api, id) {
   state.lineBuffer = "";
   state.deviceUid = null;
   state.deviceMaxVoltageMillivolts = null;
+  state.richTelemetrySupported = null;
   state.usbId = id;
   setConnected(true);
   clearDeviceState();
