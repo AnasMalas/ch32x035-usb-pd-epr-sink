@@ -52,6 +52,11 @@ const EXT_HEADER_SIZE: usize = 2;
 /// protocol task forever without returning control to the policy engine.
 const MAX_DRIVER_DISCARDS: u8 = 8;
 
+const SOURCE_CAPABILITY_MESSAGE_TYPES: [MessageType; 2] = [
+    MessageType::Data(DataMessageType::SourceCapabilities),
+    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
+];
+
 /// Errors that can occur in the protocol layer.
 #[derive(thiserror::Error, Debug)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -957,16 +962,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         self.receive_message_type_with_timeout(message_types, timer_type, None)
     }
 
-    /// Wait for selected messages using a product recovery interval rather
-    /// than the ordinary specification timer.
-    pub fn receive_message_type_for<'a>(
-        &'a mut self,
-        message_types: &'a [MessageType],
-        milliseconds: u32,
-    ) -> impl Future<Output = Result<Message, ProtocolError>> + 'a {
-        self.receive_message_type_with_timeout(message_types, TimerType::SinkWaitCap, Some(milliseconds))
-    }
-
     async fn receive_message_type_with_timeout(
         &mut self,
         message_types: &[MessageType],
@@ -1278,10 +1273,10 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Per USB PD Spec R3.2 Section 6.4.1.6, sinks respond to Get_Sink_Cap messages
     /// with a Sink_Capabilities message containing PDOs describing what power levels
     /// the sink can operate at.
-    pub async fn transmit_sink_capabilities(
+    pub fn transmit_sink_capabilities(
         &mut self,
         capabilities: message::data::sink_capabilities::SinkCapabilities,
-    ) -> Result<(), ProtocolError> {
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         let num_objects = capabilities.num_objects();
         let header = Header::new_data(
             self.default_header,
@@ -1290,17 +1285,17 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             num_objects,
         );
 
-        self.transmit(Message::new_with_data(header, Data::SinkCapabilities(capabilities))).await
+        self.transmit(Message::new_with_data(header, Data::SinkCapabilities(capabilities)))
     }
 
     /// Transmit EPR sink capabilities in response to EPR_Get_Sink_Cap.
     ///
     /// Per USB PD Spec R3.2 Section 8.3.3.3.10, sinks respond to EPR_Get_Sink_Cap
     /// messages with an EPR_Sink_Capabilities message.
-    pub async fn transmit_epr_sink_capabilities(
+    pub fn transmit_epr_sink_capabilities(
         &mut self,
         capabilities: message::data::sink_capabilities::SinkCapabilities,
-    ) -> Result<(), ProtocolError> {
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         // Convert SinkCapabilities PDOs to the extended message format
         let pdos: heapless::Vec<_, 7> = capabilities.0.iter().cloned().collect();
         let extended_payload = message::extended::Extended::EprSinkCapabilities(pdos);
@@ -1315,15 +1310,15 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         let mut message = Message::new(header);
         message.payload = Some(Payload::Extended(extended_payload));
 
-        self.transmit(message).await
+        self.transmit(message)
     }
 
     /// Transmit the 24-byte Sink Capabilities Extended Data Block in response
     /// to `Get_Sink_Cap_Extended`.
-    pub async fn transmit_sink_capabilities_extended(
+    pub fn transmit_sink_capabilities_extended(
         &mut self,
         capabilities: SinkCapabilitiesExtended,
-    ) -> Result<(), ProtocolError> {
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         let header = Header::new_extended(
             self.default_header,
             self.counters.tx_message,
@@ -1332,7 +1327,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         );
         let mut message = Message::new(header);
         message.payload = Some(Payload::Extended(Extended::SinkCapabilitiesExtended(capabilities)));
-        self.transmit(message).await
+        self.transmit(message)
     }
 
     /// Transmit the device's Source Capabilities
@@ -1412,18 +1407,14 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Wait for the source to provide its capabilities.
-    pub async fn wait_for_source_capabilities(&mut self, recovery_ms: Option<u32>) -> Result<Message, ProtocolError> {
+    pub fn wait_for_source_capabilities(
+        &mut self,
+        recovery_ms: Option<u32>,
+    ) -> impl Future<Output = Result<Message, ProtocolError>> + '_ {
         // Only sinks can await capabilities.
         debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
 
-        let message_types = [
-            MessageType::Data(message::header::DataMessageType::SourceCapabilities),
-            MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
-        ];
-        match recovery_ms {
-            Some(milliseconds) => self.receive_message_type_for(&message_types, milliseconds).await,
-            None => self.receive_message_type(&message_types, TimerType::SinkWaitCap).await,
-        }
+        self.0.receive_message_type_with_timeout(&SOURCE_CAPABILITY_MESSAGE_TYPES, TimerType::SinkWaitCap, recovery_ms)
     }
 
     /// Request a certain power level from the source.
