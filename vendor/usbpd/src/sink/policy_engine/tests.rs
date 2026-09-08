@@ -9,14 +9,17 @@ use crate::protocol_layer::message::data::Data;
 use crate::protocol_layer::message::data::epr_mode::Action;
 use crate::protocol_layer::message::data::request::{FixedVariableSupply, PowerSource};
 use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
+use crate::protocol_layer::message::extended::Extended;
 use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType,
 };
 use crate::protocol_layer::message::{Message, Payload};
 use crate::protocol_layer::{ProtocolError, TxError, TxValidationError};
+use crate::sink::device_policy_manager::{
+    DevicePolicyManager, SinkStartup, SoftResetMode, StatusQueryFailure, StatusQueryKind,
+};
 #[cfg(feature = "hard-reset-reasons")]
-use crate::sink::device_policy_manager::{DevicePolicyManager, HardResetOrigin, HardResetReason};
-use crate::sink::device_policy_manager::{SinkStartup, SoftResetMode};
+use crate::sink::device_policy_manager::{HardResetOrigin, HardResetReason};
 use crate::sink::policy_engine::State;
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
@@ -159,6 +162,149 @@ fn simulate_source_control_message<TIMER: Timer, DPM: crate::sink::device_policy
     ))
     .to_bytes(&mut buf);
     policy_engine.protocol_layer.driver().inject_received_data(&buf[..len]);
+}
+
+fn simulate_source_extended_message<TIMER: Timer, DPM: DevicePolicyManager>(
+    policy_engine: &mut Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, TIMER, DPM>,
+    message_type: ExtendedMessageType,
+    payload: Extended,
+    message_id: u8,
+) {
+    let header = Header::new_extended(
+        get_source_header_template(),
+        Counter::new_from_value(CounterType::MessageId, message_id),
+        message_type,
+        0,
+    );
+    let message = Message { header, payload: Some(Payload::Extended(payload)) };
+    let mut buf = [0u8; MAX_DATA_MESSAGE_SIZE];
+    let len = message.to_bytes(&mut buf);
+    policy_engine.protocol_layer.driver().inject_received_data(&buf[..len]);
+}
+
+struct StatusQueryDpm {
+    general_status: std::sync::Arc<AtomicU32>,
+    pps_status: std::sync::Arc<AtomicU32>,
+    failure: std::sync::Arc<AtomicU32>,
+}
+
+impl DevicePolicyManager for StatusQueryDpm {
+    fn inform_status(&mut self, status: &crate::protocol_layer::message::extended::status::Status) {
+        self.general_status.store(u32::from(status.event_flags()) + 1, Ordering::SeqCst);
+    }
+
+    fn inform_pps_status(&mut self, status: &crate::protocol_layer::message::extended::pps_status::PpsStatus) {
+        self.pps_status.store(u32::from(status.raw_bytes()[3]) + 1, Ordering::SeqCst);
+    }
+
+    fn status_query_failed(&mut self, query: StatusQueryKind, failure: StatusQueryFailure) {
+        let query = match query {
+            StatusQueryKind::General => 1,
+            StatusQueryKind::Pps => 2,
+        };
+        let failure = match failure {
+            StatusQueryFailure::NotSupported => 1,
+            StatusQueryFailure::Rejected => 2,
+            StatusQueryFailure::Deferred => 3,
+            StatusQueryFailure::Timeout => 4,
+        };
+        self.failure.store(query * 10 + failure, Ordering::SeqCst);
+    }
+}
+
+struct StatusQueryFixture {
+    policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, StatusQueryDpm>,
+    general_status: std::sync::Arc<AtomicU32>,
+    pps_status: std::sync::Arc<AtomicU32>,
+    failure: std::sync::Arc<AtomicU32>,
+}
+
+fn status_query_fixture() -> StatusQueryFixture {
+    let general_status = std::sync::Arc::new(AtomicU32::new(0));
+    let pps_status = std::sync::Arc::new(AtomicU32::new(0));
+    let failure = std::sync::Arc::new(AtomicU32::new(0));
+    let dpm = StatusQueryDpm {
+        general_status: std::sync::Arc::clone(&general_status),
+        pps_status: std::sync::Arc::clone(&pps_status),
+        failure: std::sync::Arc::clone(&failure),
+    };
+    StatusQueryFixture { policy_engine: Sink::new(DummyDriver::new(), dpm), general_status, pps_status, failure }
+}
+
+#[tokio::test]
+async fn shared_status_query_path_preserves_request_and_response_kinds() {
+    use crate::dummy::get_source_capability_request;
+    use crate::protocol_layer::message::extended::pps_status::PpsStatus;
+    use crate::protocol_layer::message::extended::status::Status;
+
+    let cases = [
+        (
+            StatusQueryKind::General,
+            ControlMessageType::GetStatus,
+            ExtendedMessageType::Status,
+            Extended::Status(Status::from_bytes(&[1, 2, 3, 4, 5, 6, 7]).unwrap()),
+            5,
+            0,
+        ),
+        (
+            StatusQueryKind::Pps,
+            ControlMessageType::GetPpsStatus,
+            ExtendedMessageType::PpsStatus,
+            Extended::PpsStatus(PpsStatus::from_bytes(&[1, 2, 3, 8]).unwrap()),
+            0,
+            9,
+        ),
+    ];
+
+    for (query, request_type, response_type, response, expected_general, expected_pps) in cases {
+        let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
+        policy_engine.state = State::GetStatus(query, get_source_capability_request());
+        simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+        simulate_source_extended_message(&mut policy_engine, response_type, response, 0);
+
+        policy_engine.run_step().await.unwrap();
+
+        let transmitted = Message::from_bytes(&policy_engine.protocol_layer.driver().probe_transmitted_data()).unwrap();
+        assert_eq!(transmitted.header.message_type(), MessageType::Control(request_type));
+        assert_eq!(general_status.load(Ordering::SeqCst), expected_general);
+        assert_eq!(pps_status.load(Ordering::SeqCst), expected_pps);
+        assert_eq!(failure.load(Ordering::SeqCst), 0);
+        assert!(matches!(policy_engine.state, State::Ready(_)));
+    }
+}
+
+#[tokio::test]
+async fn shared_status_query_path_preserves_failure_kind() {
+    use crate::dummy::get_source_capability_request;
+
+    for (query, query_code) in [(StatusQueryKind::General, 10), (StatusQueryKind::Pps, 20)] {
+        for (response, failure_code) in
+            [(ControlMessageType::NotSupported, 1), (ControlMessageType::Reject, 2), (ControlMessageType::Wait, 3)]
+        {
+            let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
+            policy_engine.state = State::GetStatus(query, get_source_capability_request());
+            simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+            simulate_source_control_message(&mut policy_engine, response, 0);
+
+            policy_engine.run_step().await.unwrap();
+
+            assert_eq!(general_status.load(Ordering::SeqCst), 0);
+            assert_eq!(pps_status.load(Ordering::SeqCst), 0);
+            assert_eq!(failure.load(Ordering::SeqCst), query_code + failure_code);
+            assert!(matches!(policy_engine.state, State::Ready(_)));
+        }
+
+        let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
+        policy_engine.state = State::GetStatus(query, get_source_capability_request());
+        simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+
+        policy_engine.run_step().await.unwrap();
+
+        assert_eq!(general_status.load(Ordering::SeqCst), 0);
+        assert_eq!(pps_status.load(Ordering::SeqCst), 0);
+        assert_eq!(failure.load(Ordering::SeqCst), query_code + 4);
+        assert!(matches!(policy_engine.state, State::Ready(_)));
+    }
 }
 
 static TRANSITION_CLOCK: AtomicU32 = AtomicU32::new(0);
