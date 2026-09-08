@@ -949,22 +949,22 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Wait until a message of one of the chosen types is received, or a timeout occurs.
-    pub async fn receive_message_type(
-        &mut self,
-        message_types: &[MessageType],
+    pub fn receive_message_type<'a>(
+        &'a mut self,
+        message_types: &'a [MessageType],
         timer_type: TimerType,
-    ) -> Result<Message, ProtocolError> {
-        self.receive_message_type_with_timeout(message_types, timer_type, None).await
+    ) -> impl Future<Output = Result<Message, ProtocolError>> + 'a {
+        self.receive_message_type_with_timeout(message_types, timer_type, None)
     }
 
     /// Wait for selected messages using a product recovery interval rather
     /// than the ordinary specification timer.
-    pub async fn receive_message_type_for(
-        &mut self,
-        message_types: &[MessageType],
+    pub fn receive_message_type_for<'a>(
+        &'a mut self,
+        message_types: &'a [MessageType],
         milliseconds: u32,
-    ) -> Result<Message, ProtocolError> {
-        self.receive_message_type_with_timeout(message_types, TimerType::SinkWaitCap, Some(milliseconds)).await
+    ) -> impl Future<Output = Result<Message, ProtocolError>> + 'a {
+        self.receive_message_type_with_timeout(message_types, TimerType::SinkWaitCap, Some(milliseconds))
     }
 
     async fn receive_message_type_with_timeout(
@@ -1057,8 +1057,8 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Wait for VBUS to be available.
-    pub async fn wait_for_vbus(&mut self) {
-        self.driver.wait_for_vbus().await
+    pub fn wait_for_vbus(&mut self) -> impl Future<Output = ()> + '_ {
+        self.driver.wait_for_vbus()
     }
 
     /// Return whether the Sink may currently initiate an AMS.
@@ -1072,17 +1072,20 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Transmit a control message of the provided type.
-    pub async fn transmit_control_message(&mut self, message_type: ControlMessageType) -> Result<(), ProtocolError> {
+    pub fn transmit_control_message(
+        &mut self,
+        message_type: ControlMessageType,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         let message = Message::new(Header::new_control(self.default_header, self.counters.tx_message, message_type));
 
-        self.transmit(message).await
+        self.transmit(message)
     }
 
     /// Transmit an extended control message of the provided type.
-    pub async fn transmit_extended_control_message(
+    pub fn transmit_extended_control_message(
         &mut self,
         message_type: ExtendedControlMessageType,
-    ) -> Result<(), ProtocolError> {
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         // Per USB PD spec 6.2.1.1.2: for extended messages, num_objects must be non-zero.
         // ExtendedControl = 2-byte extended header + 2-byte data = 4 bytes = 1 data object.
         let mut message = Message::new(Header::new_extended(
@@ -1096,20 +1099,20 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             message::extended::extended_control::ExtendedControl::default().with_message_type(message_type),
         )));
 
-        self.transmit(message).await
+        self.transmit(message)
     }
 
     /// Transmit an EPR mode data message.
-    pub async fn transmit_epr_mode(
+    pub fn transmit_epr_mode(
         &mut self,
         action: message::data::epr_mode::Action,
         data: u8,
-    ) -> Result<(), ProtocolError> {
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         let header = Header::new_data(self.default_header, self.counters.tx_message, DataMessageType::EprMode, 1);
 
         let mdo = EprModeDataObject::default().with_action(action).with_data(data);
 
-        self.transmit(Message::new_with_data(header, Data::EprMode(mdo))).await
+        self.transmit(Message::new_with_data(header, Data::EprMode(mdo)))
     }
 
     /// Transmit a chunk request message per USB PD spec 6.12.2.1.2.4.
@@ -1424,7 +1427,10 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Request a certain power level from the source.
-    pub async fn request_power(&mut self, power_source_request: request::PowerSource) -> Result<(), ProtocolError> {
+    pub fn request_power(
+        &mut self,
+        power_source_request: request::PowerSource,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
         // Only sinks can request from a supply.
         debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
 
@@ -1432,7 +1438,7 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
         let num_objects = power_source_request.num_objects();
         let header = Header::new_data(self.default_header, self.counters.tx_message, message_type, num_objects);
 
-        self.transmit(Message::new_with_data(header, Data::Request(power_source_request))).await
+        self.transmit(Message::new_with_data(header, Data::Request(power_source_request)))
     }
 }
 
