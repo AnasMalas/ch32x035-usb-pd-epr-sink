@@ -32,6 +32,13 @@ impl ControlPacket {
 
 static CONTROL_PACKETS: Channel<CriticalSectionRawMutex, ControlPacket, CONTROL_QUEUE_DEPTH> = Channel::new();
 
+#[derive(Clone, Copy)]
+enum CommandFollowUp {
+    None,
+    Device,
+    Help,
+}
+
 pub fn try_emit(event: ControlEvent) {
     try_emit_sequence(event, 0);
 }
@@ -85,31 +92,35 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
                     }
                 };
 
-                match command {
+                let (status, follow_up) = match command {
                     Command::OutputOn => {
                         set_user_output_enabled(true);
-                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                        (CommandStatus::Queued, CommandFollowUp::None)
                     }
                     Command::OutputOff => {
                         set_user_output_enabled(false);
-                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
+                        (CommandStatus::Queued, CommandFollowUp::None)
                     }
-                    Command::Identity => {
-                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
-                        emit(ControlEvent::Device(device_info()), sequence).await;
-                    }
-                    Command::Help => {
-                        emit(ControlEvent::CommandResult(CommandStatus::Queued), sequence).await;
-                        emit(ControlEvent::Help, sequence).await;
-                    }
+                    Command::Identity => (CommandStatus::Queued, CommandFollowUp::Device),
+                    Command::Help => (CommandStatus::Queued, CommandFollowUp::Help),
                     command => {
                         let status = if COMMANDS.try_send(command).is_ok() {
                             CommandStatus::Queued
                         } else {
                             CommandStatus::Busy
                         };
-                        emit(ControlEvent::CommandResult(status), sequence).await;
+                        (status, CommandFollowUp::None)
                     }
+                };
+
+                emit(ControlEvent::CommandResult(status), sequence).await;
+                let follow_up = match follow_up {
+                    CommandFollowUp::None => None,
+                    CommandFollowUp::Device => Some(ControlEvent::Device(device_info())),
+                    CommandFollowUp::Help => Some(ControlEvent::Help),
+                };
+                if let Some(event) = follow_up {
+                    emit(event, sequence).await;
                 }
             }
         }
