@@ -139,6 +139,10 @@ fn test_epr_keep_alive() {
 
     assert_eq!(msg.header.message_type(), MessageType::Extended(ExtendedMessageType::ExtendedControl));
 
+    let mut encoded = [0; 30];
+    let encoded_len = msg.to_bytes(&mut encoded);
+    assert_eq!(&encoded[..encoded_len], EPR_KEEP_ALIVE);
+
     if let Some(Payload::Extended(Extended::ExtendedControl(ctrl))) = msg.payload {
         use crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType;
         assert_eq!(ctrl.message_type(), ExtendedControlMessageType::EprKeepAlive);

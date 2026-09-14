@@ -37,6 +37,7 @@ pub(crate) mod counters;
 pub mod numeric_trace;
 pub mod protocol_layer;
 pub mod sink;
+#[cfg(any(feature = "source", test))]
 pub mod source;
 pub mod timers;
 pub mod units;

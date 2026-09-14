@@ -73,12 +73,20 @@ impl Header {
 
     /// Create a new control message header.
     pub fn new_control(template: Self, message_id: Counter, message_type: ControlMessageType) -> Self {
-        Self::new(template, message_id, MessageType::Control(message_type), 0, false)
+        template
+            .with_message_id(message_id.value())
+            .with_message_type_raw(message_type as u8)
+            .with_num_objects(0)
+            .with_extended(false)
     }
 
     /// Create a new data message header.
     pub fn new_data(template: Self, message_id: Counter, message_type: DataMessageType, num_objects: u8) -> Self {
-        Self::new(template, message_id, MessageType::Data(message_type), num_objects, false)
+        template
+            .with_message_id(message_id.value())
+            .with_message_type_raw(message_type as u8)
+            .with_num_objects(num_objects)
+            .with_extended(false)
     }
 
     /// Create a new extended message header.
@@ -88,7 +96,11 @@ impl Header {
         extended_message_type: ExtendedMessageType,
         num_objects: u8,
     ) -> Self {
-        Self::new(template, message_id, MessageType::Extended(extended_message_type), num_objects, true)
+        template
+            .with_message_id(message_id.value())
+            .with_message_type_raw(extended_message_type as u8)
+            .with_num_objects(num_objects)
+            .with_extended(true)
     }
 
     /// Parse a header from its binary representation.

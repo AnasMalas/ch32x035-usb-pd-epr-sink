@@ -12,6 +12,13 @@ use header::{Header, MessageType};
 
 use crate::protocol_layer::message::extended::ExtendedHeader;
 
+#[cfg(all(not(feature = "source"), not(test)))]
+#[cold]
+#[inline(never)]
+fn source_serialization_disabled() -> ! {
+    panic!("source-role serialization requires the usbpd/source feature")
+}
+
 /// Errors that can occur during message/header parsing.
 #[derive(thiserror::Error, Debug, Clone, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
@@ -106,17 +113,16 @@ impl Message {
             Some(Payload::Extended(extended)) => {
                 // Per USB PD spec 6.2.1.2.1: use chunked mode for compatibility with more PHYs.
                 // Most power supplies don't support unchunked extended messages.
-                let data_size = usize::from(extended.data_size());
-                assert!(data_size <= 26);
-                let body_size = 2 + data_size;
+                const HEADERS_SIZE: usize = 4;
+                let payload_len = extended.to_bytes(&mut buffer[HEADERS_SIZE..]);
+                assert!(payload_len <= 26);
+                let body_size = 2 + payload_len;
                 let num_objects = body_size.div_ceil(4);
                 let padded_body_size = num_objects * 4;
                 let header = self.header.with_num_objects(num_objects as u8);
                 let header_len = header.to_bytes(buffer);
-                let extended_header = ExtendedHeader::new(data_size as u16).with_chunked(true).with_chunk_number(0);
+                let extended_header = ExtendedHeader::new(payload_len as u16).with_chunked(true).with_chunk_number(0);
                 let ext_header_len = extended_header.to_bytes(&mut buffer[header_len..]);
-                let payload_start = header_len + ext_header_len;
-                let payload_len = extended.to_bytes(&mut buffer[payload_start..]);
                 let unpadded_size = header_len + ext_header_len + payload_len;
                 let frame_size = header_len + padded_body_size;
                 buffer[unpadded_size..frame_size].fill(0);

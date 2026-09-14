@@ -32,10 +32,14 @@ critical-section = { version = "1.2.0", features = ["std"] }
 tokio = { version = "1.49.0", features = ["rt", "macros"] }
 
 [features]
-default = []
+default = ["source"]
 
 hard-reset-reasons = []
 numeric-trace = ["dep:critical-section"]
+# The public API historically included both power roles. Sink-only products
+# can disable default features to omit the source policy and source-only codec
+# paths without making this additive Cargo feature hostile to feature unification.
+source = []
 log = ["dep:log"]
 defmt = ["dep:defmt", "heapless/defmt"]
 serde = ["dep:serde", "heapless/serde"]

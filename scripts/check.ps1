@@ -146,6 +146,9 @@ try {
     cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --no-default-features --lib -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "vendored sink-only usbpd clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget --features numeric-trace,hard-reset-reasons -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace clippy failed with exit code $LASTEXITCODE" }
 
@@ -178,6 +181,9 @@ try {
 
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd tests failed with exit code $LASTEXITCODE" }
+
+    cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --no-default-features --test sink_without_source
+    if ($LASTEXITCODE -ne 0) { throw "vendored sink-only usbpd tests failed with exit code $LASTEXITCODE" }
 
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --features numeric-trace,hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace tests failed with exit code $LASTEXITCODE" }

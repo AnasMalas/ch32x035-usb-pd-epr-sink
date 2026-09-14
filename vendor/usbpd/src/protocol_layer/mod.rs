@@ -30,6 +30,7 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 use crate::PowerRole;
 use crate::counters::{Counter, CounterType, Error as CounterError};
 use crate::protocol_layer::message::data::epr_mode::EprModeDataObject;
+#[cfg(any(feature = "source", test))]
 use crate::protocol_layer::message::data::source_capabilities::SourceCapabilities;
 use crate::protocol_layer::message::extended::Extended;
 use crate::protocol_layer::message::extended::sink_capabilities_extended::SinkCapabilitiesExtended;
@@ -262,6 +263,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Access the default header directly.
+    #[cfg_attr(all(not(feature = "source"), not(test)), allow(dead_code))]
     pub fn header(&self) -> &Header {
         &self.default_header
     }
@@ -1333,6 +1335,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Transmit the device's Source Capabilities
     ///
     /// Could be sent from a Source or Dual Role Device
+    #[cfg(any(feature = "source", test))]
     pub async fn transmit_source_capabilities(
         &mut self,
         source_capabilities: &SourceCapabilities,
@@ -1358,6 +1361,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Transmit the device's EPR Source Capabilities
     ///
     /// Could be sent from a Source or Dual Role Device
+    #[cfg(any(feature = "source", test))]
     pub async fn transmit_epr_source_capabilities(
         &mut self,
         source_capabilities: &SourceCapabilities,
@@ -1436,8 +1440,10 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
 #[repr(transparent)]
 #[derive(Debug)]
 /// The USB PD Protocol Layer for a `Source`
+#[cfg(any(feature = "source", test))]
 pub(crate) struct SourceProtocolLayer<DRIVER: Driver, TIMER: Timer>(ProtocolLayer<DRIVER, TIMER>);
 
+#[cfg(any(feature = "source", test))]
 impl<DRIVER: Driver, TIMER: Timer> core::ops::Deref for SourceProtocolLayer<DRIVER, TIMER> {
     type Target = ProtocolLayer<DRIVER, TIMER>;
     fn deref(&self) -> &Self::Target {
@@ -1445,12 +1451,14 @@ impl<DRIVER: Driver, TIMER: Timer> core::ops::Deref for SourceProtocolLayer<DRIV
     }
 }
 
+#[cfg(any(feature = "source", test))]
 impl<DRIVER: Driver, TIMER: Timer> core::ops::DerefMut for SourceProtocolLayer<DRIVER, TIMER> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         &mut self.0
     }
 }
 
+#[cfg(any(feature = "source", test))]
 impl<DRIVER: Driver, TIMER: Timer> SourceProtocolLayer<DRIVER, TIMER> {
     /// Create a new protocol layer from a driver and default header.
     pub fn new(driver: DRIVER, default_header: Header) -> Self {

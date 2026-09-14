@@ -61,9 +61,16 @@ impl Extended {
         match self {
             Self::Unknown => 0,
             Self::SourceCapabilitiesExtended => unimplemented!(),
+            #[cfg(all(not(feature = "source"), not(test)))]
+            Self::Status(_) | Self::PpsStatus(_) | Self::EprSourceCapabilities(_) => {
+                super::source_serialization_disabled()
+            }
+            #[cfg(any(feature = "source", test))]
             Self::Status(status) => status.to_bytes(payload),
+            #[cfg(any(feature = "source", test))]
             Self::PpsStatus(status) => status.to_bytes(payload),
             Self::ExtendedControl(control) => control.to_bytes(payload),
+            #[cfg(any(feature = "source", test))]
             Self::EprSourceCapabilities(pdos) => {
                 let mut written = 0;
                 for raw in pdos {

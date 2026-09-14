@@ -30,7 +30,7 @@ rich-telemetry = []
 [dependencies]
 ch32-hal = { path = "../../vendor/ch32-hal", default-features = false, features = ["embassy"], optional = true }
 embassy-futures = { version = "0.1.2", optional = true }
-usbpd = { path = "../../vendor/usbpd" }
+usbpd = { path = "../../vendor/usbpd", default-features = false }
 usbpd-traits = { path = "../../vendor/usbpd-traits", optional = true }
 
 [dev-dependencies]

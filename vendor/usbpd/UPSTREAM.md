@@ -35,7 +35,10 @@ Local change groups:
 9. represent USB-PD voltage, current, and power with explicit integer
    millivolt, milliamp, and milliwatt newtypes instead of general-purpose
    dimensional-analysis conversions. Captured PDO/RDO vectors verify the
-   resulting wire values.
+   resulting wire values;
+10. keep source-role support enabled by default while allowing this sink-only
+    product to omit the source policy and source-only codec paths through the
+    additive `source` feature boundary.
 
 The fork keeps generally applicable protocol corrections separable from
 project-specific sink policy so reusable fixes can be proposed upstream

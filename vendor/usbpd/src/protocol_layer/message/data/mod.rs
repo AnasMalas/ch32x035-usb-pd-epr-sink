@@ -78,19 +78,22 @@ impl Data {
         mut message: super::Message,
         message_type: DataMessageType,
         payload: &[u8],
-        state: &P,
+        _state: &P,
     ) -> Result<super::Message, super::ParseError> {
         let len = payload.len();
         message.payload = Some(Payload::Data(match message_type {
             DataMessageType::SourceCapabilities => Data::SourceCapabilities(source_capabilities::SourceCapabilities(
                 payload.chunks_exact(PDO_SIZE).take(message.header.num_objects()).map(LittleEndian::read_u32).collect(),
             )),
+            #[cfg(all(not(feature = "source"), not(test)))]
+            DataMessageType::Request | DataMessageType::EprRequest => Data::Unknown,
+            #[cfg(any(feature = "source", test))]
             DataMessageType::Request => {
                 if len != 4 {
                     Data::Unknown
                 } else {
                     let raw = request::RawDataObject(LittleEndian::read_u32(payload));
-                    if let Some(t) = state.at_object_position(raw.object_position()) {
+                    if let Some(t) = _state.at_object_position(raw.object_position()) {
                         Data::Request(match t {
                             source_capabilities::Kind::FixedSupply | source_capabilities::Kind::VariableSupply => {
                                 request::PowerSource::FixedVariableSupply(request::FixedVariableSupply(raw.0))
@@ -106,6 +109,7 @@ impl Data {
                     }
                 }
             }
+            #[cfg(any(feature = "source", test))]
             DataMessageType::EprRequest => {
                 let num_objects = message.header.num_objects();
                 trace!("EprRequest: num_objects={}, len={}", num_objects, len);
@@ -155,7 +159,10 @@ impl Data {
     pub fn to_bytes(&self, payload: &mut [u8]) -> usize {
         match self {
             Self::Unknown => 0,
-            Self::SourceCapabilities(caps) => caps.to_bytes(payload),
+            #[cfg(all(not(feature = "source"), not(test)))]
+            Self::SourceCapabilities(_) => super::source_serialization_disabled(),
+            #[cfg(any(feature = "source", test))]
+            Self::SourceCapabilities(capabilities) => capabilities.to_bytes(payload),
             Self::SinkCapabilities(caps) => caps.to_bytes(payload),
             Self::Request(request::PowerSource::FixedVariableSupply(data_object)) => data_object.to_bytes(payload),
             Self::Request(request::PowerSource::Pps(data_object)) => data_object.to_bytes(payload),
@@ -172,7 +179,11 @@ impl Data {
                 LittleEndian::write_u32(payload, *data_object);
                 PDO_SIZE
             }
+            #[cfg(all(not(feature = "source"), not(test)))]
+            Self::SourceInfo(_) | Self::Alert(_) => super::source_serialization_disabled(),
+            #[cfg(any(feature = "source", test))]
             Self::SourceInfo(source_info) => source_info.to_bytes(payload),
+            #[cfg(any(feature = "source", test))]
             Self::Alert(alert) => alert.to_bytes(payload),
             Self::VendorDefined(_) => unimplemented!(),
         }
