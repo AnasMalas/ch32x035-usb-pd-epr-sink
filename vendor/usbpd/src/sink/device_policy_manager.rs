@@ -161,6 +161,24 @@ pub enum HardResetReason {
     EprKeepAliveFailed = 8,
 }
 
+/// Product-selected recovery when initial Source_Capabilities remain silent.
+///
+/// The generic sink policy follows the USB-PD Hard Reset path. Products that
+/// must also operate from a legacy Type-C or USB-A supply can opt into one
+/// bounded probe or passive default-power operation by enabling the
+/// `initial-capabilities-fallback` feature.
+#[cfg(feature = "initial-capabilities-fallback")]
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[cfg_attr(feature = "defmt", derive(defmt::Format))]
+pub enum InitialCapabilitiesTimeoutAction {
+    /// Follow the ordinary sink policy and transmit a Hard Reset.
+    HardReset,
+    /// Send one SPR Get_Source_Cap request before listening passively.
+    GetSourceCapabilities,
+    /// Keep listening without an explicit contract and expose default power.
+    ContinueAtDefault,
+}
+
 /// Trait for the device policy manager.
 ///
 /// This entity commands the policy engine and enforces device policy.
@@ -175,6 +193,20 @@ pub trait DevicePolicyManager {
     fn startup(&self) -> SinkStartup {
         SinkStartup::Fresh
     }
+
+    /// Choose recovery after the initial SinkWaitCapTimer expires.
+    ///
+    /// The default preserves the standards-oriented Hard Reset. This hook is
+    /// available only when `initial-capabilities-fallback` is enabled.
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_timeout(&mut self) -> InitialCapabilitiesTimeoutAction {
+        InitialCapabilitiesTimeoutAction::HardReset
+    }
+
+    /// Notify the product that the policy entered passive default-power
+    /// operation while continuing to listen for late Source_Capabilities.
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn default_power_ready(&mut self) {}
 
     /// Inform the device about source capabilities, e.g. after a request.
     fn inform(&mut self, _source_capabilities: &source_capabilities::SourceCapabilities) {}
@@ -235,6 +267,13 @@ pub trait DevicePolicyManager {
     /// Reset. Returning zero uses the ordinary SinkWaitCapTimer.
     fn hard_reset_recovery_millis(&self) -> u32 {
         0
+    }
+
+    /// Select a reason-specific recovery window without changing the generic
+    /// Hard Reset recovery setting used by existing products.
+    #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+    fn hard_reset_recovery_millis_for(&self, _origin: HardResetOrigin, _reason: HardResetReason) -> u32 {
+        self.hard_reset_recovery_millis()
     }
 
     /// Notify the product that valid Source_Capabilities ended Hard Reset

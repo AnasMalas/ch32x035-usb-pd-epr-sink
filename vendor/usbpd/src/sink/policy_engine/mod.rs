@@ -6,6 +6,8 @@ use usbpd_traits::Driver;
 
 #[cfg(feature = "hard-reset-reasons")]
 use super::device_policy_manager::HardResetReason;
+#[cfg(feature = "initial-capabilities-fallback")]
+use super::device_policy_manager::InitialCapabilitiesTimeoutAction;
 use super::device_policy_manager::{
     DevicePolicyManager, HardResetOrigin, RequestRejection, SinkStartup, SoftResetMode, StatusQueryFailure,
     StatusQueryKind,
@@ -81,6 +83,10 @@ enum State {
     Startup,
     Discovery,
     WaitForCapabilities,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    WaitForCapabilitiesPassive,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    ProbeSourceCapabilities,
     EvaluateCapabilities(SourceCapabilities),
     SelectCapability(request::PowerSource),
     TransitionSink(request::PowerSource),
@@ -335,7 +341,30 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 // Per spec 8.3.3.3.3: SinkWaitCapTimer timeout triggers Hard Reset.
                 (_, State::WaitForCapabilities, ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(hard_reset_state!(HardResetReason::SourceCapabilitiesTimeout))
+                    #[cfg(feature = "initial-capabilities-fallback")]
+                    {
+                        Some(match self.device_policy_manager.initial_capabilities_timeout() {
+                            InitialCapabilitiesTimeoutAction::HardReset => {
+                                hard_reset_state!(HardResetReason::SourceCapabilitiesTimeout)
+                            }
+                            InitialCapabilitiesTimeoutAction::GetSourceCapabilities => State::ProbeSourceCapabilities,
+                            InitialCapabilitiesTimeoutAction::ContinueAtDefault => {
+                                self.device_policy_manager.default_power_ready();
+                                State::WaitForCapabilitiesPassive
+                            }
+                        })
+                    }
+                    #[cfg(not(feature = "initial-capabilities-fallback"))]
+                    {
+                        Some(hard_reset_state!(HardResetReason::SourceCapabilitiesTimeout))
+                    }
+                }
+
+                // Passive default-power operation keeps the receiver armed and
+                // accepts late capabilities without creating a reset loop.
+                #[cfg(feature = "initial-capabilities-fallback")]
+                (_, State::WaitForCapabilitiesPassive, ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                    Some(State::WaitForCapabilitiesPassive)
                 }
 
                 // Per spec 8.3.3.3.5: SenderResponseTimer timeout triggers Hard Reset.
@@ -659,6 +688,30 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
                 }
             }
+            #[cfg(feature = "initial-capabilities-fallback")]
+            State::WaitForCapabilitiesPassive => {
+                let capabilities = Self::wait_for_source_capabilities(&mut self.protocol_layer, None).await?;
+                if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
+                    State::EvaluateCapabilities(capabilities)
+                } else {
+                    hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
+                }
+            }
+            #[cfg(feature = "initial-capabilities-fallback")]
+            State::ProbeSourceCapabilities => {
+                self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await?;
+                match Self::wait_for_source_capabilities(&mut self.protocol_layer, Some(30)).await {
+                    Ok(capabilities) if Self::capabilities_valid_for_mode(&capabilities, Mode::Spr) => {
+                        State::EvaluateCapabilities(capabilities)
+                    }
+                    Ok(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
+                    Err(Error::Protocol(ProtocolError::RxError(RxError::ReceiveTimeout))) => {
+                        self.device_policy_manager.default_power_ready();
+                        State::WaitForCapabilitiesPassive
+                    }
+                    Err(error) => return Err(error),
+                }
+            }
             State::EvaluateCapabilities(capabilities) => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
@@ -967,6 +1020,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Arm the product-selected recovery receive window before
                 // notifying the DPM. The DPM must return promptly so the PHY
                 // is listening while the Source returns to default power.
+                #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis_for(
+                    self.hard_reset_origin,
+                    Self::reported_hard_reset_reason(self.hard_reset_reason),
+                );
+                #[cfg(not(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons")))]
                 let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis();
                 self.hard_reset_recovery_ms = (recovery_ms != 0).then_some(recovery_ms);
 

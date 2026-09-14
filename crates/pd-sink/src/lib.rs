@@ -117,6 +117,8 @@ pub use request::{
     CurrentConfidence, Demand, LimitReason, PlanError, PlannedOperating, PlannedVoltage, PortMode, Preference,
     RequestContext, RequestFlags, RequestMessage, RequestPlan, RequestPlanner, SinkLimits,
 };
+#[cfg(feature = "initial-capabilities-fallback")]
+pub use runtime::InitialCapabilitiesTimeoutAction;
 pub use runtime::{
     CapabilityPlan, HardResetCause, HardResetDirection, RecoveryCancellationReason, RecoveryInitError, RecoveryIntent,
     RequestResult, SinkConfig, SinkConfigError, SinkDevice, SinkEvent, SinkPowerDescriptor, SinkRuntime,

@@ -71,6 +71,16 @@ after Hard Reset, and report typed observations. A single
 override the typed `on_*` callbacks directly so unused event formatting is
 removed by the linker.
 
+Products that intentionally support default Type-C or legacy USB-A power can
+enable `initial-capabilities-fallback` and implement
+`initial_capabilities_timeout`. The default remains a standards-oriented Hard
+Reset. `GetSourceCapabilities` sends one bounded request and then listens
+passively; `ContinueAtDefault` enters passive listening immediately. The
+library grants PD-side load permission on entry but never changes the separate
+user output latch. Application VBUS validation, current limits, and independent
+hardware cutoff still apply, and late valid capabilities resume ordinary PD
+negotiation.
+
 Implement `Ch32x035Port` for another small application type. It reports the
 current VBUS-present level, waits for attach/detach notifications, clears a
 stale detach notification at session start, publishes prompt PD load-control

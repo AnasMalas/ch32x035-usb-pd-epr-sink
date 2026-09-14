@@ -15,6 +15,8 @@ use crate::protocol_layer::message::header::{
 };
 use crate::protocol_layer::message::{Message, Payload};
 use crate::protocol_layer::{ProtocolError, TxError, TxValidationError};
+#[cfg(feature = "initial-capabilities-fallback")]
+use crate::sink::device_policy_manager::InitialCapabilitiesTimeoutAction;
 use crate::sink::device_policy_manager::{
     DevicePolicyManager, SinkStartup, SoftResetMode, StatusQueryFailure, StatusQueryKind,
 };
@@ -27,6 +29,165 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 
 fn get_policy_engine() -> Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DummySinkDevice> {
     Sink::new(DummyDriver::new(), DummySinkDevice {})
+}
+
+fn assert_source_capabilities_timeout_hard_reset(state: &State) {
+    #[cfg(feature = "hard-reset-reasons")]
+    assert!(matches!(state, State::HardReset(HardResetReason::SourceCapabilitiesTimeout)));
+    #[cfg(not(feature = "hard-reset-reasons"))]
+    assert!(matches!(state, State::HardReset));
+}
+
+#[tokio::test]
+async fn initial_capabilities_timeout_keeps_hard_reset_as_the_default() {
+    let mut policy_engine = get_policy_engine();
+    policy_engine.state = State::WaitForCapabilities;
+
+    policy_engine.run_step().await.unwrap();
+
+    assert_source_capabilities_timeout_hard_reset(&policy_engine.state);
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+struct InitialCapabilitiesDpm {
+    action: InitialCapabilitiesTimeoutAction,
+    default_ready: std::sync::Arc<AtomicU32>,
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+impl DevicePolicyManager for InitialCapabilitiesDpm {
+    fn initial_capabilities_timeout(&mut self) -> InitialCapabilitiesTimeoutAction {
+        self.action
+    }
+
+    fn default_power_ready(&mut self) {
+        self.default_ready.fetch_add(1, Ordering::SeqCst);
+    }
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+fn initial_capabilities_policy_engine(
+    action: InitialCapabilitiesTimeoutAction,
+) -> (Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, InitialCapabilitiesDpm>, std::sync::Arc<AtomicU32>) {
+    let default_ready = std::sync::Arc::new(AtomicU32::new(0));
+    let dpm = InitialCapabilitiesDpm { action, default_ready: std::sync::Arc::clone(&default_ready) };
+    let mut policy_engine = Sink::new(DummyDriver::new(), dpm);
+    policy_engine.state = State::WaitForCapabilities;
+    (policy_engine, default_ready)
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+#[tokio::test]
+async fn passive_default_power_keeps_listening_and_accepts_late_capabilities() {
+    let (mut policy_engine, default_ready) =
+        initial_capabilities_policy_engine(InitialCapabilitiesTimeoutAction::ContinueAtDefault);
+
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::WaitForCapabilitiesPassive));
+    assert_eq!(default_ready.load(Ordering::SeqCst), 1);
+
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::WaitForCapabilitiesPassive));
+    assert_eq!(default_ready.load(Ordering::SeqCst), 1);
+
+    policy_engine.protocol_layer.driver().inject_received_data(&DUMMY_CAPABILITIES);
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::EvaluateCapabilities(_)));
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+#[tokio::test]
+async fn invalid_late_capabilities_still_trigger_hard_reset() {
+    let (mut policy_engine, _) =
+        initial_capabilities_policy_engine(InitialCapabilitiesTimeoutAction::ContinueAtDefault);
+    policy_engine.run_step().await.unwrap();
+
+    let mut invalid_capabilities = DUMMY_CAPABILITIES;
+    // Change the mandatory first PDO from 5 V to 9 V while retaining a valid
+    // fixed-supply encoding. The message parses but is invalid Source policy.
+    invalid_capabilities[3] = 0xd1;
+    invalid_capabilities[4] = 0x02;
+    policy_engine.protocol_layer.driver().inject_received_data(&invalid_capabilities);
+    policy_engine.run_step().await.unwrap();
+
+    #[cfg(feature = "hard-reset-reasons")]
+    assert!(matches!(policy_engine.state, State::HardReset(HardResetReason::InvalidSourceCapabilities)));
+    #[cfg(not(feature = "hard-reset-reasons"))]
+    assert!(matches!(policy_engine.state, State::HardReset));
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+#[tokio::test]
+async fn source_capability_probe_is_bounded_then_listens_passively() {
+    let (mut policy_engine, default_ready) =
+        initial_capabilities_policy_engine(InitialCapabilitiesTimeoutAction::GetSourceCapabilities);
+
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::ProbeSourceCapabilities));
+
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::WaitForCapabilitiesPassive));
+    assert_eq!(default_ready.load(Ordering::SeqCst), 1);
+
+    let probe = Message::from_bytes(&policy_engine.protocol_layer.driver().probe_transmitted_data()).unwrap();
+    assert_eq!(probe.header.message_type(), MessageType::Control(ControlMessageType::GetSourceCap));
+
+    policy_engine.run_step().await.unwrap();
+    assert!(matches!(policy_engine.state, State::WaitForCapabilitiesPassive));
+    assert!(!policy_engine.protocol_layer.driver().has_transmitted_data());
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+#[tokio::test]
+async fn source_capability_probe_accepts_a_response_without_entering_default_power() {
+    let (mut policy_engine, default_ready) =
+        initial_capabilities_policy_engine(InitialCapabilitiesTimeoutAction::GetSourceCapabilities);
+    policy_engine.run_step().await.unwrap();
+
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+    policy_engine.protocol_layer.driver().inject_received_data(&DUMMY_CAPABILITIES);
+    policy_engine.run_step().await.unwrap();
+
+    assert!(matches!(policy_engine.state, State::EvaluateCapabilities(_)));
+    assert_eq!(default_ready.load(Ordering::SeqCst), 0);
+}
+
+#[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+struct InitialCapabilitiesRecoveryDpm;
+
+#[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+impl DevicePolicyManager for InitialCapabilitiesRecoveryDpm {
+    fn hard_reset_recovery_millis(&self) -> u32 {
+        2_000
+    }
+
+    fn hard_reset_recovery_millis_for(&self, origin: HardResetOrigin, reason: HardResetReason) -> u32 {
+        if origin == HardResetOrigin::Sink && reason == HardResetReason::SourceCapabilitiesTimeout {
+            30
+        } else {
+            self.hard_reset_recovery_millis()
+        }
+    }
+}
+
+#[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+#[tokio::test]
+async fn short_recovery_window_is_limited_to_sink_capabilities_timeout() {
+    for (reason, expected_ms) in
+        [(HardResetReason::SourceCapabilitiesTimeout, 30), (HardResetReason::EprKeepAliveFailed, 2_000)]
+    {
+        let mut policy_engine: Sink<_, DummyTimer, _> =
+            Sink::new(DummyDriver::<MAX_DATA_MESSAGE_SIZE>::new(), InitialCapabilitiesRecoveryDpm);
+        policy_engine.hard_reset_origin = HardResetOrigin::Sink;
+        policy_engine.state = State::HardReset(reason);
+
+        policy_engine.run_step().await.unwrap();
+        assert!(matches!(policy_engine.state, State::TransitionToDefault));
+        policy_engine.run_step().await.unwrap();
+
+        assert_eq!(policy_engine.hard_reset_recovery_ms, Some(expected_ms));
+    }
 }
 
 struct WarmEprStartupDpm;

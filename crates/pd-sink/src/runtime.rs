@@ -18,6 +18,8 @@ use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
 };
 use usbpd::protocol_layer::message::extended::{pps_status as stack_pps_status, status as stack_status};
 pub use usbpd::sink::device_policy_manager::HardResetReason as HardResetCause;
+#[cfg(feature = "initial-capabilities-fallback")]
+pub use usbpd::sink::device_policy_manager::InitialCapabilitiesTimeoutAction;
 use usbpd::sink::device_policy_manager::{
     DevicePolicyManager, Event, HardResetOrigin, RequestRejection, SinkStartup, SoftResetMode,
     StatusQueryFailure as StackStatusQueryFailure, StatusQueryKind as StackStatusQueryKind,
@@ -319,6 +321,23 @@ pub trait SinkRuntime {
     /// a PD contract/session is under policy control, and combine its final
     /// output with board-defined VBUS-valid and fault inputs.
     fn set_pd_load_permitted(&mut self, permitted: bool);
+    /// Choose product recovery when initial Source_Capabilities remain silent.
+    ///
+    /// The default preserves the ordinary standards-oriented Hard Reset.
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_timeout(&mut self) -> InitialCapabilitiesTimeoutAction {
+        InitialCapabilitiesTimeoutAction::HardReset
+    }
+    /// Shorten only the receive window following a sink-sent Hard Reset caused
+    /// by initial capability silence. Other Hard Resets retain `configured_ms`.
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_hard_reset_recovery_millis(&self, configured_ms: u64) -> u64 {
+        configured_ms
+    }
+    /// Observe entry into passive default-power operation. PD permission has
+    /// already been restored, but the user output latch remains application-owned.
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn on_default_power_ready(&mut self) {}
     /// Apply the configured load-continuity policy before a PD Request.
     ///
     /// The default is suitable for applications whose
@@ -677,6 +696,15 @@ impl<R: SinkRuntime> SinkDevice<R> {
     fn automatic_epr_enabled(&self) -> bool {
         self.config.max_auto_epr_attempts != 0 && self.config.controller.request_context.flags.epr_capable
     }
+
+    #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+    fn hard_reset_recovery_ms_for(&self, origin: HardResetOrigin, reason: HardResetCause) -> u64 {
+        if origin == HardResetOrigin::Sink && reason == HardResetCause::SourceCapabilitiesTimeout {
+            self.runtime.initial_capabilities_hard_reset_recovery_millis(self.config.hard_reset_recovery_ms)
+        } else {
+            self.config.hard_reset_recovery_ms
+        }
+    }
 }
 
 impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
@@ -686,6 +714,20 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             Some(PortMode::Spr) => SinkStartup::SoftReset(SoftResetMode::Spr),
             Some(PortMode::Epr) => SinkStartup::SoftReset(SoftResetMode::Epr),
         }
+    }
+
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_timeout(&mut self) -> InitialCapabilitiesTimeoutAction {
+        self.runtime.initial_capabilities_timeout()
+    }
+
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn default_power_ready(&mut self) {
+        if matches!(self.contract.state(), ContractState::Detached | ContractState::Lost) {
+            self.contract.on_attach();
+        }
+        self.runtime.set_pd_load_permitted(true);
+        self.runtime.on_default_power_ready();
     }
 
     fn sink_capabilities(&self) -> SinkCapabilities {
@@ -880,7 +922,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             HardResetOrigin::Source => HardResetDirection::Received,
             HardResetOrigin::Sink => HardResetDirection::Sent,
         };
-        self.runtime.on_hard_reset(direction, reason, self.config.hard_reset_recovery_ms);
+        #[cfg(feature = "initial-capabilities-fallback")]
+        let recovery_ms = self.hard_reset_recovery_ms_for(origin, reason);
+        #[cfg(not(feature = "initial-capabilities-fallback"))]
+        let recovery_ms = self.config.hard_reset_recovery_ms;
+        self.runtime.on_hard_reset(direction, reason, recovery_ms);
     }
 
     #[cfg(not(feature = "hard-reset-reasons"))]
@@ -902,6 +948,11 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     fn hard_reset_recovery_millis(&self) -> u32 {
         self.config.hard_reset_recovery_ms.min(u64::from(u32::MAX)) as u32
+    }
+
+    #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+    fn hard_reset_recovery_millis_for(&self, origin: HardResetOrigin, reason: HardResetCause) -> u32 {
+        self.hard_reset_recovery_ms_for(origin, reason).min(u64::from(u32::MAX)) as u32
     }
 
     fn hard_reset_recovered(&mut self) {

@@ -3,6 +3,8 @@ use core::pin::pin;
 use core::task::{Context, Poll, Waker};
 use std::collections::VecDeque;
 
+#[cfg(feature = "initial-capabilities-fallback")]
+use pd_sink::InitialCapabilitiesTimeoutAction;
 use pd_sink::{
     CapabilitiesKind, Command, ContractState, ContractTransitionKind, ControllerConfig, HardResetCause,
     HardResetDirection, Milliamps, Millivolts, Milliwatts, PortMode, Preference, RecoveryCancellationReason,
@@ -40,11 +42,32 @@ struct TestRuntime {
     clear_count: usize,
     delays: Vec<u64>,
     cancel_recovery: bool,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    initial_capabilities_action: Option<InitialCapabilitiesTimeoutAction>,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    initial_capabilities_recovery_ms: Option<u64>,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    default_power_ready_count: usize,
 }
 
 impl SinkRuntime for TestRuntime {
     fn set_pd_load_permitted(&mut self, permitted: bool) {
         self.load_states.push(permitted);
+    }
+
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_timeout(&mut self) -> InitialCapabilitiesTimeoutAction {
+        self.initial_capabilities_action.unwrap_or(InitialCapabilitiesTimeoutAction::HardReset)
+    }
+
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn initial_capabilities_hard_reset_recovery_millis(&self, configured_ms: u64) -> u64 {
+        self.initial_capabilities_recovery_ms.unwrap_or(configured_ms)
+    }
+
+    #[cfg(feature = "initial-capabilities-fallback")]
+    fn on_default_power_ready(&mut self) {
+        self.default_power_ready_count += 1;
     }
 
     fn set_user_output_enabled(&mut self, enabled: bool) {
@@ -112,6 +135,59 @@ fn fresh_startup_remains_the_default() {
     let device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
 
     assert_eq!(DevicePolicyManager::startup(&device), SinkStartup::Fresh);
+}
+
+#[cfg(feature = "initial-capabilities-fallback")]
+#[test]
+fn initial_capabilities_policy_is_explicit_and_default_power_does_not_arm_the_user_latch() {
+    let runtime = TestRuntime {
+        initial_capabilities_action: Some(InitialCapabilitiesTimeoutAction::ContinueAtDefault),
+        ..TestRuntime::default()
+    };
+    let mut device = SinkDevice::new(safe_5v_config(), runtime).unwrap();
+
+    assert_eq!(
+        DevicePolicyManager::initial_capabilities_timeout(&mut device),
+        InitialCapabilitiesTimeoutAction::ContinueAtDefault
+    );
+
+    DevicePolicyManager::default_power_ready(&mut device);
+
+    assert_eq!(device.contract().state(), ContractState::Attached);
+    assert_eq!(device.runtime_mut().load_states, [true]);
+    assert!(device.runtime_mut().user_output_states.is_empty());
+    assert_eq!(device.runtime_mut().default_power_ready_count, 1);
+}
+
+#[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+#[test]
+fn source_capabilities_timeout_uses_only_its_special_recovery_window() {
+    let runtime = TestRuntime { initial_capabilities_recovery_ms: Some(30), ..TestRuntime::default() };
+    let mut device = SinkDevice::new(safe_5v_config(), runtime).unwrap();
+
+    assert_eq!(
+        DevicePolicyManager::hard_reset_recovery_millis_for(
+            &device,
+            HardResetOrigin::Sink,
+            HardResetReason::SourceCapabilitiesTimeout,
+        ),
+        30
+    );
+    assert_eq!(
+        DevicePolicyManager::hard_reset_recovery_millis_for(
+            &device,
+            HardResetOrigin::Sink,
+            HardResetReason::EprKeepAliveFailed,
+        ),
+        2_000
+    );
+
+    DevicePolicyManager::hard_reset(&mut device, HardResetOrigin::Sink, HardResetReason::SourceCapabilitiesTimeout);
+    assert!(device.runtime_mut().events.contains(&SinkEvent::HardReset {
+        direction: HardResetDirection::Sent,
+        cause: HardResetCause::SourceCapabilitiesTimeout,
+        recovery_ms: 30,
+    }));
 }
 
 #[test]

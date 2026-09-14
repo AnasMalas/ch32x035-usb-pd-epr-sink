@@ -152,6 +152,12 @@ try {
     cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget --features numeric-trace,hard-reset-reasons -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy --manifest-path vendor/usbpd/Cargo.toml --all-targets --target $HostTarget --no-default-features --features initial-capabilities-fallback,hard-reset-reasons -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd initial-capabilities fallback clippy failed with exit code $LASTEXITCODE" }
+
+    cargo clippy -p ch32x035-usb-pd-epr-sink --all-targets --target $HostTarget --locked --no-default-features --features initial-capabilities-fallback,hard-reset-reasons -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "public initial-capabilities fallback clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $usbControlEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "USB-control EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
@@ -188,11 +194,17 @@ try {
     cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --features numeric-trace,hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "vendored usbpd numeric-trace tests failed with exit code $LASTEXITCODE" }
 
+    cargo test --manifest-path vendor/usbpd/Cargo.toml --target $HostTarget --no-default-features --features initial-capabilities-fallback,hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "vendored usbpd initial-capabilities fallback tests failed with exit code $LASTEXITCODE" }
+
     cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "feature-off public library tests failed with exit code $LASTEXITCODE" }
 
     cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features numeric-trace,hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "public numeric-trace tests failed with exit code $LASTEXITCODE" }
+
+    cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features initial-capabilities-fallback,hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "public initial-capabilities fallback tests failed with exit code $LASTEXITCODE" }
 
     foreach ($chip in $supportedChips) {
         # F7P6 has only 48 KiB of application flash. Prove its complete

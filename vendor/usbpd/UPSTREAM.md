@@ -39,6 +39,9 @@ Local change groups:
 10. keep source-role support enabled by default while allowing this sink-only
     product to omit the source policy and source-only codec paths through the
     additive `source` feature boundary.
+11. optionally let a product handle initial Source_Capabilities silence with
+    one bounded Get_Source_Cap probe or passive default-power listening while
+    keeping the standards-oriented Hard Reset as the feature-off default.
 
 The fork keeps generally applicable protocol corrections separable from
 project-specific sink policy so reusable fixes can be proposed upstream

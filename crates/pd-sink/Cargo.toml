@@ -23,6 +23,7 @@ ch32x035g8r6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32
 ch32x035g8u6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035g8u6"]
 ch32x035r8t6 = ["dep:ch32-hal", "dep:embassy-futures", "dep:usbpd-traits", "ch32-hal/ch32x035r8t6"]
 hard-reset-reasons = ["usbpd/hard-reset-reasons"]
+initial-capabilities-fallback = ["usbpd/initial-capabilities-fallback"]
 numeric-trace = ["usbpd/numeric-trace"]
 driver-boundary-trace = ["ch32-hal?/usbpd-driver-trace"]
 rich-telemetry = []

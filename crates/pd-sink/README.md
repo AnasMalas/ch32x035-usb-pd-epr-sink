@@ -42,6 +42,7 @@ dependency for peripheral setup, aligned with the
 |---|---|
 | `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
+| `initial-capabilities-fallback` | Lets product policy replace repeated initial capability-timeout resets with one bounded `Get_Source_Cap` probe or passive default-power listening |
 | `numeric-trace` | Adds the formatter-free numeric protocol trace hook described below |
 | `driver-boundary-trace` | Adds a separate temporary CH32 USBPD RX/ISR/DMA trace callback |
 | `rich-telemetry` | Adds compact-control raw capabilities, plan previews, Source_Info, Alert, Source Status, and PPS Status commands/events |
@@ -51,6 +52,14 @@ integration.
 Applications that need the CH32 adapter normally use
 `default-features = false` with exactly one package feature and enable
 only the diagnostics and control surface their product needs.
+
+`initial-capabilities-fallback` is deliberately default-off. With it enabled,
+`SinkRuntime::initial_capabilities_timeout` explicitly selects ordinary Hard
+Reset, one 30 ms capability probe followed by passive listening, or immediate
+passive default-power listening. Passive operation creates no explicit PD
+contract and does not arm the application-owned user output latch. A late valid
+Source_Capabilities message still starts normal negotiation; detach and
+protocol-loss cutoff behavior is unchanged.
 
 Omitting `rich-telemetry` leaves negotiation, contract tracking, PPS/EPR,
 keepalives, recovery, transition classification, load control, and typed
