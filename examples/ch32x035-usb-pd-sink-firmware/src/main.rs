@@ -122,7 +122,7 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
     let _ = CONSOLE_LINES.try_send(line);
 }
 
-const ATTACH_DEBOUNCE_MS: u64 = 100;
+const ATTACH_DEBOUNCE_MS: u64 = 30;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
 #[cfg(not(feature = "uninterrupted-load-transitions"))]

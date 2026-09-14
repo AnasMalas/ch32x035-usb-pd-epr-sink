@@ -56,7 +56,7 @@ drive and PB1 input thresholds, plus an independent default-off load gate.
 The detector is active high:
 
 - high means initialized OPA1 reports divided VBUS above the board's PB6
-  reference, after 100 ms of uninterrupted high qualification;
+  reference, after 30 ms of uninterrupted high qualification;
 - published low means VBUS is below that threshold or detector initialization
   is unavailable; the first observed low cancels attach and drives PB10 low
   with no intentional deassertion debounce;
@@ -138,7 +138,7 @@ Use a current-limited 5 V source for the first pass.
    If rev0 cannot be powered with PD VBUS absent, this fail-low check is not
    possible; do not run a load-enable test without adding the qualified weak
    pad pull-down or using a fixture that establishes the same fail-safe state.
-2. Attach 5 V. Expect an OPA raw-high line, a 100 ms qualification line,
+2. Attach 5 V. Expect an OPA raw-high line, a 30 ms qualification line,
    `attach published`, `Attached; PD starts at 5 V`, source capabilities, and
    a confirmed 5 V session outcome.
 3. Confirm PB10 remains low even after the PD permission becomes true. Send

@@ -111,7 +111,7 @@ those ratings.
 ## Firmware behavior
 
 - The load request is driven low before attach debounce.
-- The VBUS detector must remain high for 100 ms before attachment is accepted.
+- The VBUS detector must remain high for 30 ms before attachment is accepted.
 - The first detector falling edge drives the load request low without detach
   debounce.
 - Every PD receive/transmit operation races against cable removal.
