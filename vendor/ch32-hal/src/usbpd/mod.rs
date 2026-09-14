@@ -21,8 +21,15 @@ use crate::mode::{Async, Blocking, Mode};
 use crate::pac::usbpd::vals;
 use crate::{interrupt, pac, Peri, PeripheralType, RccPeripheral};
 
+#[cfg(feature = "usbpd-driver-trace")]
+mod trace;
 mod turnaround;
 
+#[cfg(feature = "usbpd-driver-trace")]
+pub use trace::{
+    set_usbpd_trace_callback, UsbPdTraceCallback, UsbPdTraceCode, UsbPdTraceEvent, UsbPdTraceEventKind,
+    USBPD_TRACE_ABI_VERSION,
+};
 use turnaround::{needs_rx_turnaround, TransferState};
 
 /// Maximum PD message size excluding the four-byte CRC appended by the PHY.
@@ -88,6 +95,8 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             // window. GoodCRC and Hard Reset transmissions do not request it.
             if !status.buf_err() {
                 T::state().transfer.complete_transmit(|| prepare_receive::<T, true>());
+                #[cfg(feature = "usbpd-driver-trace")]
+                emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TxTurnaroundArm, status.0);
             }
         }
 
@@ -115,6 +124,72 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
 
         // Wake the task to clear and re-enabled interrupts.
         T::state().waker.wake();
+
+        #[cfg(feature = "usbpd-driver-trace")]
+        emit_rx_trace::<T>(UsbPdTraceEventKind::Interrupt, UsbPdTraceCode::Interrupt, status.0);
+    }
+}
+
+#[cfg(feature = "usbpd-driver-trace")]
+fn emit_rx_trace<T: Instance>(kind: UsbPdTraceEventKind, code: UsbPdTraceCode, status: u8) {
+    let config = T::REGS.config().read();
+    trace::emit(UsbPdTraceEvent {
+        kind,
+        code: code as u8,
+        status,
+        active_cc: config.cc_sel().to_bits() + 1,
+        byte_count: T::REGS.bmc_byte_cnt().read().bmc_byte_cnt(),
+        config: config.0,
+    });
+}
+
+#[cfg(feature = "usbpd-driver-trace")]
+fn receive_result_code(result: &Result<(Sop, usize), Error>) -> UsbPdTraceCode {
+    match result {
+        Ok(_) => UsbPdTraceCode::Success,
+        Err(Error::HardReset) => UsbPdTraceCode::HardReset,
+        Err(Error::BufferError) => UsbPdTraceCode::BufferError,
+        Err(Error::ReceiveBufferTooSmall { .. }) => UsbPdTraceCode::BufferTooSmall,
+        Err(Error::Rejected | Error::Protocol(_)) => UsbPdTraceCode::Rejected,
+        Err(_) => UsbPdTraceCode::Other,
+    }
+}
+
+#[cfg(feature = "usbpd-driver-trace")]
+struct ReceiveTraceGuard<T: Instance> {
+    finished: bool,
+    _marker: PhantomData<T>,
+}
+
+#[cfg(feature = "usbpd-driver-trace")]
+impl<T: Instance> ReceiveTraceGuard<T> {
+    fn new() -> Self {
+        Self {
+            finished: false,
+            _marker: PhantomData,
+        }
+    }
+
+    fn finish(&mut self, result: &Result<(Sop, usize), Error>) {
+        emit_rx_trace::<T>(
+            UsbPdTraceEventKind::RxComplete,
+            receive_result_code(result),
+            T::REGS.status().read().0,
+        );
+        self.finished = true;
+    }
+}
+
+#[cfg(feature = "usbpd-driver-trace")]
+impl<T: Instance> Drop for ReceiveTraceGuard<T> {
+    fn drop(&mut self) {
+        if !self.finished {
+            emit_rx_trace::<T>(
+                UsbPdTraceEventKind::RxCancelled,
+                UsbPdTraceCode::Cancelled,
+                T::REGS.status().read().0,
+            );
+        }
     }
 }
 
@@ -351,14 +426,28 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     ///
     /// Returns the SOP and number of received bytes, or an error.
     pub async fn receive(&mut self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
-        if !T::state().transfer.take_prearmed_receive() {
+        let prearmed = T::state().transfer.take_prearmed_receive();
+        if !prearmed {
             // Clear stale BUF_ERR (HW W1C, then latch) before re-arming RX.
+            #[cfg(feature = "usbpd-driver-trace")]
+            let status_before_arm = T::REGS.status().read().0;
             T::REGS.status().write(|w| w.set_buf_err(true));
             T::state().buf_err.store(false, Ordering::Release);
             prepare_receive::<T, true>();
+            #[cfg(feature = "usbpd-driver-trace")]
+            emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TaskArm, status_before_arm);
+        } else {
+            #[cfg(feature = "usbpd-driver-trace")]
+            emit_rx_trace::<T>(
+                UsbPdTraceEventKind::RxArmed,
+                UsbPdTraceCode::PrearmedReceive,
+                T::REGS.status().read().0,
+            );
         }
 
-        poll_fn(|cx| {
+        #[cfg(feature = "usbpd-driver-trace")]
+        let mut trace_guard = ReceiveTraceGuard::<T>::new();
+        let result = poll_fn(|cx| {
             T::state().waker.register(cx.waker());
 
             if T::state().buf_err.load(Ordering::Acquire) {
@@ -375,8 +464,11 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
                 Poll::Pending
             }
         })
-        .await?;
-        self.post_receive(buf)
+        .await
+        .and_then(|()| self.post_receive(buf));
+        #[cfg(feature = "usbpd-driver-trace")]
+        trace_guard.finish(&result);
+        result
     }
 
     pub async fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {
@@ -451,7 +543,11 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::disable_interrupt(interrupt::USBPD.number() as _);
         }
+        #[cfg(feature = "usbpd-driver-trace")]
+        let status_before_arm = T::REGS.status().read().0;
         prepare_receive::<T, false>();
+        #[cfg(feature = "usbpd-driver-trace")]
+        emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TaskArm, status_before_arm);
 
         let outcome = loop {
             let status = T::REGS.status().read();
@@ -470,8 +566,14 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::enable_interrupt(interrupt::USBPD.number() as _);
         }
-        outcome?;
-        self.post_receive(buf)
+        let result = outcome.and_then(|()| self.post_receive(buf));
+        #[cfg(feature = "usbpd-driver-trace")]
+        emit_rx_trace::<T>(
+            UsbPdTraceEventKind::RxComplete,
+            receive_result_code(&result),
+            T::REGS.status().read().0,
+        );
+        result
     }
 
     pub fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {

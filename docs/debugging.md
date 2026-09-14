@@ -84,12 +84,14 @@ localizes the fault.
 |---|---|---|
 | Normal compact control | Attachment, contract, typed Hard Reset cause, protocol loss, and exception summaries | Default for reproduction. Keep unsolicited traffic bounded and lossy. |
 | Numeric protocol trace | Typed attach/detach plus TX, GoodCRC, valid RX headers, retry/error, Hard Reset, and EPR keepalive ordering | Enable the default-off `numeric-trace` feature and install its callback. The callback must perform only one bounded RAM copy. |
-| Driver-boundary trace | Determine whether loss occurs between the policy task, HAL call, ISR, and DMA | Temporary application/HAL diagnostic instrumentation; there is no shipped profile or stable public feature for this tier. Timestamping an ISR changes it, so measure and remove it afterward. |
+| Driver-boundary trace | Determine whether loss occurs between RX arming, the USBPD ISR/DMA, and the protocol task | Enable the independent, default-off `driver-boundary-trace` feature and install `set_usbpd_trace_callback`. Records can originate in interrupt context; use only a bounded RAM copy and re-test without it. |
 | Formatter-heavy trace | Human exploration when compact records are insufficient | Dedicated diagnostic image only. Never infer timing equivalence with the normal image. |
 
 `usb-epr-diagnostic` is currently a compatibility alias of `usb-epr`; it does
-not enable numeric or driver-boundary tracing. `usb-epr-text` supplies the
-reference ASCII console, not a complete internal driver trace. Enabling
+not automatically enable either trace. Select `numeric-trace` and
+`driver-boundary-trace` explicitly in a temporary diagnostic build.
+`usb-epr-text` supplies the reference ASCII console, not a complete internal
+driver trace. Enabling
 `usbpd/log` or adding synchronous driver formatting requires a deliberately
 separate diagnostic build.
 
@@ -102,20 +104,26 @@ difference also includes its text transport and queues and is not a pure
 formatter measurement. Re-measure both size and behavior after every
 toolchain or application change.
 
+On the later compact reference checkpoint, enabling only
+`driver-boundary-trace` changed `usb-epr-uninterrupted` from 47,800 to 48,560
+flash bytes (+760) with no static-RAM change. Enabling it alongside
+`numeric-trace` changed 49,280 to 50,080 bytes (+800). These figures exclude
+the application-owned record ring and transport.
+
 With `numeric-trace` disabled, its module, callback storage, event calls, and
 critical-section dependency are absent. With it enabled, event construction
 and a short callback lookup still execute even when no callback is installed.
-The ABI begins at protocol transactions: combine it with the application's
-existing typed attach/detach events. It emits a valid `RxMessage`, not generic
-driver RX-begin/RX-complete events; add those only as temporary
-driver-boundary records when that distinction is required.
+The numeric ABI begins at protocol transactions. The independent
+`driver-boundary-trace` feature adds a separate CH32 RX arm, ISR, completion,
+and cancellation callback only when explicitly selected; omitting it compiles
+every HAL trace call and callback slot out.
 
 ## Numeric trace without backpressure
 
 The feature exposes
-[`set_numeric_trace_callback`](../vendor/usbpd/src/numeric_trace.rs). The
-callback receives one `Copy`, C-layout, eight-byte `NumericTraceEvent` and
-runs synchronously in the protocol task. It must not format, allocate, wait,
+[`set_numeric_trace_callback`](../crates/pd-sink/src/lib.rs). The callback
+receives one `Copy`, C-layout, eight-byte `NumericTraceEvent` and runs
+synchronously in the protocol task. It must not format, allocate, wait,
 perform USB or other I/O, acquire an application mutex, or call back into the
 PD stack.
 
@@ -207,6 +215,30 @@ failure.
 Treat the Rust enums as authoritative. They are `non_exhaustive`; decoders
 must preserve and display unknown future values instead of rejecting the
 record.
+
+### CH32 RX boundary record decoding
+
+With `driver-boundary-trace`, `pd_sink::set_usbpd_trace_callback` receives a
+separate `Copy`, C-layout, eight-byte `UsbPdTraceEvent` (ABI version 1):
+
+```text
+kind:u8 | code:u8 | status:u8 | active_cc:u8 | byte_count:u16 | config:u16
+```
+
+Kinds are 1 RX armed, 2 USBPD interrupt, 3 RX complete, and 4 RX cancelled.
+Codes are 1 task arm, 2 TX-end turnaround arm, 3 pre-armed consume, 4
+interrupt, 5 success, 6 Hard Reset, 7 buffer error, 8 destination too small,
+9 rejected frame, 10 cancellation, and 255 other. `active_cc` is 1 or 2.
+`byte_count` is the raw nine-bit DMA count, including four CRC bytes for a
+complete ordinary frame. STATUS bits 2-7 are BUF_ERR, RX_BIT, RX_BYTE,
+RX_ACT, RX_RESET, and TX_END; bits 0-1 hold BMC_AUX. CONFIG is the raw
+peripheral register, including CC selection and RX interrupt enables.
+
+A cancellation record with no RX activity followed by a numeric protocol
+timeout means the receive future remained armed until its timer won. An ISR
+or completion record followed by parse/discard instead places the loss after
+physical activity reached the peripheral. Timestamp both callbacks into the
+same application-owned bounded RAM ring when correlating the two streams.
 
 ## Isolation sequence
 

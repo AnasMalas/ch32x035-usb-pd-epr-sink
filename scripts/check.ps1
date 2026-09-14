@@ -73,6 +73,7 @@ $rev0UsbPpsFeatures = "$rev0Chip,usb-control,rich-telemetry,pps-capable-hardware
 $rev0UsbEprFeatures = "$rev0Chip,usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board"
 $rev0LeanUsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
 $rev0UsbEprTraceFeatures = "$rev0UsbEprFeatures,numeric-trace"
+$rev0UsbEprDriverTraceFeatures = "$rev0UsbEprFeatures,driver-boundary-trace"
 $rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control,rich-telemetry",
@@ -85,6 +86,7 @@ $firmwareFeatureSets = @(
     $rev0UsbPpsFeatures,
     $rev0UsbEprFeatures,
     $rev0LeanUsbEprFeatures,
+    $rev0UsbEprDriverTraceFeatures,
     $rev0ValidationFeatures
 )
 
@@ -165,6 +167,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprTraceFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 numeric-trace EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprDriverTraceFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 driver-boundary-trace EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
@@ -214,7 +219,7 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
-        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0ValidationFeatures)) {
+        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0UsbEprDriverTraceFeatures, $rev0ValidationFeatures)) {
             $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $firmwareElf `

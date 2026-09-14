@@ -9,6 +9,11 @@ use core::{future::Future, marker::PhantomData};
 
 use ch32_hal as hal;
 use embassy_futures::select::{select, Either};
+#[cfg(feature = "driver-boundary-trace")]
+pub use hal::usbpd::{
+    set_usbpd_trace_callback, UsbPdTraceCallback, UsbPdTraceCode, UsbPdTraceEvent, UsbPdTraceEventKind,
+    USBPD_TRACE_ABI_VERSION,
+};
 use hal::usbpd::{Error, Sop, UsbPdPhy};
 use hal::{mode, peripherals};
 use usbpd::sink::policy_engine::Sink;

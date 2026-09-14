@@ -43,6 +43,7 @@ dependency for peripheral setup, aligned with the
 | `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
 | `numeric-trace` | Adds the formatter-free numeric protocol trace hook described below |
+| `driver-boundary-trace` | Adds a separate temporary CH32 USBPD RX/ISR/DMA trace callback |
 | `rich-telemetry` | Adds compact-control raw capabilities, plan previews, Source_Info, Alert, Source Status, and PPS Status commands/events |
 
 The default build enables `hard-reset-reasons` and `rich-telemetry`, but no MCU
@@ -71,13 +72,23 @@ eight-byte, `Copy`, C-layout `NumericTraceEvent` (ABI version 1) at selected
 protocol and EPR-policy transaction points. It contains only integer fields;
 the library does not format, allocate, queue, or perform I/O.
 
-The callback runs synchronously in the protocol task. It must do bounded,
-nonblocking work, normally one fixed RAM-record copy. Registration uses a
-short critical section, but event delivery invokes the callback after leaving
-that critical section. Enabling the feature requires the target to provide a
-`critical-section` implementation; the CH32 integration already does so.
-With the feature disabled, the module, callback storage, trace calls, and
-dependency are absent from the compiled library.
+For a temporary CH32X035 RX-boundary capture, enable the independent
+`driver-boundary-trace` feature and install
+`pd_sink::set_usbpd_trace_callback`. Its eight-byte `UsbPdTraceEvent` reports
+RX arm, raw USBPD interrupt/status, completion, and cancellation. This
+callback can originate in the USBPD interrupt handler, so it must be a
+strictly bounded RAM copy. With the feature omitted, all HAL trace code and
+state are compiled out.
+
+The numeric-trace callback runs synchronously in the protocol task; the
+driver-boundary callback may instead run in the USBPD interrupt handler. Both
+must do bounded, nonblocking work, normally one fixed RAM-record copy.
+Registration uses a short critical section, but event delivery invokes each
+callback after leaving that critical section. Enabling either feature requires
+the target to provide a `critical-section` implementation; the CH32
+integration already does so. With both features disabled, their modules,
+callback storage, trace calls, and dependencies are absent from the compiled
+library.
 
 ## Flash use
 

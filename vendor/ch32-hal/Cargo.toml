@@ -71,6 +71,8 @@ embassy = [
     "dep:embassy-time",
 ]
 defmt = ["dep:defmt"]
+## Fixed-record USBPD peripheral tracing for temporary timing diagnostics.
+usbpd-driver-trace = []
 memory-x = ["ch32-metapac/memory-x"]
 ## Built-in EXTI driver and interrupt handlers. Disable to provide your own.
 exti = []

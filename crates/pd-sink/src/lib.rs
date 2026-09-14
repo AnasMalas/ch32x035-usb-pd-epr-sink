@@ -69,6 +69,21 @@ pub use capabilities::{
     AdvertisedPdo, CapabilitiesKind, CapabilityListError, PdoError, PdoValidity, SourceCapabilities, SourceSupply,
     SupplyKind, EPR_AVS_COMPATIBLE_MAX_VOLTAGE, EPR_AVS_STANDARD_MAX_VOLTAGE, EPR_AVS_STANDARD_MIN_VOLTAGE,
 };
+#[cfg(all(
+    feature = "driver-boundary-trace",
+    any(
+        feature = "ch32x035c8t6",
+        feature = "ch32x035f7p6",
+        feature = "ch32x035f8u6",
+        feature = "ch32x035g8r6",
+        feature = "ch32x035g8u6",
+        feature = "ch32x035r8t6"
+    )
+))]
+pub use ch32x035::{
+    set_usbpd_trace_callback, UsbPdTraceCallback, UsbPdTraceCode, UsbPdTraceEvent, UsbPdTraceEventKind,
+    USBPD_TRACE_ABI_VERSION,
+};
 #[cfg(any(
     feature = "ch32x035c8t6",
     feature = "ch32x035f7p6",
