@@ -1065,30 +1065,22 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                         continue;
                     }
 
-                    let (expected_total, expected_next) = match self.extended_rx_expected {
-                        Some((ty, total, next)) if ty == extended_message_type && total == total_size => (total, next),
-                        Some(_) => {
-                            self.reset_chunked_rx();
-                            return Err(RxError::UnsupportedMessage);
+                    let next_chunk = match self.extended_rx_expected {
+                        None if chunk_number == 0 => {
+                            self.extended_rx_buffer.clear();
+                            1
                         }
-                        None if chunk_number == 0 => (total_size, 0),
-                        None => {
+                        Some((ty, total, next))
+                            if ty == extended_message_type && total == total_size && chunk_number == next =>
+                        {
+                            next + 1
+                        }
+                        _ => {
                             self.reset_chunked_rx();
                             return Err(RxError::UnsupportedMessage);
                         }
                     };
-
-                    if expected_next != 0 && chunk_number != expected_next {
-                        self.reset_chunked_rx();
-                        return Err(RxError::UnsupportedMessage);
-                    }
-
-                    if chunk_number == 0 || expected_next == 0 {
-                        self.extended_rx_buffer.clear();
-                        self.extended_rx_expected = Some((extended_message_type, total_size, 1));
-                    } else {
-                        self.extended_rx_expected = Some((extended_message_type, expected_total, expected_next + 1));
-                    }
+                    self.extended_rx_expected = Some((extended_message_type, total_size, next_chunk));
 
                     let remaining = (total_size as usize).saturating_sub(self.extended_rx_buffer.len());
                     let expected_payload_len = if remaining > message::extended::chunked::MAX_EXTENDED_MSG_CHUNK_LEN {
@@ -1100,10 +1092,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                         self.reset_chunked_rx();
                         return Err(RxError::UnsupportedMessage);
                     }
-                    if self.extended_rx_buffer.len() + payload_len > self.extended_rx_buffer.capacity() {
-                        self.reset_chunked_rx();
-                        return Err(RxError::UnsupportedMessage);
-                    }
                     let payload = &self.rx_buffer[ext_header_end..length];
                     if self.extended_rx_buffer.extend_from_slice(payload).is_err() {
                         self.reset_chunked_rx();
@@ -1111,7 +1099,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     }
 
                     if self.extended_rx_buffer.len() < total_size as usize {
-                        let next_chunk = self.extended_rx_expected.as_ref().map(|(_, _, next)| *next).unwrap_or(1);
                         self.transmit_chunk_request(extended_message_type, next_chunk).await?;
                         continue;
                     }
