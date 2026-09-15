@@ -115,6 +115,11 @@ enum State {
     EprSendExit,
     EprExitReceived(request::PowerSource),
     EprKeepAlive(request::PowerSource),
+
+    // Compact internal I/O instructions. `run_step` executes these until the
+    // next specification-visible policy state is reached.
+    Transmit(TransmitOperation),
+    Receive(ReceiveOperation),
 }
 
 /// A first Message that belongs to an AMS initiated by this Sink. These
@@ -128,6 +133,130 @@ enum SinkInitiatedAms {
     ExitEprMode,
     RequestPower(request::PowerSource),
     EprKeepAlive,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum TransmitOperation {
+    #[cfg(feature = "initial-capabilities-fallback")]
+    ProbeSourceCapabilities,
+    SelectCapability(request::PowerSource),
+    SendNotSupported(request::PowerSource),
+    SendSoftReset,
+    AcceptSoftReset,
+    GiveSinkCap(Mode, request::PowerSource),
+    GiveSinkCapExtended(request::PowerSource),
+    GetSourceCap(Mode, request::PowerSource),
+    GetSourceInfo(request::PowerSource),
+    GetStatus(StatusQueryKind, request::PowerSource),
+    EnterEprMode(request::PowerSource, u8),
+    ExitEprMode,
+    EprKeepAlive(request::PowerSource),
+}
+
+#[derive(Debug, Clone, Copy)]
+enum CapabilityWait {
+    Initial {
+        recovery_ms: Option<u32>,
+    },
+    #[cfg(feature = "initial-capabilities-fallback")]
+    Passive,
+    #[cfg(feature = "initial-capabilities-fallback")]
+    Probe,
+    EprEntry,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ReceiveOperation {
+    SourceCapabilities(CapabilityWait),
+    RequestResponse(request::PowerSource),
+    PowerTransition(request::PowerSource, Mode),
+    SoftResetAccept,
+    GetSourceCap(Mode, request::PowerSource),
+    GetSourceInfo(request::PowerSource),
+    GetStatus(StatusQueryKind, request::PowerSource),
+    EprEntryAcknowledgement(request::PowerSource, u8),
+    EprEntryResult(request::PowerSource),
+    EprKeepAlive(request::PowerSource),
+}
+
+#[derive(Clone, Copy)]
+enum ReceiveWire {
+    SourceCapabilities(Option<u32>),
+    Typed(&'static [MessageType], TimerType),
+}
+
+const REQUEST_RESPONSE_TYPES: &[MessageType] = &[
+    MessageType::Control(ControlMessageType::Accept),
+    MessageType::Control(ControlMessageType::Wait),
+    MessageType::Control(ControlMessageType::Reject),
+];
+const PS_RDY_TYPE: &[MessageType] = &[MessageType::Control(ControlMessageType::PsRdy)];
+const ACCEPT_TYPE: &[MessageType] = &[MessageType::Control(ControlMessageType::Accept)];
+const SOURCE_CAPABILITY_TYPES: &[MessageType] = &[
+    MessageType::Data(DataMessageType::SourceCapabilities),
+    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
+];
+const SOURCE_INFO_RESPONSE_TYPES: &[MessageType] = &[
+    MessageType::Data(DataMessageType::SourceInfo),
+    MessageType::Control(ControlMessageType::NotSupported),
+    MessageType::Control(ControlMessageType::Reject),
+    MessageType::Control(ControlMessageType::Wait),
+];
+const STATUS_RESPONSE_TYPES: &[MessageType] = &[
+    MessageType::Extended(ExtendedMessageType::Status),
+    MessageType::Control(ControlMessageType::NotSupported),
+    MessageType::Control(ControlMessageType::Reject),
+    MessageType::Control(ControlMessageType::Wait),
+];
+const PPS_STATUS_RESPONSE_TYPES: &[MessageType] = &[
+    MessageType::Extended(ExtendedMessageType::PpsStatus),
+    MessageType::Control(ControlMessageType::NotSupported),
+    MessageType::Control(ControlMessageType::Reject),
+    MessageType::Control(ControlMessageType::Wait),
+];
+const EPR_MODE_TYPE: &[MessageType] = &[MessageType::Data(DataMessageType::EprMode)];
+const EXTENDED_CONTROL_TYPE: &[MessageType] = &[MessageType::Extended(ExtendedMessageType::ExtendedControl)];
+
+impl State {
+    fn is_internal_io(&self) -> bool {
+        matches!(self, Self::Transmit(_) | Self::Receive(_))
+    }
+}
+
+impl ReceiveOperation {
+    fn wire(self) -> ReceiveWire {
+        match self {
+            Self::SourceCapabilities(wait) => ReceiveWire::SourceCapabilities(match wait {
+                CapabilityWait::Initial { recovery_ms } => recovery_ms,
+                #[cfg(feature = "initial-capabilities-fallback")]
+                CapabilityWait::Passive => None,
+                #[cfg(feature = "initial-capabilities-fallback")]
+                CapabilityWait::Probe => Some(30),
+                CapabilityWait::EprEntry => None,
+            }),
+            Self::RequestResponse(_) => ReceiveWire::Typed(REQUEST_RESPONSE_TYPES, TimerType::SenderResponse),
+            Self::PowerTransition(_, mode) => ReceiveWire::Typed(
+                PS_RDY_TYPE,
+                match mode {
+                    Mode::Epr => TimerType::PSTransitionEpr,
+                    Mode::Spr => TimerType::PSTransitionSpr,
+                },
+            ),
+            Self::SoftResetAccept => ReceiveWire::Typed(ACCEPT_TYPE, TimerType::SenderResponse),
+            Self::GetSourceCap(_, _) => ReceiveWire::Typed(SOURCE_CAPABILITY_TYPES, TimerType::SenderResponse),
+            Self::GetSourceInfo(_) => ReceiveWire::Typed(SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse),
+            Self::GetStatus(query, _) => ReceiveWire::Typed(
+                match query {
+                    StatusQueryKind::General => STATUS_RESPONSE_TYPES,
+                    StatusQueryKind::Pps => PPS_STATUS_RESPONSE_TYPES,
+                },
+                TimerType::SenderResponse,
+            ),
+            Self::EprEntryAcknowledgement(_, _) => ReceiveWire::Typed(EPR_MODE_TYPE, TimerType::SenderResponse),
+            Self::EprEntryResult(_) => ReceiveWire::Typed(EPR_MODE_TYPE, TimerType::SinkEPREnter),
+            Self::EprKeepAlive(_) => ReceiveWire::Typed(EXTENDED_CONTROL_TYPE, TimerType::SenderResponse),
+        }
+    }
 }
 
 /// Implementation of the sink policy engine.
@@ -305,7 +434,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
     /// Run a single step in the policy engine state machine.
     async fn run_step(&mut self) -> Result<(), Error> {
-        let result = self.update_state().await;
+        let result = loop {
+            let result = self.update_state().await;
+            if result.is_err() || !self.state.is_internal_io() {
+                break result;
+            }
+        };
         if result.is_ok() {
             return Ok(());
         }
@@ -335,12 +469,22 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 // Per spec 6.3.13: If the Soft_Reset Message fails, a Hard Reset shall be initiated.
                 // This handles the case where we're trying to send/receive a soft reset and it fails.
-                (_, State::SoftReset | State::SendSoftReset, ProtocolError::TransmitRetriesExceeded(_)) => {
-                    Some(hard_reset_state!(HardResetReason::SoftResetFailed))
-                }
+                (
+                    _,
+                    State::SoftReset
+                    | State::SendSoftReset
+                    | State::Transmit(TransmitOperation::SendSoftReset | TransmitOperation::AcceptSoftReset)
+                    | State::Receive(ReceiveOperation::SoftResetAccept),
+                    ProtocolError::TransmitRetriesExceeded(_),
+                ) => Some(hard_reset_state!(HardResetReason::SoftResetFailed)),
 
                 // Per spec 8.3.3.3.3: SinkWaitCapTimer timeout triggers Hard Reset.
-                (_, State::WaitForCapabilities, ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                (
+                    _,
+                    State::WaitForCapabilities
+                    | State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Initial { .. })),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => {
                     #[cfg(feature = "initial-capabilities-fallback")]
                     {
                         Some(match self.device_policy_manager.initial_capabilities_timeout() {
@@ -363,35 +507,67 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Passive default-power operation keeps the receiver armed and
                 // accepts late capabilities without creating a reset loop.
                 #[cfg(feature = "initial-capabilities-fallback")]
-                (_, State::WaitForCapabilitiesPassive, ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(State::WaitForCapabilitiesPassive)
-                }
+                (
+                    _,
+                    State::WaitForCapabilitiesPassive
+                    | State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Passive)),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(State::WaitForCapabilitiesPassive),
 
                 // Per spec 8.3.3.3.5: SenderResponseTimer timeout triggers Hard Reset.
-                (_, State::SelectCapability(_), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(hard_reset_state!(HardResetReason::RequestResponseTimeout))
-                }
+                (
+                    _,
+                    State::SelectCapability(_) | State::Receive(ReceiveOperation::RequestResponse(_)),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(hard_reset_state!(HardResetReason::RequestResponseTimeout)),
 
                 // EnterSucceeded was received, but the first EPR Source
                 // Capabilities did not arrive in time.
-                (_, State::EprWaitForCapabilities(_), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(hard_reset_state!(HardResetReason::EprCapabilitiesTimeout))
-                }
+                (
+                    _,
+                    State::EprWaitForCapabilities(_)
+                    | State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::EprEntry)),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(hard_reset_state!(HardResetReason::EprCapabilitiesTimeout)),
 
                 // tEnterEPR expiry requires a Soft Reset.
-                (_, State::EprEntryWaitForResponse(_), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                    Some(State::SendSoftReset)
-                }
+                (
+                    _,
+                    State::EprEntryWaitForResponse(_) | State::Receive(ReceiveOperation::EprEntryResult(_)),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(State::SendSoftReset),
+
+                // These response timeouts previously retried their complete
+                // policy transaction because the logical state remained
+                // unchanged while both wire operations were awaited.
+                (
+                    _,
+                    State::Receive(ReceiveOperation::SoftResetAccept),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(State::SendSoftReset),
+                (
+                    _,
+                    State::Receive(ReceiveOperation::EprEntryAcknowledgement(power_source, pdp_watts)),
+                    ProtocolError::RxError(RxError::ReceiveTimeout),
+                ) => Some(State::EprModeEntry(*power_source, units::Power::from_watts(*pdp_watts))),
 
                 // Per USB PD Spec R3.2 Section 8.3.3.3.6 and Table 6.72:
                 // Any Protocol Error during power transition (PE_SNK_Transition_Sink state)
                 // shall trigger a Hard Reset, not a Soft Reset.
-                (_, State::TransitionSink(_), _) => Some(hard_reset_state!(HardResetReason::PowerTransitionFailure)),
+                (_, State::TransitionSink(_) | State::Receive(ReceiveOperation::PowerTransition(_, _)), _) => {
+                    Some(hard_reset_state!(HardResetReason::PowerTransitionFailure))
+                }
 
                 // Only genuine keep-alive protocol failures reach this arm:
                 // partner Hard/Soft Reset and detach are handled above or by
                 // Error::from before a Sink reset is selected.
-                (_, State::EprKeepAlive(_), _) => Some(hard_reset_state!(HardResetReason::EprKeepAliveFailed)),
+                (
+                    _,
+                    State::EprKeepAlive(_)
+                    | State::Transmit(TransmitOperation::EprKeepAlive(_))
+                    | State::Receive(ReceiveOperation::EprKeepAlive(_)),
+                    _,
+                ) => Some(hard_reset_state!(HardResetReason::EprKeepAliveFailed)),
 
                 // Unexpected messages indicate a protocol error and demand a soft reset.
                 // Per spec 6.8.1 Table 6.72 (for non-power-transitioning states).
@@ -456,20 +632,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    /// Wait for source capabilities message (either Source_Capabilities or EPR_Source_Capabilities).
-    ///
-    /// Per USB PD Spec R3.2 Section 8.3.3.3.3 (PE_SNK_Wait_for_Capabilities):
-    /// - In SPR Mode: Source_Capabilities Message is received
-    /// - In EPR Mode: EPR_Source_Capabilities Message is received
-    ///
-    /// EPR Mode persists through Soft Reset (unlike Hard Reset which exits EPR per spec 6.8.3.2).
-    /// Per spec section 6.4.1.2.2, after a Soft Reset while in EPR Mode, the source sends
-    /// EPR_Source_Capabilities. Therefore this function must handle both message types.
-    async fn wait_for_source_capabilities(
-        protocol_layer: &mut SinkProtocolLayer<DRIVER, TIMER>,
-        recovery_ms: Option<u32>,
+    fn source_capabilities_from_message(
+        message: crate::protocol_layer::message::Message,
     ) -> Result<SourceCapabilities, Error> {
-        let message = protocol_layer.wait_for_source_capabilities(recovery_ms).await?;
         trace!("Source capabilities: {:?}", message);
 
         let capabilities = match message.payload {
@@ -655,6 +820,332 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
+    fn after_transmit(&mut self, operation: TransmitOperation) -> State {
+        match operation {
+            #[cfg(feature = "initial-capabilities-fallback")]
+            TransmitOperation::ProbeSourceCapabilities => {
+                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Probe))
+            }
+            TransmitOperation::SelectCapability(power_source) => {
+                State::Receive(ReceiveOperation::RequestResponse(power_source))
+            }
+            TransmitOperation::SendNotSupported(power_source) => State::Ready(power_source),
+            TransmitOperation::SendSoftReset => State::Receive(ReceiveOperation::SoftResetAccept),
+            TransmitOperation::AcceptSoftReset => State::WaitForCapabilities,
+            TransmitOperation::GiveSinkCap(_, power_source) | TransmitOperation::GiveSinkCapExtended(power_source) => {
+                State::Ready(power_source)
+            }
+            TransmitOperation::GetSourceCap(mode, power_source) => {
+                State::Receive(ReceiveOperation::GetSourceCap(mode, power_source))
+            }
+            TransmitOperation::GetSourceInfo(power_source) => {
+                State::Receive(ReceiveOperation::GetSourceInfo(power_source))
+            }
+            TransmitOperation::GetStatus(query, power_source) => {
+                State::Receive(ReceiveOperation::GetStatus(query, power_source))
+            }
+            TransmitOperation::EnterEprMode(power_source, pdp_watts) => {
+                State::Receive(ReceiveOperation::EprEntryAcknowledgement(power_source, pdp_watts))
+            }
+            TransmitOperation::ExitEprMode => {
+                self.mode = Mode::Spr;
+                State::WaitForCapabilities
+            }
+            TransmitOperation::EprKeepAlive(power_source) => {
+                State::Receive(ReceiveOperation::EprKeepAlive(power_source))
+            }
+        }
+    }
+
+    fn finish_receive(
+        &mut self,
+        operation: ReceiveOperation,
+        result: Result<crate::protocol_layer::message::Message, ProtocolError>,
+    ) -> Result<State, Error> {
+        match operation {
+            ReceiveOperation::SourceCapabilities(wait) => {
+                #[cfg(feature = "initial-capabilities-fallback")]
+                if matches!(wait, CapabilityWait::Probe)
+                    && matches!(&result, Err(ProtocolError::RxError(RxError::ReceiveTimeout)))
+                {
+                    self.device_policy_manager.default_power_ready();
+                    return Ok(State::WaitForCapabilitiesPassive);
+                }
+
+                if matches!(wait, CapabilityWait::EprEntry) {
+                    let message = result?;
+                    return Ok(match message.payload {
+                        Some(Payload::Data(Data::SourceCapabilities(_))) => {
+                            hard_reset_state!(HardResetReason::EprProtocolError)
+                        }
+                        Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
+                            let capabilities = SourceCapabilities(pdos);
+                            if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) {
+                                State::EvaluateCapabilities(capabilities)
+                            } else {
+                                hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
+                            }
+                        }
+                        _ => hard_reset_state!(HardResetReason::EprProtocolError),
+                    });
+                }
+
+                let capabilities = Self::source_capabilities_from_message(result?)?;
+                match wait {
+                    CapabilityWait::Initial { recovery_ms } => {
+                        if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
+                            if recovery_ms.is_some() {
+                                self.device_policy_manager.hard_reset_recovered();
+                            }
+                            Ok(State::EvaluateCapabilities(capabilities))
+                        } else {
+                            Ok(hard_reset_state!(HardResetReason::InvalidSourceCapabilities))
+                        }
+                    }
+                    #[cfg(feature = "initial-capabilities-fallback")]
+                    CapabilityWait::Passive | CapabilityWait::Probe => {
+                        if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
+                            Ok(State::EvaluateCapabilities(capabilities))
+                        } else {
+                            Ok(hard_reset_state!(HardResetReason::InvalidSourceCapabilities))
+                        }
+                    }
+                    CapabilityWait::EprEntry => unreachable!(),
+                }
+            }
+            ReceiveOperation::RequestResponse(power_source) => {
+                let message_type = result?.header.message_type();
+                let MessageType::Control(control_message_type) = message_type else { unreachable!() };
+
+                match control_message_type {
+                    ControlMessageType::Reject => {
+                        self.device_policy_manager.request_not_accepted(RequestRejection::Reject);
+                    }
+                    ControlMessageType::Wait => {
+                        self.device_policy_manager.request_not_accepted(RequestRejection::Wait);
+                        self.wait_retry_pending = true;
+                    }
+                    ControlMessageType::Accept => {}
+                    _ => unreachable!(),
+                }
+
+                Ok(match (self.contract, control_message_type) {
+                    (_, ControlMessageType::Accept) => State::TransitionSink(power_source),
+                    (Contract::Safe5V, ControlMessageType::Wait | ControlMessageType::Reject) => {
+                        State::WaitForCapabilities
+                    }
+                    (Contract::Explicit, ControlMessageType::Reject)
+                        if self.mode == Mode::Epr
+                            && !matches!(self.active_power_source, Some(PowerSource::EprRequest(_))) =>
+                    {
+                        hard_reset_state!(HardResetReason::EprProtocolError)
+                    }
+                    (Contract::Explicit, ControlMessageType::Reject | ControlMessageType::Wait) => {
+                        State::Ready(self.active_power_source.expect("explicit contract has an active request"))
+                    }
+                    _ => unreachable!(),
+                })
+            }
+            ReceiveOperation::PowerTransition(accepted_power_source, _) => {
+                result?;
+                self.contract = Contract::TransitionToExplicit;
+                self.device_policy_manager.transition_power(&accepted_power_source);
+                self.active_power_source = Some(accepted_power_source);
+                if Self::is_pps(accepted_power_source) {
+                    self.pps_refresh_deadline_tick = Some(Self::deadline_after(39));
+                } else {
+                    self.pps_refresh_deadline_tick = None;
+                }
+                self.epr_keep_alive_deadline_tick = None;
+                self.ensure_periodic_deadlines(accepted_power_source);
+                Ok(State::Ready(accepted_power_source))
+            }
+            ReceiveOperation::SoftResetAccept => {
+                result?;
+                Ok(State::WaitForCapabilities)
+            }
+            ReceiveOperation::GetSourceCap(requested_mode, power_source) => {
+                self.get_source_cap_pending = false;
+                let message = match result {
+                    Ok(message) => message,
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        warn!("Get_Source_Cap timeout, returning to Ready");
+                        return Ok(State::Ready(power_source));
+                    }
+                    Err(error) => return Err(error.into()),
+                };
+
+                let received_spr =
+                    matches!(message.header.message_type(), MessageType::Data(DataMessageType::SourceCapabilities));
+                let received_epr = matches!(
+                    message.header.message_type(),
+                    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities)
+                );
+                let mode_matches = (requested_mode == Mode::Spr && self.mode == Mode::Spr && received_spr)
+                    || (requested_mode == Mode::Epr && self.mode == Mode::Epr && received_epr);
+                let capabilities = match message.payload {
+                    Some(Payload::Data(Data::SourceCapabilities(capabilities))) => Some(capabilities),
+                    Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
+                        Some(SourceCapabilities(pdos))
+                    }
+                    _ => None,
+                };
+
+                Ok(match capabilities {
+                    Some(capabilities)
+                        if mode_matches && Self::capabilities_valid_for_mode(&capabilities, self.mode) =>
+                    {
+                        State::EvaluateCapabilities(capabilities)
+                    }
+                    Some(_) if mode_matches => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
+                    Some(_) => State::Ready(power_source),
+                    None => State::SendSoftReset,
+                })
+            }
+            ReceiveOperation::GetSourceInfo(power_source) => {
+                match result {
+                    Ok(message) => {
+                        if let Some(Payload::Data(Data::SourceInfo(source_info))) = message.payload {
+                            self.device_policy_manager.inform_source_info(&source_info);
+                        }
+                    }
+                    Err(
+                        error @ ProtocolError::RxError(RxError::Detached | RxError::HardReset | RxError::SoftReset),
+                    )
+                    | Err(error @ ProtocolError::TxError(TxError::Detached | TxError::HardReset)) => {
+                        return Err(error.into());
+                    }
+                    Err(_) => {}
+                }
+                Ok(State::Ready(power_source))
+            }
+            ReceiveOperation::GetStatus(query, power_source) => {
+                match result {
+                    Ok(message) => match (query, message.payload) {
+                        (StatusQueryKind::General, Some(Payload::Extended(extended::Extended::Status(status)))) => {
+                            self.device_policy_manager.inform_status(&status);
+                        }
+                        (StatusQueryKind::Pps, Some(Payload::Extended(extended::Extended::PpsStatus(status)))) => {
+                            self.device_policy_manager.inform_pps_status(&status);
+                        }
+                        (_, None) => {
+                            let failure = match message.header.message_type() {
+                                MessageType::Control(ControlMessageType::NotSupported) => {
+                                    Some(StatusQueryFailure::NotSupported)
+                                }
+                                MessageType::Control(ControlMessageType::Reject) => Some(StatusQueryFailure::Rejected),
+                                MessageType::Control(ControlMessageType::Wait) => Some(StatusQueryFailure::Deferred),
+                                _ => None,
+                            };
+                            if let Some(failure) = failure {
+                                self.device_policy_manager.status_query_failed(query, failure);
+                            }
+                        }
+                        _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
+                    },
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        self.device_policy_manager.status_query_failed(query, StatusQueryFailure::Timeout);
+                    }
+                    Err(error) => return Err(error.into()),
+                }
+                Ok(State::Ready(power_source))
+            }
+            ReceiveOperation::EprEntryAcknowledgement(power_source, _) => {
+                let message = result?;
+                Ok(match message.payload {
+                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
+                        Action::EnterAcknowledged => State::EprEntryWaitForResponse(power_source),
+                        Action::EnterSucceeded => State::SendSoftReset,
+                        Action::Exit => State::EprExitReceived(power_source),
+                        Action::EnterFailed => {
+                            let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
+                            self.device_policy_manager.epr_mode_entry_failed(reason);
+                            State::SendSoftReset
+                        }
+                        _ => State::SendSoftReset,
+                    },
+                    _ => State::SendSoftReset,
+                })
+            }
+            ReceiveOperation::EprEntryResult(power_source) => {
+                let message = result?;
+                Ok(match message.payload {
+                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
+                        Action::EnterSucceeded => {
+                            self.mode = Mode::Epr;
+                            State::EprWaitForCapabilities(power_source)
+                        }
+                        Action::Exit => State::EprExitReceived(power_source),
+                        Action::EnterFailed => {
+                            let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
+                            self.device_policy_manager.epr_mode_entry_failed(reason);
+                            State::SendSoftReset
+                        }
+                        _ => State::SendSoftReset,
+                    },
+                    _ => State::SendSoftReset,
+                })
+            }
+            ReceiveOperation::EprKeepAlive(power_source) => {
+                let message = match result {
+                    Ok(message) => message,
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::Timeout as u8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
+                        return Err(ProtocolError::RxError(RxError::ReceiveTimeout).into());
+                    }
+                    Err(error) => {
+                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U8,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                            crate::numeric_trace::UNAVAILABLE_U16,
+                        ));
+                        return Err(error.into());
+                    }
+                };
+
+                let acknowledged = matches!(
+                    message.payload,
+                    Some(Payload::Extended(extended::Extended::ExtendedControl(control)))
+                        if control.message_type() == ExtendedControlMessageType::EprKeepAliveAck
+                );
+                if acknowledged {
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                        crate::numeric_trace::NumericTraceEprKeepAlivePhase::Acknowledged as u8,
+                        message.header.message_id(),
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        message.header.0,
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                    ));
+                    self.mode = Mode::Epr;
+                    self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
+                    Ok(State::Ready(power_source))
+                } else {
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                        crate::numeric_trace::NumericTraceEprKeepAlivePhase::UnexpectedResponse as u8,
+                        message.header.message_id(),
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        message.header.0,
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                    ));
+                    Ok(State::SendNotSupported(power_source))
+                }
+            }
+        }
+    }
+
+    #[inline(never)]
     async fn update_state(&mut self) -> Result<(), Error> {
         let new_state = match &self.state {
             State::Startup => {
@@ -677,41 +1168,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             State::WaitForCapabilities => {
                 let recovery_ms = self.hard_reset_recovery_ms.take();
-                let capabilities = Self::wait_for_source_capabilities(&mut self.protocol_layer, recovery_ms).await?;
-                let valid_for_mode = Self::capabilities_valid_for_mode(&capabilities, self.mode);
-                if valid_for_mode {
-                    if recovery_ms.is_some() {
-                        self.device_policy_manager.hard_reset_recovered();
-                    }
-                    State::EvaluateCapabilities(capabilities)
-                } else {
-                    hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
-                }
+                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Initial { recovery_ms }))
             }
             #[cfg(feature = "initial-capabilities-fallback")]
             State::WaitForCapabilitiesPassive => {
-                let capabilities = Self::wait_for_source_capabilities(&mut self.protocol_layer, None).await?;
-                if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
-                    State::EvaluateCapabilities(capabilities)
-                } else {
-                    hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
-                }
+                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Passive))
             }
             #[cfg(feature = "initial-capabilities-fallback")]
-            State::ProbeSourceCapabilities => {
-                self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await?;
-                match Self::wait_for_source_capabilities(&mut self.protocol_layer, Some(30)).await {
-                    Ok(capabilities) if Self::capabilities_valid_for_mode(&capabilities, Mode::Spr) => {
-                        State::EvaluateCapabilities(capabilities)
-                    }
-                    Ok(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
-                    Err(Error::Protocol(ProtocolError::RxError(RxError::ReceiveTimeout))) => {
-                        self.device_policy_manager.default_power_ready();
-                        State::WaitForCapabilitiesPassive
-                    }
-                    Err(error) => return Err(error),
-                }
-            }
+            State::ProbeSourceCapabilities => State::Transmit(TransmitOperation::ProbeSourceCapabilities),
             State::EvaluateCapabilities(capabilities) => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
@@ -733,84 +1197,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Any power request now being attempted supersedes an older
                 // scheduled retry. A new Wait response below arms it again.
                 self.wait_retry_pending = false;
-                self.protocol_layer.request_power(*power_source).await?;
-
-                let message_type = self
-                    .protocol_layer
-                    .receive_message_type(
-                        &[
-                            MessageType::Control(ControlMessageType::Accept),
-                            MessageType::Control(ControlMessageType::Wait),
-                            MessageType::Control(ControlMessageType::Reject),
-                        ],
-                        TimerType::SenderResponse,
-                    )
-                    .await?
-                    .header
-                    .message_type();
-
-                let MessageType::Control(control_message_type) = message_type else { unreachable!() };
-
-                match control_message_type {
-                    ControlMessageType::Reject => {
-                        self.device_policy_manager.request_not_accepted(RequestRejection::Reject);
-                    }
-                    ControlMessageType::Wait => {
-                        self.device_policy_manager.request_not_accepted(RequestRejection::Wait);
-                        self.wait_retry_pending = true;
-                    }
-                    ControlMessageType::Accept => {}
-                    _ => unreachable!(),
-                }
-
-                match (self.contract, control_message_type) {
-                    (_, ControlMessageType::Accept) => State::TransitionSink(*power_source),
-                    (Contract::Safe5V, ControlMessageType::Wait | ControlMessageType::Reject) => {
-                        State::WaitForCapabilities
-                    }
-                    (Contract::Explicit, ControlMessageType::Reject)
-                        if self.mode == Mode::Epr
-                            && !matches!(self.active_power_source, Some(PowerSource::EprRequest(_))) =>
-                    {
-                        hard_reset_state!(HardResetReason::EprProtocolError)
-                    }
-                    (Contract::Explicit, ControlMessageType::Reject) => {
-                        State::Ready(self.active_power_source.expect("explicit contract has an active request"))
-                    }
-                    (Contract::Explicit, ControlMessageType::Wait) => {
-                        // Per spec 8.3.3.3.7: On entry to Ready as result of Wait,
-                        // initialize and run SinkRequestTimer.
-                        State::Ready(self.active_power_source.expect("explicit contract has an active request"))
-                    }
-                    _ => unreachable!(),
-                }
+                State::Transmit(TransmitOperation::SelectCapability(*power_source))
             }
             State::TransitionSink(power_source) => {
-                let accepted_power_source = *power_source;
-                self.protocol_layer
-                    .receive_message_type(
-                        &[MessageType::Control(ControlMessageType::PsRdy)],
-                        match self.mode {
-                            Mode::Epr => TimerType::PSTransitionEpr,
-                            Mode::Spr => TimerType::PSTransitionSpr,
-                        },
-                    )
-                    .await?;
-
-                self.contract = Contract::TransitionToExplicit;
-                self.device_policy_manager.transition_power(&accepted_power_source);
-                self.active_power_source = Some(accepted_power_source);
-                if Self::is_pps(accepted_power_source) {
-                    self.pps_refresh_deadline_tick = Some(Self::deadline_after(39));
-                } else {
-                    self.pps_refresh_deadline_tick = None;
-                }
-                // A successful Request/PS_RDY exchange is current EPR traffic.
-                // Rearm from PS_RDY so a keep-alive deadline that expired during
-                // a long high-to-low VBUS transition cannot fire immediately.
-                self.epr_keep_alive_deadline_tick = None;
-                self.ensure_periodic_deadlines(accepted_power_source);
-                State::Ready(accepted_power_source)
+                State::Receive(ReceiveOperation::PowerTransition(*power_source, self.mode))
             }
             State::Ready(power_source) => {
                 let active_power_source = *power_source;
@@ -895,36 +1285,19 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 }
             }
             State::SendNotSupported(power_source) => {
-                self.protocol_layer.transmit_control_message(ControlMessageType::NotSupported).await?;
-
-                State::Ready(*power_source)
+                State::Transmit(TransmitOperation::SendNotSupported(*power_source))
             }
             State::SendSoftReset => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 self.protocol_layer.reset();
-
-                self.protocol_layer.transmit_control_message(ControlMessageType::SoftReset).await?;
-
-                self.protocol_layer
-                    .receive_message_type(
-                        &[MessageType::Control(ControlMessageType::Accept)],
-                        TimerType::SenderResponse,
-                    )
-                    .await?;
-
-                State::WaitForCapabilities
+                State::Transmit(TransmitOperation::SendSoftReset)
             }
             State::SoftReset => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 self.protocol_layer.reset();
-
-                // The Accept response to Soft_Reset is the first message in
-                // the new protocol session and therefore uses MessageID zero.
-                self.protocol_layer.transmit_control_message(ControlMessageType::Accept).await?;
-
-                State::WaitForCapabilities
+                State::Transmit(TransmitOperation::AcceptSoftReset)
             }
             hard_reset_pattern!(reason) => {
                 self.pending_sink_ams = None;
@@ -1059,22 +1432,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Per USB PD Spec R3.2 Section 8.3.3.3.10:
                 // - Send Sink_Capabilities when Get_Sink_Cap was received
                 // - Send EPR_Sink_Capabilities when EPR_Get_Sink_Cap was received
-                let sink_caps = self.device_policy_manager.sink_capabilities();
-                match response_mode {
-                    Mode::Spr => {
-                        self.protocol_layer.transmit_sink_capabilities(sink_caps).await?;
-                    }
-                    Mode::Epr => {
-                        self.protocol_layer.transmit_epr_sink_capabilities(sink_caps).await?;
-                    }
-                }
-
-                State::Ready(*power_source)
+                State::Transmit(TransmitOperation::GiveSinkCap(*response_mode, *power_source))
             }
             State::GiveSinkCapExtended(power_source) => {
-                let capabilities = self.device_policy_manager.sink_capabilities_extended();
-                self.protocol_layer.transmit_sink_capabilities_extended(capabilities).await?;
-                State::Ready(*power_source)
+                State::Transmit(TransmitOperation::GiveSinkCapExtended(*power_source))
             }
             State::GetSourceCap(requested_mode, power_source) => {
                 // Per USB PD Spec R3.2 Section 8.3.3.3.12 (PE_SNK_Get_Source_Cap):
@@ -1087,177 +1448,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Per spec 8.3.3.3.8, in EPR mode, receiving an unrequested
                 // Source_Capabilities message triggers a Hard Reset.
                 self.get_source_cap_pending = true;
-
-                match requested_mode {
-                    Mode::Spr => {
-                        self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await?;
-                    }
-                    Mode::Epr => {
-                        self.protocol_layer
-                            .transmit_extended_control_message(
-                                crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprGetSourceCap,
-                            )
-                            .await?;
-                    }
-                };
-
-                // Per spec 8.3.3.3.12: Use SenderResponseTimer (not SinkWaitCap)
-                let result = self
-                    .protocol_layer
-                    .receive_message_type(
-                        &[
-                            MessageType::Data(DataMessageType::SourceCapabilities),
-                            MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
-                        ],
-                        TimerType::SenderResponse,
-                    )
-                    .await;
-
-                self.get_source_cap_pending = false;
-
-                // Per spec 8.3.3.3.12: On timeout, inform DPM and transition to Ready
-                let message = match result {
-                    Ok(msg) => msg,
-                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                        // Inform DPM of timeout (no capabilities received)
-                        warn!("Get_Source_Cap timeout, returning to Ready");
-                        self.state = State::Ready(*power_source);
-                        return Ok(());
-                    }
-                    Err(e) => return Err(e.into()),
-                };
-
-                // Per spec 8.3.3.3.12:
-                // - In SPR mode + SPR caps requested + Source_Capabilities received → EvaluateCapabilities
-                // - In EPR mode + EPR caps requested + EPR_Source_Capabilities received → EvaluateCapabilities
-                // - Mode mismatch (e.g., EPR mode but SPR caps requested) → Ready
-                let received_spr =
-                    matches!(message.header.message_type(), MessageType::Data(DataMessageType::SourceCapabilities));
-                let received_epr = matches!(
-                    message.header.message_type(),
-                    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities)
-                );
-
-                let mode_matches = (*requested_mode == Mode::Spr && self.mode == Mode::Spr && received_spr)
-                    || (*requested_mode == Mode::Epr && self.mode == Mode::Epr && received_epr);
-
-                // A partner can use a capability message type with a payload
-                // shape that does not match it (for example, a reserved PDO
-                // encoding). Treat that as malformed wire traffic instead of
-                // assuming the parser produced typed capabilities.
-                let capabilities = match message.payload {
-                    Some(Payload::Data(Data::SourceCapabilities(capabilities))) => Some(capabilities),
-                    Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
-                        Some(SourceCapabilities(pdos))
-                    }
-                    _ => None,
-                };
-
-                match capabilities {
-                    Some(capabilities)
-                        if mode_matches && Self::capabilities_valid_for_mode(&capabilities, self.mode) =>
-                    {
-                        State::EvaluateCapabilities(capabilities)
-                    }
-                    Some(_) if mode_matches => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
-                    Some(_) => State::Ready(*power_source),
-                    None => State::SendSoftReset,
-                }
+                State::Transmit(TransmitOperation::GetSourceCap(*requested_mode, *power_source))
             }
-            State::GetSourceInfo(power_source) => {
-                self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceInfo).await?;
-
-                let response = self
-                    .protocol_layer
-                    .receive_message_type(
-                        &[
-                            MessageType::Data(DataMessageType::SourceInfo),
-                            MessageType::Control(ControlMessageType::NotSupported),
-                            // Some otherwise usable sources answer optional
-                            // queries with the older generic refusal or ask
-                            // the Sink to try later. Neither response may
-                            // disturb the existing explicit contract.
-                            MessageType::Control(ControlMessageType::Reject),
-                            MessageType::Control(ControlMessageType::Wait),
-                        ],
-                        TimerType::SenderResponse,
-                    )
-                    .await;
-
-                match response {
-                    Ok(message) => {
-                        if let Some(Payload::Data(Data::SourceInfo(source_info))) = message.payload {
-                            self.device_policy_manager.inform_source_info(&source_info);
-                        }
-                    }
-                    Err(
-                        error @ ProtocolError::RxError(RxError::Detached | RxError::HardReset | RxError::SoftReset),
-                    )
-                    | Err(error @ ProtocolError::TxError(TxError::Detached | TxError::HardReset)) => {
-                        return Err(error.into());
-                    }
-                    // Source_Info refines product reporting but is not needed
-                    // to preserve an existing explicit contract.
-                    Err(_) => {}
-                }
-
-                State::Ready(*power_source)
-            }
+            State::GetSourceInfo(power_source) => State::Transmit(TransmitOperation::GetSourceInfo(*power_source)),
             State::SourceAlert(alert, power_source) => {
                 self.device_policy_manager.inform_alert(alert);
                 State::Ready(*power_source)
             }
             State::GetStatus(query, power_source) => {
-                let (request, response_type) = match query {
-                    StatusQueryKind::General => (ControlMessageType::GetStatus, ExtendedMessageType::Status),
-                    StatusQueryKind::Pps => (ControlMessageType::GetPpsStatus, ExtendedMessageType::PpsStatus),
-                };
-
-                self.protocol_layer.transmit_control_message(request).await?;
-
-                let response = self
-                    .protocol_layer
-                    .receive_message_type(
-                        &[
-                            MessageType::Extended(response_type),
-                            MessageType::Control(ControlMessageType::NotSupported),
-                            MessageType::Control(ControlMessageType::Reject),
-                            MessageType::Control(ControlMessageType::Wait),
-                        ],
-                        TimerType::SenderResponse,
-                    )
-                    .await;
-
-                match response {
-                    Ok(message) => match (query, message.payload) {
-                        (StatusQueryKind::General, Some(Payload::Extended(extended::Extended::Status(status)))) => {
-                            self.device_policy_manager.inform_status(&status);
-                        }
-                        (StatusQueryKind::Pps, Some(Payload::Extended(extended::Extended::PpsStatus(status)))) => {
-                            self.device_policy_manager.inform_pps_status(&status);
-                        }
-                        (_, None) => {
-                            let failure = match message.header.message_type() {
-                                MessageType::Control(ControlMessageType::NotSupported) => {
-                                    Some(StatusQueryFailure::NotSupported)
-                                }
-                                MessageType::Control(ControlMessageType::Reject) => Some(StatusQueryFailure::Rejected),
-                                MessageType::Control(ControlMessageType::Wait) => Some(StatusQueryFailure::Deferred),
-                                _ => None,
-                            };
-                            if let Some(failure) = failure {
-                                self.device_policy_manager.status_query_failed(*query, failure);
-                            }
-                        }
-                        _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
-                    },
-                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                        self.device_policy_manager.status_query_failed(*query, StatusQueryFailure::Timeout);
-                    }
-                    Err(error) => return Err(error.into()),
-                }
-
-                State::Ready(*power_source)
+                State::Transmit(TransmitOperation::GetStatus(*query, *power_source))
             }
             State::EprModeEntry(power_source, operational_pdp) => {
                 // Request entry into EPR mode.
@@ -1278,98 +1477,23 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 if !(1..=240).contains(&pdp_watts) {
                     return Err(Error::InvalidEprOperationalPdp);
                 }
-                self.protocol_layer.transmit_epr_mode(Action::Enter, pdp_watts).await?;
-
-                // Wait for EnterAcknowledged with SenderResponseTimer (spec step 9-14)
-                let message = self
-                    .protocol_layer
-                    .receive_message_type(&[MessageType::Data(DataMessageType::EprMode)], TimerType::SenderResponse)
-                    .await?;
-
-                match message.payload {
-                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
-                        Action::EnterAcknowledged => {
-                            // Source acknowledged, now wait for EnterSucceeded
-                            State::EprEntryWaitForResponse(*power_source)
-                        }
-                        Action::EnterSucceeded => {
-                            // EnterAcknowledged is mandatory as the first response.
-                            State::SendSoftReset
-                        }
-                        Action::Exit => State::EprExitReceived(*power_source),
-                        Action::EnterFailed => {
-                            // Per spec 8.3.3.26.2.1: EnterFailed → Soft Reset
-                            // Notify DPM of the failure reason before soft reset
-                            let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
-                            self.device_policy_manager.epr_mode_entry_failed(reason);
-                            State::SendSoftReset
-                        }
-                        // Per spec 8.3.3.26.2.1: any other EPR_Mode message → Soft Reset
-                        _ => State::SendSoftReset,
-                    },
-                    _ => State::SendSoftReset,
-                }
+                State::Transmit(TransmitOperation::EnterEprMode(*power_source, pdp_watts))
             }
             State::EprEntryWaitForResponse(power_source) => {
                 // Wait for EnterSucceeded after receiving EnterAcknowledged.
                 // Per spec 8.3.3.26.2.2 (PE_SNK_EPR_Mode_Wait_For_Response), use SinkEPREnterTimer
                 // for the overall timeout while source performs cable discovery.
-                let message = self
-                    .protocol_layer
-                    .receive_message_type(&[MessageType::Data(DataMessageType::EprMode)], TimerType::SinkEPREnter)
-                    .await?;
-
-                match message.payload {
-                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
-                        Action::EnterSucceeded => {
-                            // EPR mode entry succeeded. Per spec Table 8.39 step 21-29,
-                            // source will automatically send EPR_Source_Capabilities after this.
-                            self.mode = Mode::Epr;
-                            State::EprWaitForCapabilities(*power_source)
-                        }
-                        Action::Exit => State::EprExitReceived(*power_source),
-                        Action::EnterFailed => {
-                            // Per spec 8.3.3.26.2.2: EnterFailed → Soft Reset
-                            // Notify DPM of the failure reason before soft reset
-                            let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
-                            self.device_policy_manager.epr_mode_entry_failed(reason);
-                            State::SendSoftReset
-                        }
-                        // Per spec 8.3.3.26.2.2: any other EPR_Mode message → Soft Reset
-                        _ => State::SendSoftReset,
-                    },
-                    _ => State::SendSoftReset,
-                }
+                State::Receive(ReceiveOperation::EprEntryResult(*power_source))
             }
             State::EprWaitForCapabilities(_power_source) => {
                 // After successful EPR mode entry, source automatically sends EPR_Source_Capabilities.
                 // This may be a chunked extended message that requires assembly.
                 // Wait for the capabilities and evaluate them.
-                let message = self.protocol_layer.wait_for_source_capabilities(None).await?;
-
-                match message.payload {
-                    Some(Payload::Data(Data::SourceCapabilities(_))) => {
-                        hard_reset_state!(HardResetReason::EprProtocolError)
-                    }
-                    Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
-                        let capabilities = SourceCapabilities(pdos);
-                        if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) {
-                            State::EvaluateCapabilities(capabilities)
-                        } else {
-                            hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
-                        }
-                    }
-                    _ => {
-                        error!("Expected source capabilities after EPR mode entry");
-                        hard_reset_state!(HardResetReason::EprProtocolError)
-                    }
-                }
+                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::EprEntry))
             }
             State::EprSendExit => {
                 // Inform partner we are exiting EPR.
-                self.protocol_layer.transmit_epr_mode(Action::Exit, 0).await?;
-                self.mode = Mode::Spr;
-                State::WaitForCapabilities
+                State::Transmit(TransmitOperation::ExitEprMode)
             }
             State::EprExitReceived(power_source) => {
                 // Per USB PD Spec R3.2 Section 8.3.3.26.4.2 (PE_SNK_EPR_Mode_Exit_Received):
@@ -1412,113 +1536,87 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     crate::numeric_trace::UNAVAILABLE_U16,
                     crate::numeric_trace::UNAVAILABLE_U16,
                 ));
-                #[cfg(not(feature = "numeric-trace"))]
-                self.protocol_layer
-                    .transmit_extended_control_message(
-                        crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAlive,
-                    )
-                    .await?;
-                #[cfg(feature = "numeric-trace")]
-                {
-                    let transmit_result = self
-                        .protocol_layer
-                        .transmit_extended_control_message(
-                            crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAlive,
-                        )
-                        .await;
-                    if transmit_result.is_err() {
-                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
-                            crate::numeric_trace::UNAVAILABLE_U8,
-                            crate::numeric_trace::UNAVAILABLE_U8,
-                            crate::numeric_trace::UNAVAILABLE_U16,
-                            crate::numeric_trace::UNAVAILABLE_U16,
-                        ));
+                State::Transmit(TransmitOperation::EprKeepAlive(*power_source))
+            }
+            State::Transmit(operation) => {
+                let operation = *operation;
+                let result = match operation {
+                    #[cfg(feature = "initial-capabilities-fallback")]
+                    TransmitOperation::ProbeSourceCapabilities => {
+                        self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await
                     }
-                    transmit_result?;
-                }
-                #[cfg(not(feature = "numeric-trace"))]
-                let message = self
-                    .protocol_layer
-                    .receive_message_type(
-                        &[MessageType::Extended(ExtendedMessageType::ExtendedControl)],
-                        TimerType::SenderResponse,
-                    )
-                    .await?;
-                #[cfg(feature = "numeric-trace")]
-                let message = {
-                    let response = self
-                        .protocol_layer
-                        .receive_message_type(
-                            &[MessageType::Extended(ExtendedMessageType::ExtendedControl)],
-                            TimerType::SenderResponse,
-                        )
-                        .await;
-                    match response {
-                        Ok(message) => message,
-                        Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
-                            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                                crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                                crate::numeric_trace::NumericTraceEprKeepAlivePhase::Timeout as u8,
-                                crate::numeric_trace::UNAVAILABLE_U8,
-                                crate::numeric_trace::UNAVAILABLE_U8,
-                                crate::numeric_trace::UNAVAILABLE_U16,
-                                crate::numeric_trace::UNAVAILABLE_U16,
-                            ));
-                            return Err(ProtocolError::RxError(RxError::ReceiveTimeout).into());
-                        }
-                        Err(error) => {
-                            numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                                crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                                crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
-                                crate::numeric_trace::UNAVAILABLE_U8,
-                                crate::numeric_trace::UNAVAILABLE_U8,
-                                crate::numeric_trace::UNAVAILABLE_U16,
-                                crate::numeric_trace::UNAVAILABLE_U16,
-                            ));
-                            return Err(error.into());
+                    TransmitOperation::SendNotSupported(_)
+                    | TransmitOperation::SendSoftReset
+                    | TransmitOperation::AcceptSoftReset
+                    | TransmitOperation::GetSourceCap(Mode::Spr, _)
+                    | TransmitOperation::GetSourceInfo(_)
+                    | TransmitOperation::GetStatus(_, _) => {
+                        let message_type = match operation {
+                            TransmitOperation::GetSourceCap(Mode::Spr, _) => ControlMessageType::GetSourceCap,
+                            TransmitOperation::SendNotSupported(_) => ControlMessageType::NotSupported,
+                            TransmitOperation::SendSoftReset => ControlMessageType::SoftReset,
+                            TransmitOperation::AcceptSoftReset => ControlMessageType::Accept,
+                            TransmitOperation::GetSourceInfo(_) => ControlMessageType::GetSourceInfo,
+                            TransmitOperation::GetStatus(StatusQueryKind::General, _) => ControlMessageType::GetStatus,
+                            TransmitOperation::GetStatus(StatusQueryKind::Pps, _) => ControlMessageType::GetPpsStatus,
+                            _ => unreachable!(),
+                        };
+                        self.protocol_layer.transmit_control_message(message_type).await
+                    }
+                    TransmitOperation::GetSourceCap(Mode::Epr, _) | TransmitOperation::EprKeepAlive(_) => {
+                        let message_type = match operation {
+                            TransmitOperation::GetSourceCap(Mode::Epr, _) => {
+                                ExtendedControlMessageType::EprGetSourceCap
+                            }
+                            TransmitOperation::EprKeepAlive(_) => ExtendedControlMessageType::EprKeepAlive,
+                            _ => unreachable!(),
+                        };
+                        self.protocol_layer.transmit_extended_control_message(message_type).await
+                    }
+                    TransmitOperation::SelectCapability(power_source) => {
+                        self.protocol_layer.request_power(power_source).await
+                    }
+                    TransmitOperation::GiveSinkCap(mode, _) => {
+                        let sink_caps = self.device_policy_manager.sink_capabilities();
+                        match mode {
+                            Mode::Spr => self.protocol_layer.transmit_sink_capabilities(sink_caps).await,
+                            Mode::Epr => self.protocol_layer.transmit_epr_sink_capabilities(sink_caps).await,
                         }
                     }
+                    TransmitOperation::GiveSinkCapExtended(_) => {
+                        let capabilities = self.device_policy_manager.sink_capabilities_extended();
+                        self.protocol_layer.transmit_sink_capabilities_extended(capabilities).await
+                    }
+                    TransmitOperation::EnterEprMode(_, pdp_watts) => {
+                        self.protocol_layer.transmit_epr_mode(Action::Enter, pdp_watts).await
+                    }
+                    TransmitOperation::ExitEprMode => self.protocol_layer.transmit_epr_mode(Action::Exit, 0).await,
                 };
 
-                if let Some(Payload::Extended(extended::Extended::ExtendedControl(control))) = message.payload {
-                    if control.message_type()
-                        == crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType::EprKeepAliveAck
-                    {
-                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::Acknowledged as u8,
-                            message.header.message_id(),
-                            crate::numeric_trace::UNAVAILABLE_U8,
-                            message.header.0,
-                            crate::numeric_trace::UNAVAILABLE_U16,
-                        ));
-                        self.mode = Mode::Epr;
-                        self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
-                        State::Ready(*power_source)
-                    } else {
-                        numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                            crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                            crate::numeric_trace::NumericTraceEprKeepAlivePhase::UnexpectedResponse as u8,
-                            message.header.message_id(),
-                            crate::numeric_trace::UNAVAILABLE_U8,
-                            message.header.0,
-                            crate::numeric_trace::UNAVAILABLE_U16,
-                        ));
-                        State::SendNotSupported(*power_source)
-                    }
-                } else {
+                if matches!(operation, TransmitOperation::EprKeepAlive(_)) && result.is_err() {
                     numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                         crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                        crate::numeric_trace::NumericTraceEprKeepAlivePhase::UnexpectedResponse as u8,
-                        message.header.message_id(),
+                        crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,
                         crate::numeric_trace::UNAVAILABLE_U8,
-                        message.header.0,
+                        crate::numeric_trace::UNAVAILABLE_U8,
+                        crate::numeric_trace::UNAVAILABLE_U16,
                         crate::numeric_trace::UNAVAILABLE_U16,
                     ));
-                    State::SendNotSupported(*power_source)
                 }
+                result?;
+                self.after_transmit(operation)
+            }
+            State::Receive(operation) => {
+                let operation = *operation;
+                let result = match operation.wire() {
+                    ReceiveWire::SourceCapabilities(recovery_ms) => {
+                        self.protocol_layer.wait_for_source_capabilities(recovery_ms).await
+                    }
+                    ReceiveWire::Typed(message_types, timer) => {
+                        self.protocol_layer.receive_message_type(message_types, timer).await
+                    }
+                };
+                self.finish_receive(operation, result)?
             }
         };
 

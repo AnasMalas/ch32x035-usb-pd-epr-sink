@@ -22,7 +22,7 @@ use crate::sink::device_policy_manager::{
 };
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{HardResetOrigin, HardResetReason};
-use crate::sink::policy_engine::State;
+use crate::sink::policy_engine::{State, TransmitOperation};
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
 use usbpd_traits::{Driver, DriverRxError, DriverTxError};
@@ -304,7 +304,7 @@ async fn run_returns_local_tx_validation_once_without_state_reentry() {
         Err(super::Error::InvalidTransmitMessage(TxValidationError::UnchunkedExtendedMessagesNotSupported))
     ));
     assert_eq!(protocol_lost_count.load(Ordering::SeqCst), 1);
-    assert!(matches!(policy_engine.state, State::SelectCapability(_)));
+    assert!(matches!(policy_engine.state, State::Transmit(TransmitOperation::SelectCapability(_))));
     assert!(!policy_engine.protocol_layer.driver().has_transmitted_data());
 }
 
