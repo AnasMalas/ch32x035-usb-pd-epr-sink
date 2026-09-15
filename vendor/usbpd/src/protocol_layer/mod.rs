@@ -29,6 +29,7 @@ use message::header::{
 };
 use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 
+#[cfg(any(feature = "source", test))]
 use crate::PowerRole;
 use crate::counters::{Counter, CounterType, Error as CounterError};
 use crate::protocol_layer::message::data::epr_mode::EprModeDataObject;
@@ -75,6 +76,20 @@ pub(crate) enum SinkPayload {
     PpsStatus(message::extended::pps_status::PpsStatus),
     ExtendedControl(ExtendedControl),
     Unknown,
+}
+
+/// Complete outgoing message kinds used by the Sink policy engine.
+///
+/// Selecting the wire representation before creating the transmit future keeps
+/// every policy state on one async transmit path.
+pub(crate) enum SinkTransmit {
+    Control(ControlMessageType),
+    ExtendedControl(ExtendedControlMessageType),
+    Request(request::PowerSource),
+    SinkCapabilities(message::data::sink_capabilities::SinkCapabilities),
+    EprSinkCapabilities(message::data::sink_capabilities::SinkCapabilities),
+    SinkCapabilitiesExtended(SinkCapabilitiesExtended),
+    EprMode(message::data::epr_mode::Action, u8),
 }
 
 /// Errors that can occur in the protocol layer.
@@ -1328,6 +1343,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Transmit a control message of the provided type.
+    #[cfg(any(feature = "source", test))]
     pub fn transmit_control_message(
         &mut self,
         message_type: ControlMessageType,
@@ -1338,6 +1354,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Transmit an extended control message of the provided type.
+    #[cfg(any(feature = "source", test))]
     pub fn transmit_extended_control_message(
         &mut self,
         message_type: ExtendedControlMessageType,
@@ -1359,6 +1376,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Transmit an EPR mode data message.
+    #[cfg(any(feature = "source", test))]
     pub fn transmit_epr_mode(
         &mut self,
         action: message::data::epr_mode::Action,
@@ -1534,6 +1552,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Per USB PD Spec R3.2 Section 6.4.1.6, sinks respond to Get_Sink_Cap messages
     /// with a Sink_Capabilities message containing PDOs describing what power levels
     /// the sink can operate at.
+    #[cfg(any(feature = "source", test))]
     pub fn transmit_sink_capabilities(
         &mut self,
         capabilities: message::data::sink_capabilities::SinkCapabilities,
@@ -1553,6 +1572,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     ///
     /// Per USB PD Spec R3.2 Section 8.3.3.3.10, sinks respond to EPR_Get_Sink_Cap
     /// messages with an EPR_Sink_Capabilities message.
+    #[cfg(any(feature = "source", test))]
     pub fn transmit_epr_sink_capabilities(
         &mut self,
         capabilities: message::data::sink_capabilities::SinkCapabilities,
@@ -1571,23 +1591,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         let mut message = Message::new(header);
         message.payload = Some(Payload::Extended(extended_payload));
 
-        self.transmit(message)
-    }
-
-    /// Transmit the 24-byte Sink Capabilities Extended Data Block in response
-    /// to `Get_Sink_Cap_Extended`.
-    pub fn transmit_sink_capabilities_extended(
-        &mut self,
-        capabilities: SinkCapabilitiesExtended,
-    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
-        let header = Header::new_extended(
-            self.default_header,
-            self.counters.tx_message,
-            ExtendedMessageType::SinkCapabilitiesExtended,
-            0, // Message serialization derives the chunk's padded object count.
-        );
-        let mut message = Message::new(header);
-        message.payload = Some(Payload::Extended(Extended::SinkCapabilitiesExtended(capabilities)));
         self.transmit(message)
     }
 
@@ -1674,6 +1677,81 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
         self.0.receive_sink_message()
     }
 
+    /// Transmit one fully selected Sink message through the shared protocol
+    /// retry/GoodCRC path.
+    pub(crate) fn transmit_sink(
+        &mut self,
+        operation: SinkTransmit,
+    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
+        let message = match operation {
+            SinkTransmit::Control(message_type) => {
+                Message::new(Header::new_control(self.default_header, self.counters.tx_message, message_type))
+            }
+            SinkTransmit::ExtendedControl(message_type) => {
+                let header = Header::new_extended(
+                    self.default_header,
+                    self.counters.tx_message,
+                    ExtendedMessageType::ExtendedControl,
+                    1,
+                );
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::ExtendedControl(
+                    ExtendedControl::default().with_message_type(message_type),
+                )));
+                message
+            }
+            SinkTransmit::Request(power_source) => {
+                let header = Header::new_data(
+                    self.default_header,
+                    self.counters.tx_message,
+                    power_source.message_type(),
+                    power_source.num_objects(),
+                );
+                Message::new_with_data(header, Data::Request(power_source))
+            }
+            SinkTransmit::SinkCapabilities(capabilities) => {
+                let header = Header::new_data(
+                    self.default_header,
+                    self.counters.tx_message,
+                    DataMessageType::SinkCapabilities,
+                    capabilities.num_objects(),
+                );
+                Message::new_with_data(header, Data::SinkCapabilities(capabilities))
+            }
+            SinkTransmit::EprSinkCapabilities(capabilities) => {
+                let pdos: Vec<_, 7> = capabilities.0.iter().cloned().collect();
+                let header = Header::new_extended(
+                    self.default_header,
+                    self.counters.tx_message,
+                    ExtendedMessageType::EprSinkCapabilities,
+                    0,
+                );
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::EprSinkCapabilities(pdos)));
+                message
+            }
+            SinkTransmit::SinkCapabilitiesExtended(capabilities) => {
+                let header = Header::new_extended(
+                    self.default_header,
+                    self.counters.tx_message,
+                    ExtendedMessageType::SinkCapabilitiesExtended,
+                    0,
+                );
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::SinkCapabilitiesExtended(capabilities)));
+                message
+            }
+            SinkTransmit::EprMode(action, data) => {
+                let header =
+                    Header::new_data(self.default_header, self.counters.tx_message, DataMessageType::EprMode, 1);
+                let object = EprModeDataObject::default().with_action(action).with_data(data);
+                Message::new_with_data(header, Data::EprMode(object))
+            }
+        };
+
+        self.0.transmit(message)
+    }
+
     pub(crate) async fn receive_message_type_with_timeout(
         &mut self,
         message_types: &[MessageType],
@@ -1730,21 +1808,6 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
 
     pub fn take_source_capabilities(&mut self) -> Option<SourceCapabilities> {
         self.0.take_sink_source_capabilities()
-    }
-
-    /// Request a certain power level from the source.
-    pub fn request_power(
-        &mut self,
-        power_source_request: request::PowerSource,
-    ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
-        // Only sinks can request from a supply.
-        debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
-
-        let message_type = power_source_request.message_type();
-        let num_objects = power_source_request.num_objects();
-        let header = Header::new_data(self.default_header, self.counters.tx_message, message_type, num_objects);
-
-        self.transmit(Message::new_with_data(header, Data::Request(power_source_request)))
     }
 }
 
@@ -1813,7 +1876,7 @@ mod tests {
     use super::message::header::{
         ControlMessageType, DataMessageType, ExtendedMessageType, Header, SpecificationRevision,
     };
-    use super::{ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, TxValidationError};
+    use super::{ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, SinkTransmit, TxValidationError};
     use crate::counters::{Counter, CounterType};
     use crate::dummy::{
         DUMMY_CAPABILITIES, DummyDriver, DummyTimer, MAX_DATA_MESSAGE_SIZE, get_dummy_source_capabilities,
@@ -2082,7 +2145,7 @@ mod tests {
         let invalid_request = PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23)));
 
         assert!(matches!(
-            protocol_layer.request_power(invalid_request).await,
+            protocol_layer.transmit_sink(SinkTransmit::Request(invalid_request)).await,
             Err(ProtocolError::TxValidation(TxValidationError::UnchunkedExtendedMessagesNotSupported))
         ));
         assert!(!protocol_layer.driver().has_transmitted_data());

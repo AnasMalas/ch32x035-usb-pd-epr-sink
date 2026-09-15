@@ -22,7 +22,7 @@ use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
 use crate::protocol_layer::{
-    ProtocolError, RxError, SinkMessage, SinkPayload, SinkProtocolLayer, TxError, TxValidationError,
+    ProtocolError, RxError, SinkMessage, SinkPayload, SinkProtocolLayer, SinkTransmit, TxError, TxValidationError,
 };
 use crate::sink::device_policy_manager::Event;
 use crate::timers::{Timer, TimerType};
@@ -1571,10 +1571,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             State::Transmit(operation) => {
                 let operation = *operation;
-                let result = match operation {
+                let message = match operation {
                     #[cfg(feature = "initial-capabilities-fallback")]
                     TransmitOperation::ProbeSourceCapabilities => {
-                        self.protocol_layer.transmit_control_message(ControlMessageType::GetSourceCap).await
+                        SinkTransmit::Control(ControlMessageType::GetSourceCap)
                     }
                     TransmitOperation::SendNotSupported(_)
                     | TransmitOperation::SendSoftReset
@@ -1592,7 +1592,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             TransmitOperation::GetStatus(StatusQueryKind::Pps, _) => ControlMessageType::GetPpsStatus,
                             _ => unreachable!(),
                         };
-                        self.protocol_layer.transmit_control_message(message_type).await
+                        SinkTransmit::Control(message_type)
                     }
                     TransmitOperation::GetSourceCap(Mode::Epr, _) | TransmitOperation::EprKeepAlive(_) => {
                         let message_type = match operation {
@@ -1602,27 +1602,24 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             TransmitOperation::EprKeepAlive(_) => ExtendedControlMessageType::EprKeepAlive,
                             _ => unreachable!(),
                         };
-                        self.protocol_layer.transmit_extended_control_message(message_type).await
+                        SinkTransmit::ExtendedControl(message_type)
                     }
-                    TransmitOperation::SelectCapability(power_source) => {
-                        self.protocol_layer.request_power(power_source).await
-                    }
+                    TransmitOperation::SelectCapability(power_source) => SinkTransmit::Request(power_source),
                     TransmitOperation::GiveSinkCap(mode, _) => {
                         let sink_caps = self.device_policy_manager.sink_capabilities();
                         match mode {
-                            Mode::Spr => self.protocol_layer.transmit_sink_capabilities(sink_caps).await,
-                            Mode::Epr => self.protocol_layer.transmit_epr_sink_capabilities(sink_caps).await,
+                            Mode::Spr => SinkTransmit::SinkCapabilities(sink_caps),
+                            Mode::Epr => SinkTransmit::EprSinkCapabilities(sink_caps),
                         }
                     }
                     TransmitOperation::GiveSinkCapExtended(_) => {
                         let capabilities = self.device_policy_manager.sink_capabilities_extended();
-                        self.protocol_layer.transmit_sink_capabilities_extended(capabilities).await
+                        SinkTransmit::SinkCapabilitiesExtended(capabilities)
                     }
-                    TransmitOperation::EnterEprMode(_, pdp_watts) => {
-                        self.protocol_layer.transmit_epr_mode(Action::Enter, pdp_watts).await
-                    }
-                    TransmitOperation::ExitEprMode => self.protocol_layer.transmit_epr_mode(Action::Exit, 0).await,
+                    TransmitOperation::EnterEprMode(_, pdp_watts) => SinkTransmit::EprMode(Action::Enter, pdp_watts),
+                    TransmitOperation::ExitEprMode => SinkTransmit::EprMode(Action::Exit, 0),
                 };
+                let result = self.protocol_layer.transmit_sink(message).await;
 
                 if matches!(operation, TransmitOperation::EprKeepAlive(_)) && result.is_err() {
                     numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
