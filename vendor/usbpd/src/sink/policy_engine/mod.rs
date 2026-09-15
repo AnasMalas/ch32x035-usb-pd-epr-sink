@@ -14,9 +14,9 @@ use super::device_policy_manager::{
 };
 use crate::counters::Counter;
 use crate::protocol_layer::message::data::epr_mode::{self, Action};
+use crate::protocol_layer::message::data::request;
 use crate::protocol_layer::message::data::request::PowerSource;
 use crate::protocol_layer::message::data::source_capabilities::SourceCapabilities;
-use crate::protocol_layer::message::data::{alert, request};
 use crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType;
 use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
@@ -107,7 +107,6 @@ enum State {
     GetSourceCap(Mode),
     GetSourceInfo,
     GetStatus(StatusQueryKind),
-    SourceAlert(alert::AlertDataObject),
 
     // EPR states
     EprModeEntry(units::Power),
@@ -844,7 +843,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 }
             }
             MessageType::Data(DataMessageType::Alert) => match message.payload {
-                SinkPayload::Alert(alert) => State::SourceAlert(alert),
+                SinkPayload::Alert(alert) => {
+                    self.device_policy_manager.inform_alert(&alert);
+                    State::Ready
+                }
                 _ => State::SendSoftReset,
             },
             MessageType::Control(ControlMessageType::GetSinkCap) => State::GiveSinkCap(Mode::Spr),
@@ -1474,10 +1476,6 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 State::Transmit(TransmitOperation::GetSourceCap(*requested_mode))
             }
             State::GetSourceInfo => State::Transmit(TransmitOperation::GetSourceInfo),
-            State::SourceAlert(alert) => {
-                self.device_policy_manager.inform_alert(alert);
-                State::Ready
-            }
             State::GetStatus(query) => State::Transmit(TransmitOperation::GetStatus(*query)),
             State::EprModeEntry(operational_pdp) => {
                 // Request entry into EPR mode.
