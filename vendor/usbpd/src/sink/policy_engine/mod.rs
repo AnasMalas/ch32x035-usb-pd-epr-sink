@@ -193,12 +193,6 @@ enum ReceiveOperation {
     EprKeepAlive(request::PowerSource),
 }
 
-#[derive(Clone, Copy)]
-enum ReceiveWire {
-    SourceCapabilities(Option<u32>),
-    Typed(&'static [MessageType], TimerType),
-}
-
 const REQUEST_RESPONSE_TYPES: &[MessageType] = &[
     MessageType::Control(ControlMessageType::Accept),
     MessageType::Control(ControlMessageType::Wait),
@@ -238,37 +232,43 @@ impl State {
 }
 
 impl ReceiveOperation {
-    fn wire(self) -> ReceiveWire {
+    fn wire(self) -> (&'static [MessageType], TimerType, Option<u32>) {
         match self {
-            Self::SourceCapabilities(wait) => ReceiveWire::SourceCapabilities(match wait {
-                CapabilityWait::Initial { recovery_ms } => recovery_ms,
-                #[cfg(feature = "initial-capabilities-fallback")]
-                CapabilityWait::Passive => None,
-                #[cfg(feature = "initial-capabilities-fallback")]
-                CapabilityWait::Probe => Some(30),
-                CapabilityWait::EprEntry => None,
-            }),
-            Self::RequestResponse(_) => ReceiveWire::Typed(REQUEST_RESPONSE_TYPES, TimerType::SenderResponse),
-            Self::PowerTransition(_, mode) => ReceiveWire::Typed(
+            Self::SourceCapabilities(wait) => (
+                SOURCE_CAPABILITY_TYPES,
+                TimerType::SinkWaitCap,
+                match wait {
+                    CapabilityWait::Initial { recovery_ms } => recovery_ms,
+                    #[cfg(feature = "initial-capabilities-fallback")]
+                    CapabilityWait::Passive => None,
+                    #[cfg(feature = "initial-capabilities-fallback")]
+                    CapabilityWait::Probe => Some(30),
+                    CapabilityWait::EprEntry => None,
+                },
+            ),
+            Self::RequestResponse(_) => (REQUEST_RESPONSE_TYPES, TimerType::SenderResponse, None),
+            Self::PowerTransition(_, mode) => (
                 PS_RDY_TYPE,
                 match mode {
                     Mode::Epr => TimerType::PSTransitionEpr,
                     Mode::Spr => TimerType::PSTransitionSpr,
                 },
+                None,
             ),
-            Self::SoftResetAccept => ReceiveWire::Typed(ACCEPT_TYPE, TimerType::SenderResponse),
-            Self::GetSourceCap(_, _) => ReceiveWire::Typed(SOURCE_CAPABILITY_TYPES, TimerType::SenderResponse),
-            Self::GetSourceInfo(_) => ReceiveWire::Typed(SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse),
-            Self::GetStatus(query, _) => ReceiveWire::Typed(
+            Self::SoftResetAccept => (ACCEPT_TYPE, TimerType::SenderResponse, None),
+            Self::GetSourceCap(_, _) => (SOURCE_CAPABILITY_TYPES, TimerType::SenderResponse, None),
+            Self::GetSourceInfo(_) => (SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse, None),
+            Self::GetStatus(query, _) => (
                 match query {
                     StatusQueryKind::General => STATUS_RESPONSE_TYPES,
                     StatusQueryKind::Pps => PPS_STATUS_RESPONSE_TYPES,
                 },
                 TimerType::SenderResponse,
+                None,
             ),
-            Self::EprEntryAcknowledgement(_, _) => ReceiveWire::Typed(EPR_MODE_TYPE, TimerType::SenderResponse),
-            Self::EprEntryResult(_) => ReceiveWire::Typed(EPR_MODE_TYPE, TimerType::SinkEPREnter),
-            Self::EprKeepAlive(_) => ReceiveWire::Typed(EXTENDED_CONTROL_TYPE, TimerType::SenderResponse),
+            Self::EprEntryAcknowledgement(_, _) => (EPR_MODE_TYPE, TimerType::SenderResponse, None),
+            Self::EprEntryResult(_) => (EPR_MODE_TYPE, TimerType::SinkEPREnter, None),
+            Self::EprKeepAlive(_) => (EXTENDED_CONTROL_TYPE, TimerType::SenderResponse, None),
         }
     }
 }
@@ -1187,7 +1187,6 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    #[inline(never)]
     async fn update_state(&mut self) -> Result<(), Error> {
         let new_state = match &self.state {
             State::Startup => {
@@ -1640,14 +1639,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             State::Receive(operation) => {
                 let operation = *operation;
-                let result = match operation.wire() {
-                    ReceiveWire::SourceCapabilities(recovery_ms) => {
-                        self.protocol_layer.wait_for_source_capabilities(recovery_ms).await
-                    }
-                    ReceiveWire::Typed(message_types, timer) => {
-                        self.protocol_layer.receive_message_type(message_types, timer).await
-                    }
-                };
+                let (message_types, timer, timeout_ms) = operation.wire();
+                let result =
+                    self.protocol_layer.receive_message_type_with_timeout(message_types, timer, timeout_ms).await;
                 self.finish_receive(operation, result)?
             }
         };

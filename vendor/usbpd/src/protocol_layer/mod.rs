@@ -53,11 +53,6 @@ const EXT_HEADER_SIZE: usize = 2;
 /// protocol task forever without returning control to the policy engine.
 const MAX_DRIVER_DISCARDS: u8 = 8;
 
-const SOURCE_CAPABILITY_MESSAGE_TYPES: [MessageType; 2] = [
-    MessageType::Data(DataMessageType::SourceCapabilities),
-    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
-];
-
 /// Compact representation of a message received by the sink policy engine.
 ///
 /// Source Capabilities are kept in protocol-owned storage and represented by
@@ -1679,16 +1674,7 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
         self.0.receive_sink_message()
     }
 
-    /// Wait until one of the selected sink message types is received.
-    pub fn receive_message_type<'a>(
-        &'a mut self,
-        message_types: &'a [MessageType],
-        timer_type: TimerType,
-    ) -> impl Future<Output = Result<SinkMessage, ProtocolError>> + 'a {
-        self.receive_message_type_with_timeout(message_types, timer_type, None)
-    }
-
-    async fn receive_message_type_with_timeout(
+    pub(crate) async fn receive_message_type_with_timeout(
         &mut self,
         message_types: &[MessageType],
         timer_type: TimerType,
@@ -1744,17 +1730,6 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
 
     pub fn take_source_capabilities(&mut self) -> Option<SourceCapabilities> {
         self.0.take_sink_source_capabilities()
-    }
-
-    /// Wait for the source to provide its capabilities.
-    pub fn wait_for_source_capabilities(
-        &mut self,
-        recovery_ms: Option<u32>,
-    ) -> impl Future<Output = Result<SinkMessage, ProtocolError>> + '_ {
-        // Only sinks can await capabilities.
-        debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
-
-        self.receive_message_type_with_timeout(&SOURCE_CAPABILITY_MESSAGE_TYPES, TimerType::SinkWaitCap, recovery_ms)
     }
 
     /// Request a certain power level from the source.
