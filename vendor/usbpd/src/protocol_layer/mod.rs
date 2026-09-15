@@ -17,11 +17,13 @@ pub mod message;
 use core::future::Future;
 use core::marker::PhantomData;
 
+use byteorder::{ByteOrder, LittleEndian};
 use embassy_futures::select::{Either, select};
 use heapless::Vec;
 use message::Message;
+use message::data::source_capabilities::SourceCapabilities;
 use message::data::{Data, request};
-use message::extended::extended_control::ExtendedControlMessageType;
+use message::extended::extended_control::{ExtendedControl, ExtendedControlMessageType};
 use message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
@@ -30,8 +32,6 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 use crate::PowerRole;
 use crate::counters::{Counter, CounterType, Error as CounterError};
 use crate::protocol_layer::message::data::epr_mode::EprModeDataObject;
-#[cfg(any(feature = "source", test))]
-use crate::protocol_layer::message::data::source_capabilities::SourceCapabilities;
 use crate::protocol_layer::message::extended::Extended;
 use crate::protocol_layer::message::extended::sink_capabilities_extended::SinkCapabilitiesExtended;
 use crate::protocol_layer::message::{ParseError, Payload};
@@ -57,6 +57,30 @@ const SOURCE_CAPABILITY_MESSAGE_TYPES: [MessageType; 2] = [
     MessageType::Data(DataMessageType::SourceCapabilities),
     MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
 ];
+
+/// Compact representation of a message received by the sink policy engine.
+///
+/// Source Capabilities are kept in protocol-owned storage and represented by
+/// a marker here so the 48-byte PDO list is not copied through every async
+/// receive/select result.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct SinkMessage {
+    pub(crate) header: Header,
+    pub(crate) payload: SinkPayload,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SinkPayload {
+    None,
+    SourceCapabilities,
+    EprMode(EprModeDataObject),
+    SourceInfo(message::data::source_info::SourceInfo),
+    Alert(message::data::alert::AlertDataObject),
+    Status(message::extended::status::Status),
+    PpsStatus(message::extended::pps_status::PpsStatus),
+    ExtendedControl(ExtendedControl),
+    Unknown,
+}
 
 /// Errors that can occur in the protocol layer.
 #[derive(thiserror::Error, Debug)]
@@ -227,6 +251,8 @@ pub(crate) struct ProtocolLayer<DRIVER: Driver, TIMER: Timer> {
     driver: DRIVER,
     counters: Counters,
     default_header: Header,
+    rx_buffer: [u8; MAX_PD_FRAME_SIZE],
+    sink_source_capabilities: Option<SourceCapabilities>,
     extended_rx_buffer: Vec<u8, MAX_EXTENDED_MESSAGE_SIZE>,
     extended_rx_expected: Option<(ExtendedMessageType, u16, u8)>,
     _timer: PhantomData<TIMER>,
@@ -239,6 +265,8 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             driver,
             counters: Default::default(),
             default_header,
+            rx_buffer: [0; MAX_PD_FRAME_SIZE],
+            sink_source_capabilities: None,
             extended_rx_buffer: Vec::new(),
             extended_rx_expected: None,
             _timer: PhantomData,
@@ -248,6 +276,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Reset the protocol layer.
     pub fn reset(&mut self) {
         self.counters = Default::default();
+        self.sink_source_capabilities = None;
         self.reset_chunked_rx();
     }
 
@@ -279,19 +308,15 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         [0u8; MAX_PD_FRAME_SIZE]
     }
 
-    /// Get a timer future for a given type.
-    pub fn get_timer(timer_type: TimerType) -> impl Future<Output = ()> {
-        TimerType::get_timer::<TIMER>(timer_type)
-    }
-
-    /// Receive a simple (non-chunked) message from the driver.
-    /// Used by wait_for_good_crc to avoid recursion with chunked message handling.
-    async fn receive_simple(&mut self) -> Result<Message, RxError> {
+    /// Receive one complete wire frame into protocol-owned storage.
+    ///
+    /// Keeping the buffer in the protocol layer lets every receive path share
+    /// the driver retry/length/header checks and prepares the sink path to pass
+    /// only compact metadata across its async boundary.
+    async fn receive_frame(&mut self) -> Result<(Header, usize), RxError> {
         let mut discarded = 0;
         loop {
-            let mut buffer = Self::get_message_buffer();
-
-            let length = match self.driver.receive(&mut buffer).await {
+            let length = match self.driver.receive(&mut self.rx_buffer).await {
                 Ok(length) => length,
                 Err(DriverRxError::Discarded) => {
                     discarded += 1;
@@ -304,18 +329,34 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                 Err(DriverRxError::Detached) => return Err(RxError::Detached),
             };
 
-            if length > buffer.len() {
-                return Err(ParseError::InvalidLength { expected: buffer.len(), found: length }.into());
+            if length > self.rx_buffer.len() {
+                return Err(ParseError::InvalidLength { expected: self.rx_buffer.len(), found: length }.into());
+            }
+            if length < MSG_HEADER_SIZE {
+                return Err(ParseError::InvalidLength { expected: MSG_HEADER_SIZE, found: length }.into());
             }
 
-            let message = Message::from_bytes(&buffer[..length])?;
+            let header = Header::from_bytes(&self.rx_buffer[..MSG_HEADER_SIZE])?;
+            Message::validate_frame_length(&self.rx_buffer[..length], header)?;
             numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
                 crate::numeric_trace::NumericTraceEventKind::RxMessage,
-                &buffer[..length],
+                &self.rx_buffer[..length],
                 crate::numeric_trace::UNAVAILABLE_U8,
             ));
-            return Ok(message);
+            return Ok((header, length));
         }
+    }
+
+    /// Get a timer future for a given type.
+    pub fn get_timer(timer_type: TimerType) -> impl Future<Output = ()> {
+        TimerType::get_timer::<TIMER>(timer_type)
+    }
+
+    /// Receive a simple (non-chunked) message from the driver.
+    /// Used by wait_for_good_crc to avoid recursion with chunked message handling.
+    async fn receive_simple(&mut self) -> Result<Header, RxError> {
+        let (header, _) = self.receive_frame().await?;
+        Ok(header)
     }
 
     /// Wait until a GoodCrc message is received, or a timeout occurs.
@@ -324,34 +365,34 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
 
         let timeout_fut = Self::get_timer(TimerType::CRCReceive);
         let receive_fut = async {
-            let message = self.receive_simple().await?;
+            let header = self.receive_simple().await?;
 
-            if matches!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
+            if matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
                 numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                     crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
                     crate::numeric_trace::NumericTracePath::Software as u8,
-                    message.header.message_id(),
+                    header.message_id(),
                     self.counters.retry.value(),
-                    message.header.0,
+                    header.0,
                     crate::numeric_trace::UNAVAILABLE_U16,
                 ));
                 trace!(
                     "Received GoodCrc, TX message count: {}, expected: {}",
-                    message.header.message_id(),
+                    header.message_id(),
                     self.counters.tx_message.value()
                 );
-                if message.header.message_id() == self.counters.tx_message.value() {
+                if header.message_id() == self.counters.tx_message.value() {
                     // See spec, [6.7.1.1]
                     self.counters.retry.reset();
                     _ = self.counters.tx_message.increment();
                     Ok(())
                 } else {
-                    Err(RxError::AcknowledgeMismatch(message.header.message_id()))
+                    Err(RxError::AcknowledgeMismatch(header.message_id()))
                 }
-            } else if matches!(message.header.message_type(), MessageType::Control(_)) {
-                Err(ParseError::InvalidControlMessageType(message.header.message_type_raw()).into())
+            } else if matches!(header.message_type(), MessageType::Control(_)) {
+                Err(ParseError::InvalidControlMessageType(header.message_type_raw()).into())
             } else {
-                Err(ParseError::InvalidMessageType(message.header.message_type_raw()).into())
+                Err(ParseError::InvalidMessageType(header.message_type_raw()).into())
             }
         };
 
@@ -691,10 +732,10 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     ///
     /// Returns `Ok(true)` if this was a retransmission (caller should continue to next message),
     /// `Ok(false)` if this is a new message to process, or `Err` on failure.
-    async fn handle_rx_ack(&mut self, message: &Message) -> Result<bool, RxError> {
-        let is_good_crc = matches!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+    async fn handle_rx_ack(&mut self, header: Header) -> Result<bool, RxError> {
+        let is_good_crc = matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
 
-        let is_retransmission = if is_good_crc { false } else { self.update_rx_message_counter(message) };
+        let is_retransmission = if is_good_crc { false } else { self.update_rx_message_counter(header) };
 
         if !DRIVER::HAS_AUTO_GOOD_CRC && !is_good_crc {
             match self.transmit_good_crc().await {
@@ -707,9 +748,9 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                 crate::numeric_trace::NumericTraceEventKind::GoodCrcTransmitted,
                 crate::numeric_trace::NumericTracePath::Hardware as u8,
-                message.header.message_id(),
+                header.message_id(),
                 crate::numeric_trace::UNAVAILABLE_U8,
-                message.header.0,
+                header.0,
                 crate::numeric_trace::UNAVAILABLE_U16,
             ));
         }
@@ -718,9 +759,9 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                 crate::numeric_trace::NumericTraceEventKind::RxRetransmission,
                 crate::numeric_trace::UNAVAILABLE_U8,
-                message.header.message_id(),
+                header.message_id(),
                 crate::numeric_trace::UNAVAILABLE_U8,
-                message.header.0,
+                header.0,
                 crate::numeric_trace::UNAVAILABLE_U16,
             ));
         }
@@ -735,46 +776,17 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Receive a message, assembling chunked extended messages as needed.
+    #[cfg(any(feature = "source", test))]
     async fn receive_message_inner(&mut self) -> Result<Message, RxError> {
-        let mut discarded = 0;
         loop {
-            let mut buffer = Self::get_message_buffer();
-
-            let length = match self.driver.receive(&mut buffer).await {
-                Ok(length) => length,
-                Err(DriverRxError::Discarded) => {
-                    discarded += 1;
-                    if discarded >= MAX_DRIVER_DISCARDS {
-                        return Err(RxError::Discarded);
-                    }
-                    continue;
-                }
-                Err(DriverRxError::HardReset) => return Err(RxError::HardReset),
-                Err(DriverRxError::Detached) => return Err(RxError::Detached),
-            };
-
-            if length > buffer.len() {
-                return Err(ParseError::InvalidLength { expected: buffer.len(), found: length }.into());
-            }
-            if length < MSG_HEADER_SIZE {
-                return Err(ParseError::InvalidLength { expected: MSG_HEADER_SIZE, found: length }.into());
-            }
-
-            // Parse header early to handle chunking.
-            let header = Header::from_bytes(&buffer[..MSG_HEADER_SIZE])?;
-            Message::validate_frame_length(&buffer[..length], header)?;
-            numeric_trace!(crate::numeric_trace::NumericTraceEvent::from_frame(
-                crate::numeric_trace::NumericTraceEventKind::RxMessage,
-                &buffer[..length],
-                crate::numeric_trace::UNAVAILABLE_U8,
-            ));
+            let (header, length) = self.receive_frame().await?;
             let message_type = header.message_type();
 
             if matches!(message_type, MessageType::Extended(_)) {
                 let ext_header_end = MSG_HEADER_SIZE + EXT_HEADER_SIZE;
                 let ext_header =
-                    message::extended::ExtendedHeader::from_bytes(&buffer[MSG_HEADER_SIZE..ext_header_end]);
-                let payload = &buffer[ext_header_end..length];
+                    message::extended::ExtendedHeader::from_bytes(&self.rx_buffer[MSG_HEADER_SIZE..ext_header_end]);
+                let payload_len = length - ext_header_end;
                 let total_size = ext_header.data_size();
                 let chunked = ext_header.chunked();
                 let chunk_number = ext_header.chunk_number();
@@ -799,14 +811,11 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     }
                     trace!(
                         "Received chunked extended message {:?}, chunk {}, size {}",
-                        message_type,
-                        chunk_number,
-                        payload.len()
+                        message_type, chunk_number, payload_len
                     );
 
                     // Update RX counters and acknowledge.
-                    let tmp_message = Message { header, payload: None };
-                    if self.handle_rx_ack(&tmp_message).await? {
+                    if self.handle_rx_ack(header).await? {
                         continue; // Retransmission
                     }
 
@@ -845,15 +854,16 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     } else {
                         (EXT_HEADER_SIZE + remaining).div_ceil(4) * 4 - EXT_HEADER_SIZE
                     };
-                    if payload.len() != expected_payload_len {
+                    if payload_len != expected_payload_len {
                         self.reset_chunked_rx();
                         return Err(RxError::UnsupportedMessage);
                     }
 
-                    if self.extended_rx_buffer.len() + payload.len() > self.extended_rx_buffer.capacity() {
+                    if self.extended_rx_buffer.len() + payload_len > self.extended_rx_buffer.capacity() {
                         self.reset_chunked_rx();
                         return Err(RxError::UnsupportedMessage);
                     }
+                    let payload = &self.rx_buffer[ext_header_end..length];
                     if self.extended_rx_buffer.extend_from_slice(payload).is_err() {
                         self.reset_chunked_rx();
                         return Err(RxError::UnsupportedMessage);
@@ -879,7 +889,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             }
 
             // Non-extended or unchunked extended messages.
-            let message = Message::from_bytes(&buffer[..length])?;
+            let message = Message::from_bytes(&self.rx_buffer[..length])?;
 
             // Update specification revision, based on the received frame.
             self.default_header = self.default_header.with_spec_revision(message.header.spec_revision()?);
@@ -893,7 +903,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             }
 
             // Handle GoodCRC and retransmissions.
-            if self.handle_rx_ack(&message).await? {
+            if self.handle_rx_ack(message.header).await? {
                 continue; // Retransmission
             }
 
@@ -910,7 +920,241 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         }
     }
 
+    fn parse_sink_extended_payload(
+        message_type: ExtendedMessageType,
+        payload: &[u8],
+    ) -> Result<(SinkPayload, Option<SourceCapabilities>), ParseError> {
+        let parsed = match message_type {
+            ExtendedMessageType::Status => {
+                let status =
+                    message::extended::status::Status::from_bytes(payload).ok_or(ParseError::InvalidLength {
+                        expected: message::extended::status::Status::DATA_SIZE,
+                        found: payload.len(),
+                    })?;
+                (SinkPayload::Status(status), None)
+            }
+            ExtendedMessageType::PpsStatus => {
+                let status =
+                    message::extended::pps_status::PpsStatus::from_bytes(payload).ok_or(ParseError::InvalidLength {
+                        expected: message::extended::pps_status::PpsStatus::DATA_SIZE,
+                        found: payload.len(),
+                    })?;
+                (SinkPayload::PpsStatus(status), None)
+            }
+            ExtendedMessageType::ExtendedControl => {
+                if payload.len() != 2 {
+                    return Err(ParseError::InvalidLength { expected: 2, found: payload.len() });
+                }
+                (SinkPayload::ExtendedControl(ExtendedControl::from_bytes(payload)), None)
+            }
+            ExtendedMessageType::EprSourceCapabilities => {
+                use message::data::source_capabilities::MAX_EPR_SOURCE_PDOS;
+
+                if !payload.len().is_multiple_of(4) {
+                    return Err(ParseError::Other("EPR Source Capabilities contains a partial PDO"));
+                }
+                if payload.len() > MAX_EPR_SOURCE_PDOS * 4 {
+                    return Err(ParseError::InvalidLength { expected: MAX_EPR_SOURCE_PDOS * 4, found: payload.len() });
+                }
+
+                let mut pdos = Vec::new();
+                for bytes in payload.chunks_exact(4) {
+                    pdos.push(LittleEndian::read_u32(bytes))
+                        .map_err(|_| ParseError::Other("too many EPR Source Capability PDOs"))?;
+                }
+                (SinkPayload::SourceCapabilities, Some(SourceCapabilities(pdos)))
+            }
+            _ => (SinkPayload::Unknown, None),
+        };
+        Ok(parsed)
+    }
+
+    fn parse_sink_frame(header: Header, data: &[u8]) -> Result<(SinkMessage, Option<SourceCapabilities>), ParseError> {
+        let payload = &data[MSG_HEADER_SIZE..];
+        let (payload, capabilities) = match header.message_type() {
+            MessageType::Control(_) => (SinkPayload::None, None),
+            MessageType::Data(message_type) => match message_type {
+                DataMessageType::SourceCapabilities => {
+                    let pdos = payload
+                        .chunks_exact(core::mem::size_of::<u32>())
+                        .take(header.num_objects())
+                        .map(LittleEndian::read_u32)
+                        .collect();
+                    (SinkPayload::SourceCapabilities, Some(SourceCapabilities(pdos)))
+                }
+                DataMessageType::EprMode if payload.len() == core::mem::size_of::<u32>() => {
+                    (SinkPayload::EprMode(EprModeDataObject(LittleEndian::read_u32(payload))), None)
+                }
+                DataMessageType::SourceInfo => (
+                    message::data::source_info::SourceInfo::from_bytes(payload, header.num_objects())
+                        .map_or(SinkPayload::Unknown, SinkPayload::SourceInfo),
+                    None,
+                ),
+                DataMessageType::Alert => (
+                    message::data::alert::AlertDataObject::from_bytes(payload)
+                        .map_or(SinkPayload::Unknown, SinkPayload::Alert),
+                    None,
+                ),
+                _ => (SinkPayload::Unknown, None),
+            },
+            MessageType::Extended(message_type) => {
+                let extended_header = message::extended::ExtendedHeader::from_bytes(payload);
+                let data_size = extended_header.data_size() as usize;
+                if payload.len() < EXT_HEADER_SIZE + data_size {
+                    return Err(ParseError::InvalidLength {
+                        expected: EXT_HEADER_SIZE + data_size,
+                        found: payload.len(),
+                    });
+                }
+                Self::parse_sink_extended_payload(message_type, &payload[EXT_HEADER_SIZE..EXT_HEADER_SIZE + data_size])?
+            }
+        };
+        Ok((SinkMessage { header, payload }, capabilities))
+    }
+
+    /// Receive the subset of parsed message data consumed by a Sink.
+    ///
+    /// Large Source Capability lists remain in `sink_source_capabilities` and
+    /// are taken synchronously by the policy engine after this future resolves.
+    async fn receive_sink_message_inner(&mut self) -> Result<SinkMessage, RxError> {
+        // A previous receive may have been cancelled while acknowledging a
+        // frame. Capabilities are meaningful only alongside the marker
+        // returned by this invocation.
+        self.sink_source_capabilities = None;
+
+        loop {
+            let (header, length) = self.receive_frame().await?;
+            let message_type = header.message_type();
+
+            if let MessageType::Extended(extended_message_type) = message_type {
+                let ext_header_end = MSG_HEADER_SIZE + EXT_HEADER_SIZE;
+                let ext_header =
+                    message::extended::ExtendedHeader::from_bytes(&self.rx_buffer[MSG_HEADER_SIZE..ext_header_end]);
+                let payload_len = length - ext_header_end;
+                let total_size = ext_header.data_size();
+                let chunked = ext_header.chunked();
+                let chunk_number = ext_header.chunk_number();
+
+                self.default_header = self.default_header.with_spec_revision(header.spec_revision()?);
+
+                if chunked {
+                    if ext_header.request_chunk() {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+                    if total_size as usize > self.extended_rx_buffer.capacity() {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+                    trace!(
+                        "Received chunked extended message {:?}, chunk {}, size {}",
+                        message_type, chunk_number, payload_len
+                    );
+
+                    if self.handle_rx_ack(header).await? {
+                        continue;
+                    }
+
+                    let (expected_total, expected_next) = match self.extended_rx_expected {
+                        Some((ty, total, next)) if ty == extended_message_type && total == total_size => (total, next),
+                        Some(_) => {
+                            self.reset_chunked_rx();
+                            return Err(RxError::UnsupportedMessage);
+                        }
+                        None if chunk_number == 0 => (total_size, 0),
+                        None => {
+                            self.reset_chunked_rx();
+                            return Err(RxError::UnsupportedMessage);
+                        }
+                    };
+
+                    if expected_next != 0 && chunk_number != expected_next {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+
+                    if chunk_number == 0 || expected_next == 0 {
+                        self.extended_rx_buffer.clear();
+                        self.extended_rx_expected = Some((extended_message_type, total_size, 1));
+                    } else {
+                        self.extended_rx_expected = Some((extended_message_type, expected_total, expected_next + 1));
+                    }
+
+                    let remaining = (total_size as usize).saturating_sub(self.extended_rx_buffer.len());
+                    let expected_payload_len = if remaining > message::extended::chunked::MAX_EXTENDED_MSG_CHUNK_LEN {
+                        message::extended::chunked::MAX_EXTENDED_MSG_CHUNK_LEN
+                    } else {
+                        (EXT_HEADER_SIZE + remaining).div_ceil(4) * 4 - EXT_HEADER_SIZE
+                    };
+                    if payload_len != expected_payload_len {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+                    if self.extended_rx_buffer.len() + payload_len > self.extended_rx_buffer.capacity() {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+                    let payload = &self.rx_buffer[ext_header_end..length];
+                    if self.extended_rx_buffer.extend_from_slice(payload).is_err() {
+                        self.reset_chunked_rx();
+                        return Err(RxError::UnsupportedMessage);
+                    }
+
+                    if self.extended_rx_buffer.len() < total_size as usize {
+                        let next_chunk = self.extended_rx_expected.as_ref().map(|(_, _, next)| *next).unwrap_or(1);
+                        self.transmit_chunk_request(extended_message_type, next_chunk).await?;
+                        continue;
+                    }
+
+                    let parsed = Self::parse_sink_extended_payload(
+                        extended_message_type,
+                        &self.extended_rx_buffer[..total_size as usize],
+                    );
+                    self.reset_chunked_rx();
+                    let (payload, capabilities) = parsed?;
+                    self.sink_source_capabilities = capabilities;
+                    let message = SinkMessage { header, payload };
+                    trace!("Received assembled sink message {:?}", message);
+                    return Ok(message);
+                }
+            }
+
+            let parsed = Self::parse_sink_frame(header, &self.rx_buffer[..length]);
+            let (message, capabilities) = parsed?;
+            self.default_header = self.default_header.with_spec_revision(header.spec_revision()?);
+
+            match message_type {
+                MessageType::Control(ControlMessageType::Reserved) | MessageType::Data(DataMessageType::Reserved) => {
+                    return Err(RxError::UnsupportedMessage);
+                }
+                _ => {}
+            }
+
+            self.sink_source_capabilities = capabilities;
+            match self.handle_rx_ack(header).await {
+                Ok(true) => {
+                    self.sink_source_capabilities = None;
+                    continue;
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    self.sink_source_capabilities = None;
+                    return Err(error);
+                }
+            }
+
+            if matches!(message_type, MessageType::Control(ControlMessageType::SoftReset)) {
+                self.sink_source_capabilities = None;
+                return Err(RxError::SoftReset);
+            }
+
+            trace!("Received sink message {:?}", message);
+            return Ok(message);
+        }
+    }
+
     /// Receive a message.
+    #[cfg(any(feature = "source", test))]
     pub async fn receive_message(&mut self) -> Result<Message, ProtocolError> {
         #[cfg(not(feature = "numeric-trace"))]
         {
@@ -926,29 +1170,47 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         }
     }
 
+    async fn receive_sink_message(&mut self) -> Result<SinkMessage, ProtocolError> {
+        #[cfg(not(feature = "numeric-trace"))]
+        {
+            self.receive_sink_message_inner().await.map_err(Into::into)
+        }
+        #[cfg(feature = "numeric-trace")]
+        {
+            let result = self.receive_sink_message_inner().await.map_err(Into::into);
+            if let Err(error) = &result {
+                emit_protocol_error(error);
+            }
+            result
+        }
+    }
+
+    fn take_sink_source_capabilities(&mut self) -> Option<SourceCapabilities> {
+        self.sink_source_capabilities.take()
+    }
+
     /// Updates the received message counter.
     ///
     /// If receiving the first message after protocol layer reset, copy its ID.
     /// Otherwise, compare the received ID with the stored ID. If they are equal, this is a retransmission.
     ///
     /// Returns `true`, if this was a retransmission.
-    fn update_rx_message_counter(&mut self, rx_message: &Message) -> bool {
+    fn update_rx_message_counter(&mut self, header: Header) -> bool {
         match self.counters.rx_message.as_mut() {
             None => {
                 trace!(
                     "Received first message after protocol layer reset with RX counter value: {}",
-                    rx_message.header.message_id()
+                    header.message_id()
                 );
-                self.counters.rx_message =
-                    Some(Counter::new_from_value(CounterType::MessageId, rx_message.header.message_id()));
+                self.counters.rx_message = Some(Counter::new_from_value(CounterType::MessageId, header.message_id()));
                 false
             }
             Some(counter) => {
-                if rx_message.header.message_id() == counter.value() {
+                if header.message_id() == counter.value() {
                     trace!("Received retransmission of RX counter value: {}", counter.value());
                     true
                 } else {
-                    counter.set(rx_message.header.message_id());
+                    counter.set(header.message_id());
                     false
                 }
             }
@@ -956,6 +1218,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     }
 
     /// Wait until a message of one of the chosen types is received, or a timeout occurs.
+    #[cfg(any(feature = "source", test))]
     pub fn receive_message_type<'a>(
         &'a mut self,
         message_types: &'a [MessageType],
@@ -964,6 +1227,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         self.receive_message_type_with_timeout(message_types, timer_type, None)
     }
 
+    #[cfg(any(feature = "source", test))]
     async fn receive_message_type_with_timeout(
         &mut self,
         message_types: &[MessageType],
@@ -1410,15 +1674,87 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
         Self(ProtocolLayer::new(driver, default_header))
     }
 
+    /// Receive a compact message containing only fields consumed by the sink.
+    pub fn receive_message(&mut self) -> impl Future<Output = Result<SinkMessage, ProtocolError>> + '_ {
+        self.0.receive_sink_message()
+    }
+
+    /// Wait until one of the selected sink message types is received.
+    pub fn receive_message_type<'a>(
+        &'a mut self,
+        message_types: &'a [MessageType],
+        timer_type: TimerType,
+    ) -> impl Future<Output = Result<SinkMessage, ProtocolError>> + 'a {
+        self.receive_message_type_with_timeout(message_types, timer_type, None)
+    }
+
+    async fn receive_message_type_with_timeout(
+        &mut self,
+        message_types: &[MessageType],
+        timer_type: TimerType,
+        milliseconds: Option<u32>,
+    ) -> Result<SinkMessage, ProtocolError> {
+        for message_type in message_types {
+            assert_ne!(*message_type, MessageType::Control(ControlMessageType::GoodCRC));
+        }
+
+        let timeout_fut = async move {
+            match milliseconds {
+                Some(milliseconds) => TIMER::after_millis(u64::from(milliseconds)).await,
+                None => ProtocolLayer::<DRIVER, TIMER>::get_timer(timer_type).await,
+            }
+        };
+        let receive_fut = async {
+            loop {
+                match self.0.receive_sink_message_inner().await {
+                    Ok(message) => {
+                        if matches!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
+                            continue;
+                        }
+                        return if message_types.contains(&message.header.message_type()) {
+                            Ok(message)
+                        } else {
+                            Err(ProtocolError::UnexpectedMessage)
+                        };
+                    }
+                    Err(other) => return Err(other.into()),
+                }
+            }
+        };
+
+        #[cfg(not(feature = "numeric-trace"))]
+        {
+            match select(timeout_fut, receive_fut).await {
+                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
+                Either::Second(receive_result) => receive_result,
+            }
+        }
+        #[cfg(feature = "numeric-trace")]
+        {
+            let result = match select(timeout_fut, receive_fut).await {
+                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
+                Either::Second(receive_result) => receive_result,
+            };
+            if let Err(error) = &result {
+                emit_protocol_error(error);
+            }
+            result
+        }
+    }
+
+    pub fn take_source_capabilities(&mut self) -> Option<SourceCapabilities> {
+        self.0.take_sink_source_capabilities()
+    }
+
     /// Wait for the source to provide its capabilities.
     pub fn wait_for_source_capabilities(
         &mut self,
         recovery_ms: Option<u32>,
-    ) -> impl Future<Output = Result<Message, ProtocolError>> + '_ {
+    ) -> impl Future<Output = Result<SinkMessage, ProtocolError>> + '_ {
         // Only sinks can await capabilities.
         debug_assert!(matches!(self.default_header.port_power_role(), PowerRole::Sink));
 
-        self.0.receive_message_type_with_timeout(&SOURCE_CAPABILITY_MESSAGE_TYPES, TimerType::SinkWaitCap, recovery_ms)
+        self.receive_message_type_with_timeout(&SOURCE_CAPABILITY_MESSAGE_TYPES, TimerType::SinkWaitCap, recovery_ms)
     }
 
     /// Request a certain power level from the source.
@@ -1492,18 +1828,21 @@ impl<DRIVER: Driver, TIMER: Timer> SourceProtocolLayer<DRIVER, TIMER> {
 
 #[cfg(test)]
 mod tests {
+    use byteorder::{ByteOrder, LittleEndian};
 
-    use core::iter::zip;
-
+    use super::message::Message;
+    use super::message::Payload;
     use super::message::data::Data;
     use super::message::data::request::{FixedVariableSupply, PowerSource};
-    use super::message::data::source_capabilities::SourceCapabilities;
-    use super::message::header::Header;
-    use super::{ProtocolError, ProtocolLayer, SinkProtocolLayer, TxValidationError};
+    use super::message::extended::{Extended, ExtendedHeader};
+    use super::message::header::{
+        ControlMessageType, DataMessageType, ExtendedMessageType, Header, SpecificationRevision,
+    };
+    use super::{ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, TxValidationError};
+    use crate::counters::{Counter, CounterType};
     use crate::dummy::{
         DUMMY_CAPABILITIES, DummyDriver, DummyTimer, MAX_DATA_MESSAGE_SIZE, get_dummy_source_capabilities,
     };
-    use crate::protocol_layer::message::Payload;
 
     #[cfg(feature = "numeric-trace")]
     fn assert_event_kinds(
@@ -1531,12 +1870,218 @@ mod tests {
         protocol_layer.driver.inject_received_data(&DUMMY_CAPABILITIES);
         let message = protocol_layer.receive_message().await.unwrap();
 
-        if let Some(Payload::Data(Data::SourceCapabilities(SourceCapabilities(caps)))) = message.payload {
-            for (cap, dummy_cap) in zip(caps, get_dummy_source_capabilities()) {
+        if matches!(message.payload, SinkPayload::SourceCapabilities) {
+            let capabilities = protocol_layer.take_source_capabilities().unwrap();
+            for (cap, dummy_cap) in core::iter::zip(capabilities.0, get_dummy_source_capabilities()) {
                 assert_eq!(cap, dummy_cap.to_raw());
             }
         } else {
             panic!()
+        }
+        assert!(protocol_layer.take_source_capabilities().is_none());
+    }
+
+    #[tokio::test]
+    async fn compact_capability_storage_is_one_shot_and_cancellation_safe() {
+        use core::future::Future;
+        use core::task::{Context, Poll, Waker};
+
+        let mut protocol_layer = get_protocol_layer();
+        protocol_layer.driver.inject_received_data(&DUMMY_CAPABILITIES);
+        let message = protocol_layer.receive_message().await.unwrap();
+        assert_eq!(message.payload, SinkPayload::SourceCapabilities);
+
+        // Starting a new receive invalidates an untaken capability marker. A
+        // Ready-state select may cancel that receive before another frame
+        // arrives, so cleanup cannot depend on successful completion.
+        {
+            let mut pending_receive = Box::pin(protocol_layer.receive_message());
+            let mut context = Context::from_waker(Waker::noop());
+            assert!(matches!(pending_receive.as_mut().poll(&mut context), Poll::Pending));
+        }
+        assert!(protocol_layer.take_source_capabilities().is_none());
+
+        // A retransmitted capability frame must not leak its list into the
+        // following non-capability result.
+        protocol_layer.driver.inject_received_data(&DUMMY_CAPABILITIES);
+        let accept = Message::new(Header::new_control(
+            source_header(),
+            Counter::new_from_value(CounterType::MessageId, 1),
+            ControlMessageType::Accept,
+        ));
+        let mut accept_frame = [0; MAX_DATA_MESSAGE_SIZE];
+        let accept_length = accept.to_bytes(&mut accept_frame);
+        protocol_layer.driver.inject_received_data(&accept_frame[..accept_length]);
+        let message = protocol_layer.receive_message().await.unwrap();
+        assert_eq!(message.payload, SinkPayload::None);
+        assert!(protocol_layer.take_source_capabilities().is_none());
+
+        protocol_layer.driver.inject_received_data(&DUMMY_CAPABILITIES);
+        let message = protocol_layer.receive_message().await.unwrap();
+        assert_eq!(message.payload, SinkPayload::SourceCapabilities);
+        protocol_layer.reset();
+        assert!(protocol_layer.take_source_capabilities().is_none());
+    }
+
+    fn source_header() -> Header {
+        Header::new_template(crate::DataRole::Dfp, crate::PowerRole::Source, SpecificationRevision::R3_X)
+    }
+
+    fn data_frame(message_type: DataMessageType, payload: &[u8]) -> ([u8; MAX_DATA_MESSAGE_SIZE], usize) {
+        assert!(payload.len().is_multiple_of(4));
+        let mut frame = [0; MAX_DATA_MESSAGE_SIZE];
+        let header = Header::new_data(
+            source_header(),
+            Counter::new_from_value(CounterType::MessageId, 3),
+            message_type,
+            (payload.len() / 4) as u8,
+        );
+        header.to_bytes(&mut frame);
+        frame[2..2 + payload.len()].copy_from_slice(payload);
+        (frame, 2 + payload.len())
+    }
+
+    fn extended_frame(message_type: ExtendedMessageType, payload: &[u8]) -> ([u8; MAX_DATA_MESSAGE_SIZE], usize) {
+        let body_size = 2 + payload.len();
+        let object_count = body_size.div_ceil(4);
+        let length = 2 + object_count * 4;
+        let mut frame = [0; MAX_DATA_MESSAGE_SIZE];
+        let header = Header::new_extended(
+            source_header(),
+            Counter::new_from_value(CounterType::MessageId, 5),
+            message_type,
+            object_count as u8,
+        );
+        header.to_bytes(&mut frame);
+        ExtendedHeader::new(payload.len() as u16).with_chunked(true).to_bytes(&mut frame[2..]);
+        frame[4..4 + payload.len()].copy_from_slice(payload);
+        (frame, length)
+    }
+
+    fn assert_compact_sink_parser_matches_general(frame: &[u8]) {
+        let general = Message::from_bytes(frame).unwrap();
+        let header = Header::from_bytes(&frame[..2]).unwrap();
+        let (compact, capabilities) =
+            ProtocolLayer::<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer>::parse_sink_frame(header, frame).unwrap();
+        assert_eq!(compact.header, general.header);
+
+        match (general.payload, compact.payload) {
+            (None, SinkPayload::None) => assert!(capabilities.is_none()),
+            (Some(Payload::Data(Data::SourceCapabilities(expected))), SinkPayload::SourceCapabilities) => {
+                assert_eq!(capabilities.unwrap().0, expected.0);
+            }
+            (Some(Payload::Data(Data::EprMode(expected))), SinkPayload::EprMode(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Data(Data::SourceInfo(expected))), SinkPayload::SourceInfo(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Data(Data::Alert(expected))), SinkPayload::Alert(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Data(Data::Unknown)), SinkPayload::Unknown)
+            | (Some(Payload::Extended(Extended::Unknown)), SinkPayload::Unknown) => {
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Extended(Extended::Status(expected))), SinkPayload::Status(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Extended(Extended::PpsStatus(expected))), SinkPayload::PpsStatus(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (Some(Payload::Extended(Extended::ExtendedControl(expected))), SinkPayload::ExtendedControl(actual)) => {
+                assert_eq!(actual, expected);
+                assert!(capabilities.is_none());
+            }
+            (expected, actual) => panic!("generic payload {expected:?} did not match compact payload {actual:?}"),
+        }
+    }
+
+    #[test]
+    fn compact_sink_parser_matches_general_parser_for_consumed_messages() {
+        let accept = Message::new(Header::new_control(
+            source_header(),
+            Counter::new_from_value(CounterType::MessageId, 1),
+            ControlMessageType::Accept,
+        ));
+        let mut control = [0; MAX_DATA_MESSAGE_SIZE];
+        let length = accept.to_bytes(&mut control);
+        assert_compact_sink_parser_matches_general(&control[..length]);
+
+        assert_compact_sink_parser_matches_general(&DUMMY_CAPABILITIES);
+
+        for (message_type, payload) in [
+            (DataMessageType::EprMode, [0, 0, 0x8c, 0x03].as_slice()),
+            (DataMessageType::SourceInfo, [0xf0, 0x96, 0xf0, 0x00].as_slice()),
+            (DataMessageType::Alert, [0x05, 0, 0, 0xfc].as_slice()),
+            // Invalid EPR Mode length follows the general parser's Unknown path.
+            (DataMessageType::EprMode, [0; 8].as_slice()),
+            // This sink deliberately treats VDM content as opaque/unknown.
+            (DataMessageType::VendorDefined, [0x44, 0x33, 0x22, 0x11].as_slice()),
+        ] {
+            let (frame, length) = data_frame(message_type, payload);
+            assert_compact_sink_parser_matches_general(&frame[..length]);
+        }
+
+        for (message_type, payload) in [
+            (ExtendedMessageType::Status, [1, 2, 3, 4, 5, 6, 7].as_slice()),
+            (ExtendedMessageType::PpsStatus, [0x80, 0x02, 0x3c, 0x08].as_slice()),
+            (ExtendedMessageType::ExtendedControl, [4, 0].as_slice()),
+            (ExtendedMessageType::ManufacturerInfo, [1, 2, 3].as_slice()),
+        ] {
+            let (frame, length) = extended_frame(message_type, payload);
+            assert_compact_sink_parser_matches_general(&frame[..length]);
+        }
+    }
+
+    #[test]
+    fn compact_sink_extended_parser_matches_general_epr_capabilities_and_errors() {
+        let raw_pdos = [
+            0x0a91_912c,
+            0x0012_d12c,
+            0x0013_c12c,
+            0x0014_b12c,
+            0x0016_41f4,
+            0xc9a4_3264,
+            0,
+            0x0018_c1f4,
+            0x001b_41f4,
+            0x001f_01f4,
+            0xd7c0_96f0,
+        ];
+        let mut payload = [0; 44];
+        for (index, raw) in raw_pdos.into_iter().enumerate() {
+            LittleEndian::write_u32(&mut payload[index * 4..], raw);
+        }
+
+        let general = Message::parse_extended_payload(ExtendedMessageType::EprSourceCapabilities, &payload).unwrap();
+        let (compact, capabilities) =
+            ProtocolLayer::<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer>::parse_sink_extended_payload(
+                ExtendedMessageType::EprSourceCapabilities,
+                &payload,
+            )
+            .unwrap();
+        let Extended::EprSourceCapabilities(expected) = general else { panic!() };
+        assert_eq!(compact, SinkPayload::SourceCapabilities);
+        assert_eq!(capabilities.unwrap().0, expected);
+
+        for (message_type, malformed) in [
+            (ExtendedMessageType::Status, [0; 6].as_slice()),
+            (ExtendedMessageType::ExtendedControl, [0; 1].as_slice()),
+            (ExtendedMessageType::EprSourceCapabilities, [0; 3].as_slice()),
+        ] {
+            let general = Message::parse_extended_payload(message_type, malformed).unwrap_err();
+            let compact = ProtocolLayer::<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer>::parse_sink_extended_payload(
+                message_type,
+                malformed,
+            )
+            .unwrap_err();
+            assert_eq!(compact, general);
         }
     }
 

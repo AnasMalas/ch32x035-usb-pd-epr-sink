@@ -16,13 +16,14 @@ use crate::counters::Counter;
 use crate::protocol_layer::message::data::epr_mode::{self, Action};
 use crate::protocol_layer::message::data::request::PowerSource;
 use crate::protocol_layer::message::data::source_capabilities::SourceCapabilities;
-use crate::protocol_layer::message::data::{Data, alert, request};
+use crate::protocol_layer::message::data::{alert, request};
 use crate::protocol_layer::message::extended::extended_control::ExtendedControlMessageType;
 use crate::protocol_layer::message::header::{
     ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
-use crate::protocol_layer::message::{Payload, extended};
-use crate::protocol_layer::{ProtocolError, RxError, SinkProtocolLayer, TxError, TxValidationError};
+use crate::protocol_layer::{
+    ProtocolError, RxError, SinkMessage, SinkPayload, SinkProtocolLayer, TxError, TxValidationError,
+};
 use crate::sink::device_policy_manager::Event;
 use crate::timers::{Timer, TimerType};
 use crate::{DataRole, PowerRole, units};
@@ -632,18 +633,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    fn source_capabilities_from_message(
-        message: crate::protocol_layer::message::Message,
-    ) -> Result<SourceCapabilities, Error> {
+    fn source_capabilities_from_message(&mut self, message: SinkMessage) -> Result<SourceCapabilities, Error> {
         trace!("Source capabilities: {:?}", message);
 
-        let capabilities = match message.payload {
-            Some(Payload::Data(Data::SourceCapabilities(caps))) => caps,
-            Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => SourceCapabilities(pdos),
-            _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
-        };
-
-        Ok(capabilities)
+        if matches!(message.payload, SinkPayload::SourceCapabilities) {
+            self.protocol_layer.take_source_capabilities().ok_or(Error::Protocol(ProtocolError::UnexpectedMessage))
+        } else {
+            Err(Error::Protocol(ProtocolError::UnexpectedMessage))
+        }
     }
 
     fn capabilities_valid_for_mode(capabilities: &SourceCapabilities, mode: Mode) -> bool {
@@ -745,11 +742,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    fn handle_ready_message(
-        &mut self,
-        message: crate::protocol_layer::message::Message,
-        power_source: request::PowerSource,
-    ) -> State {
+    fn handle_ready_message(&mut self, message: SinkMessage, power_source: request::PowerSource) -> State {
         match message.header.message_type() {
             MessageType::Data(DataMessageType::SourceCapabilities) => {
                 // A capability change invalidates any already-encoded pending
@@ -760,12 +753,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     hard_reset_state!(HardResetReason::EprProtocolError)
                 } else {
                     match message.payload {
-                        Some(Payload::Data(Data::SourceCapabilities(capabilities))) => {
+                        SinkPayload::SourceCapabilities => {
                             self.get_source_cap_pending = false;
-                            if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
-                                State::EvaluateCapabilities(capabilities)
-                            } else {
-                                hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
+                            match self.protocol_layer.take_source_capabilities() {
+                                Some(capabilities) if Self::capabilities_valid_for_mode(&capabilities, self.mode) => {
+                                    State::EvaluateCapabilities(capabilities)
+                                }
+                                Some(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
+                                None => State::SendSoftReset,
                             }
                         }
                         _ => State::SendSoftReset,
@@ -775,14 +770,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             MessageType::Extended(ExtendedMessageType::EprSourceCapabilities) => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
-                if let Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) = message.payload {
+                if matches!(message.payload, SinkPayload::SourceCapabilities) {
                     self.get_source_cap_pending = false;
-                    let caps = SourceCapabilities(pdos);
-
-                    if self.mode != Mode::Epr || !Self::capabilities_valid_for_mode(&caps, Mode::Epr) {
-                        hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
-                    } else {
-                        State::EvaluateCapabilities(caps)
+                    match self.protocol_layer.take_source_capabilities() {
+                        Some(caps) if self.mode == Mode::Epr && Self::capabilities_valid_for_mode(&caps, Mode::Epr) => {
+                            State::EvaluateCapabilities(caps)
+                        }
+                        Some(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
+                        None => State::SendSoftReset,
                     }
                 } else {
                     State::SendSoftReset
@@ -791,22 +786,20 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             MessageType::Data(DataMessageType::EprMode) => {
                 self.pending_sink_ams = None;
                 match message.payload {
-                    Some(Payload::Data(Data::EprMode(mode)))
-                        if self.mode == Mode::Epr && mode.action() == Action::Exit =>
-                    {
+                    SinkPayload::EprMode(mode) if self.mode == Mode::Epr && mode.action() == Action::Exit => {
                         State::EprExitReceived(power_source)
                     }
                     _ => State::SendSoftReset,
                 }
             }
             MessageType::Data(DataMessageType::Alert) => match message.payload {
-                Some(Payload::Data(Data::Alert(alert))) => State::SourceAlert(alert, power_source),
+                SinkPayload::Alert(alert) => State::SourceAlert(alert, power_source),
                 _ => State::SendSoftReset,
             },
             MessageType::Control(ControlMessageType::GetSinkCap) => State::GiveSinkCap(Mode::Spr, power_source),
             MessageType::Control(ControlMessageType::GetSinkCapExtended) => State::GiveSinkCapExtended(power_source),
             MessageType::Extended(ExtendedMessageType::ExtendedControl) => {
-                if let Some(Payload::Extended(extended::Extended::ExtendedControl(ctrl))) = &message.payload {
+                if let SinkPayload::ExtendedControl(ctrl) = message.payload {
                     if ctrl.message_type() == ExtendedControlMessageType::EprGetSinkCap {
                         State::GiveSinkCap(Mode::Epr, power_source)
                     } else {
@@ -860,7 +853,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
     fn finish_receive(
         &mut self,
         operation: ReceiveOperation,
-        result: Result<crate::protocol_layer::message::Message, ProtocolError>,
+        result: Result<SinkMessage, ProtocolError>,
     ) -> Result<State, Error> {
         match operation {
             ReceiveOperation::SourceCapabilities(wait) => {
@@ -874,23 +867,24 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 if matches!(wait, CapabilityWait::EprEntry) {
                     let message = result?;
-                    return Ok(match message.payload {
-                        Some(Payload::Data(Data::SourceCapabilities(_))) => {
+                    return Ok(match message.header.message_type() {
+                        MessageType::Data(DataMessageType::SourceCapabilities) => {
                             hard_reset_state!(HardResetReason::EprProtocolError)
                         }
-                        Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
-                            let capabilities = SourceCapabilities(pdos);
-                            if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) {
-                                State::EvaluateCapabilities(capabilities)
-                            } else {
-                                hard_reset_state!(HardResetReason::InvalidSourceCapabilities)
+                        MessageType::Extended(ExtendedMessageType::EprSourceCapabilities) => {
+                            match self.source_capabilities_from_message(message) {
+                                Ok(capabilities) if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) => {
+                                    State::EvaluateCapabilities(capabilities)
+                                }
+                                Ok(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
+                                Err(_) => hard_reset_state!(HardResetReason::EprProtocolError),
                             }
                         }
                         _ => hard_reset_state!(HardResetReason::EprProtocolError),
                     });
                 }
 
-                let capabilities = Self::source_capabilities_from_message(result?)?;
+                let capabilities = self.source_capabilities_from_message(result?)?;
                 match wait {
                     CapabilityWait::Initial { recovery_ms } => {
                         if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
@@ -983,12 +977,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 );
                 let mode_matches = (requested_mode == Mode::Spr && self.mode == Mode::Spr && received_spr)
                     || (requested_mode == Mode::Epr && self.mode == Mode::Epr && received_epr);
-                let capabilities = match message.payload {
-                    Some(Payload::Data(Data::SourceCapabilities(capabilities))) => Some(capabilities),
-                    Some(Payload::Extended(extended::Extended::EprSourceCapabilities(pdos))) => {
-                        Some(SourceCapabilities(pdos))
-                    }
-                    _ => None,
+                let capabilities = if matches!(message.payload, SinkPayload::SourceCapabilities) {
+                    self.protocol_layer.take_source_capabilities()
+                } else {
+                    None
                 };
 
                 Ok(match capabilities {
@@ -1005,7 +997,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             ReceiveOperation::GetSourceInfo(power_source) => {
                 match result {
                     Ok(message) => {
-                        if let Some(Payload::Data(Data::SourceInfo(source_info))) = message.payload {
+                        if let SinkPayload::SourceInfo(source_info) = message.payload {
                             self.device_policy_manager.inform_source_info(&source_info);
                         }
                     }
@@ -1022,13 +1014,13 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             ReceiveOperation::GetStatus(query, power_source) => {
                 match result {
                     Ok(message) => match (query, message.payload) {
-                        (StatusQueryKind::General, Some(Payload::Extended(extended::Extended::Status(status)))) => {
+                        (StatusQueryKind::General, SinkPayload::Status(status)) => {
                             self.device_policy_manager.inform_status(&status);
                         }
-                        (StatusQueryKind::Pps, Some(Payload::Extended(extended::Extended::PpsStatus(status)))) => {
+                        (StatusQueryKind::Pps, SinkPayload::PpsStatus(status)) => {
                             self.device_policy_manager.inform_pps_status(&status);
                         }
-                        (_, None) => {
+                        (_, SinkPayload::None) => {
                             let failure = match message.header.message_type() {
                                 MessageType::Control(ControlMessageType::NotSupported) => {
                                     Some(StatusQueryFailure::NotSupported)
@@ -1053,7 +1045,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             ReceiveOperation::EprEntryAcknowledgement(power_source, _) => {
                 let message = result?;
                 Ok(match message.payload {
-                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
+                    SinkPayload::EprMode(epr_mode) => match epr_mode.action() {
                         Action::EnterAcknowledged => State::EprEntryWaitForResponse(power_source),
                         Action::EnterSucceeded => State::SendSoftReset,
                         Action::Exit => State::EprExitReceived(power_source),
@@ -1070,7 +1062,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             ReceiveOperation::EprEntryResult(power_source) => {
                 let message = result?;
                 Ok(match message.payload {
-                    Some(Payload::Data(Data::EprMode(epr_mode))) => match epr_mode.action() {
+                    SinkPayload::EprMode(epr_mode) => match epr_mode.action() {
                         Action::EnterSucceeded => {
                             self.mode = Mode::Epr;
                             State::EprWaitForCapabilities(power_source)
@@ -1115,7 +1107,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 let acknowledged = matches!(
                     message.payload,
-                    Some(Payload::Extended(extended::Extended::ExtendedControl(control)))
+                    SinkPayload::ExtendedControl(control)
                         if control.message_type() == ExtendedControlMessageType::EprKeepAliveAck
                 );
                 if acknowledged {
