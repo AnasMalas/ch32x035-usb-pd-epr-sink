@@ -655,6 +655,21 @@ impl<R: SinkRuntime> SinkDevice<R> {
         self.runtime.on_contract_ready(self.contract.active_plan());
     }
 
+    fn invalidate_session(&mut self, reason: RecoveryCancellationReason) {
+        self.runtime.set_pd_load_permitted(false);
+        self.runtime.clear_pending_commands();
+        if matches!(reason, RecoveryCancellationReason::Detached) {
+            self.contract.on_detach();
+        } else {
+            self.contract.on_protocol_loss();
+        }
+        self.pending_contract_refresh = false;
+        self.cancel_recovery(reason, false);
+        self.controller.reset_port();
+        self.source_info_requested = false;
+        self.source_status_pending = false;
+    }
+
     fn event_for_action(&mut self, action: ControllerAction) -> Event {
         match action {
             ControllerAction::Request(plan) => match request_to_stack(plan) {
@@ -910,14 +925,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     #[cfg(feature = "hard-reset-reasons")]
     fn hard_reset(&mut self, origin: HardResetOrigin, reason: HardResetCause) {
-        self.runtime.set_pd_load_permitted(false);
-        self.runtime.clear_pending_commands();
-        self.contract.on_protocol_loss();
-        self.pending_contract_refresh = false;
-        self.cancel_recovery(RecoveryCancellationReason::HardReset, false);
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        self.source_status_pending = false;
+        self.invalidate_session(RecoveryCancellationReason::HardReset);
         let direction = match origin {
             HardResetOrigin::Source => HardResetDirection::Received,
             HardResetOrigin::Sink => HardResetDirection::Sent,
@@ -931,14 +939,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     #[cfg(not(feature = "hard-reset-reasons"))]
     fn hard_reset(&mut self, origin: HardResetOrigin) {
-        self.runtime.set_pd_load_permitted(false);
-        self.runtime.clear_pending_commands();
-        self.contract.on_protocol_loss();
-        self.pending_contract_refresh = false;
-        self.cancel_recovery(RecoveryCancellationReason::HardReset, false);
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        self.source_status_pending = false;
+        self.invalidate_session(RecoveryCancellationReason::HardReset);
         let direction = match origin {
             HardResetOrigin::Source => HardResetDirection::Received,
             HardResetOrigin::Sink => HardResetDirection::Sent,
@@ -960,28 +961,14 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     fn detached(&mut self) {
-        self.runtime.set_pd_load_permitted(false);
-        self.runtime.clear_pending_commands();
-        self.contract.on_detach();
-        self.pending_contract_refresh = false;
-        self.cancel_recovery(RecoveryCancellationReason::Detached, false);
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        self.source_status_pending = false;
+        self.invalidate_session(RecoveryCancellationReason::Detached);
         self.epr_discovery_attempts = 0;
         self.epr_exhaustion_reported = false;
         self.runtime.on_detached();
     }
 
     fn protocol_lost(&mut self) {
-        self.runtime.set_pd_load_permitted(false);
-        self.runtime.clear_pending_commands();
-        self.contract.on_protocol_loss();
-        self.pending_contract_refresh = false;
-        self.cancel_recovery(RecoveryCancellationReason::ProtocolLost, false);
-        self.controller.reset_port();
-        self.source_info_requested = false;
-        self.source_status_pending = false;
+        self.invalidate_session(RecoveryCancellationReason::ProtocolLost);
         self.runtime.on_protocol_lost(self.epr_discovery_attempts, self.config.max_auto_epr_attempts);
     }
 
