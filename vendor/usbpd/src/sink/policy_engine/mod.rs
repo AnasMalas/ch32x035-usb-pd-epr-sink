@@ -89,10 +89,10 @@ enum State {
     #[cfg(feature = "initial-capabilities-fallback")]
     ProbeSourceCapabilities,
     EvaluateCapabilities,
-    SelectCapability(request::PowerSource),
-    TransitionSink(request::PowerSource),
-    Ready(request::PowerSource),
-    SendNotSupported(request::PowerSource),
+    SelectCapability,
+    TransitionSink,
+    Ready,
+    SendNotSupported,
     SendSoftReset,
     SoftReset,
     #[cfg(feature = "hard-reset-reasons")]
@@ -102,20 +102,20 @@ enum State {
     TransitionToDefault,
     /// Give sink capabilities. The Mode indicates whether to send Sink_Capabilities (Spr)
     /// or EPR_Sink_Capabilities (Epr) per spec 8.3.3.3.10.
-    GiveSinkCap(Mode, request::PowerSource),
-    GiveSinkCapExtended(request::PowerSource),
-    GetSourceCap(Mode, request::PowerSource),
-    GetSourceInfo(request::PowerSource),
-    GetStatus(StatusQueryKind, request::PowerSource),
-    SourceAlert(alert::AlertDataObject, request::PowerSource),
+    GiveSinkCap(Mode),
+    GiveSinkCapExtended,
+    GetSourceCap(Mode),
+    GetSourceInfo,
+    GetStatus(StatusQueryKind),
+    SourceAlert(alert::AlertDataObject),
 
     // EPR states
-    EprModeEntry(request::PowerSource, units::Power),
-    EprEntryWaitForResponse(request::PowerSource),
-    EprWaitForCapabilities(request::PowerSource),
+    EprModeEntry(units::Power),
+    EprEntryWaitForResponse,
+    EprWaitForCapabilities,
     EprSendExit,
-    EprExitReceived(request::PowerSource),
-    EprKeepAlive(request::PowerSource),
+    EprExitReceived,
+    EprKeepAlive,
 
     // Compact internal I/O instructions. `run_step` executes these until the
     // next specification-visible policy state is reached.
@@ -153,18 +153,18 @@ struct ReadyTimeout {
 enum TransmitOperation {
     #[cfg(feature = "initial-capabilities-fallback")]
     ProbeSourceCapabilities,
-    SelectCapability(request::PowerSource),
-    SendNotSupported(request::PowerSource),
+    SelectCapability,
+    SendNotSupported,
     SendSoftReset,
     AcceptSoftReset,
-    GiveSinkCap(Mode, request::PowerSource),
-    GiveSinkCapExtended(request::PowerSource),
-    GetSourceCap(Mode, request::PowerSource),
-    GetSourceInfo(request::PowerSource),
-    GetStatus(StatusQueryKind, request::PowerSource),
-    EnterEprMode(request::PowerSource, u8),
+    GiveSinkCap(Mode),
+    GiveSinkCapExtended,
+    GetSourceCap(Mode),
+    GetSourceInfo,
+    GetStatus(StatusQueryKind),
+    EnterEprMode(u8),
     ExitEprMode,
-    EprKeepAlive(request::PowerSource),
+    EprKeepAlive,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -182,15 +182,15 @@ enum CapabilityWait {
 #[derive(Debug, Clone, Copy)]
 enum ReceiveOperation {
     SourceCapabilities(CapabilityWait),
-    RequestResponse(request::PowerSource),
-    PowerTransition(request::PowerSource, Mode),
+    RequestResponse,
+    PowerTransition(Mode),
     SoftResetAccept,
-    GetSourceCap(Mode, request::PowerSource),
-    GetSourceInfo(request::PowerSource),
-    GetStatus(StatusQueryKind, request::PowerSource),
-    EprEntryAcknowledgement(request::PowerSource, u8),
-    EprEntryResult(request::PowerSource),
-    EprKeepAlive(request::PowerSource),
+    GetSourceCap(Mode),
+    GetSourceInfo,
+    GetStatus(StatusQueryKind),
+    EprEntryAcknowledgement(u8),
+    EprEntryResult,
+    EprKeepAlive,
 }
 
 const REQUEST_RESPONSE_TYPES: &[MessageType] = &[
@@ -246,8 +246,8 @@ impl ReceiveOperation {
                     CapabilityWait::EprEntry => None,
                 },
             ),
-            Self::RequestResponse(_) => (REQUEST_RESPONSE_TYPES, TimerType::SenderResponse, None),
-            Self::PowerTransition(_, mode) => (
+            Self::RequestResponse => (REQUEST_RESPONSE_TYPES, TimerType::SenderResponse, None),
+            Self::PowerTransition(mode) => (
                 PS_RDY_TYPE,
                 match mode {
                     Mode::Epr => TimerType::PSTransitionEpr,
@@ -256,9 +256,9 @@ impl ReceiveOperation {
                 None,
             ),
             Self::SoftResetAccept => (ACCEPT_TYPE, TimerType::SenderResponse, None),
-            Self::GetSourceCap(_, _) => (SOURCE_CAPABILITY_TYPES, TimerType::SenderResponse, None),
-            Self::GetSourceInfo(_) => (SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse, None),
-            Self::GetStatus(query, _) => (
+            Self::GetSourceCap(_) => (SOURCE_CAPABILITY_TYPES, TimerType::SenderResponse, None),
+            Self::GetSourceInfo => (SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse, None),
+            Self::GetStatus(query) => (
                 match query {
                     StatusQueryKind::General => STATUS_RESPONSE_TYPES,
                     StatusQueryKind::Pps => PPS_STATUS_RESPONSE_TYPES,
@@ -266,9 +266,9 @@ impl ReceiveOperation {
                 TimerType::SenderResponse,
                 None,
             ),
-            Self::EprEntryAcknowledgement(_, _) => (EPR_MODE_TYPE, TimerType::SenderResponse, None),
-            Self::EprEntryResult(_) => (EPR_MODE_TYPE, TimerType::SinkEPREnter, None),
-            Self::EprKeepAlive(_) => (EXTENDED_CONTROL_TYPE, TimerType::SenderResponse, None),
+            Self::EprEntryAcknowledgement(_) => (EPR_MODE_TYPE, TimerType::SenderResponse, None),
+            Self::EprEntryResult => (EPR_MODE_TYPE, TimerType::SinkEPREnter, None),
+            Self::EprKeepAlive => (EXTENDED_CONTROL_TYPE, TimerType::SenderResponse, None),
         }
     }
 }
@@ -285,6 +285,8 @@ pub struct Sink<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> {
     /// Last request that completed with PS_RDY. This must not be replaced by a
     /// proposed renegotiation until that new request also reaches PS_RDY.
     active_power_source: Option<request::PowerSource>,
+    /// Request being negotiated. It becomes active only after PS_RDY.
+    proposed_power_source: Option<request::PowerSource>,
     mode: Mode,
     state: State,
     /// Tracks whether a Get_Source_Cap request is pending.
@@ -375,6 +377,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             hard_reset_counter: Counter::new(crate::counters::CounterType::HardReset),
             source_capabilities: None,
             active_power_source: None,
+            proposed_power_source: None,
             mode,
             get_source_cap_pending: false,
             pending_sink_ams: None,
@@ -409,6 +412,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.state = State::Discovery;
         self.contract = Contract::Safe5V;
         self.active_power_source = None;
+        self.proposed_power_source = None;
         self.hard_reset_counter.reset();
         self.source_capabilities = None;
         self.mode = Mode::Spr;
@@ -523,7 +527,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 // Per spec 8.3.3.3.5: SenderResponseTimer timeout triggers Hard Reset.
                 (
-                    State::Receive(ReceiveOperation::RequestResponse(_)),
+                    State::Receive(ReceiveOperation::RequestResponse),
                     ProtocolError::RxError(RxError::ReceiveTimeout),
                 ) => Some(hard_reset_state!(HardResetReason::RequestResponseTimeout)),
 
@@ -535,10 +539,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 ) => Some(hard_reset_state!(HardResetReason::EprCapabilitiesTimeout)),
 
                 // tEnterEPR expiry requires a Soft Reset.
-                (
-                    State::Receive(ReceiveOperation::EprEntryResult(_)),
-                    ProtocolError::RxError(RxError::ReceiveTimeout),
-                ) => Some(State::SendSoftReset),
+                (State::Receive(ReceiveOperation::EprEntryResult), ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                    Some(State::SendSoftReset)
+                }
 
                 // These response timeouts previously retried their complete
                 // policy transaction because the logical state remained
@@ -548,14 +551,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     ProtocolError::RxError(RxError::ReceiveTimeout),
                 ) => Some(State::SendSoftReset),
                 (
-                    State::Receive(ReceiveOperation::EprEntryAcknowledgement(power_source, pdp_watts)),
+                    State::Receive(ReceiveOperation::EprEntryAcknowledgement(pdp_watts)),
                     ProtocolError::RxError(RxError::ReceiveTimeout),
-                ) => Some(State::EprModeEntry(*power_source, units::Power::from_watts(*pdp_watts))),
+                ) => Some(State::EprModeEntry(units::Power::from_watts(*pdp_watts))),
 
                 // Per USB PD Spec R3.2 Section 8.3.3.3.6 and Table 6.72:
                 // Any Protocol Error during power transition (PE_SNK_Transition_Sink state)
                 // shall trigger a Hard Reset, not a Soft Reset.
-                (State::Receive(ReceiveOperation::PowerTransition(_, _)), _) => {
+                (State::Receive(ReceiveOperation::PowerTransition(_)), _) => {
                     Some(hard_reset_state!(HardResetReason::PowerTransitionFailure))
                 }
 
@@ -563,8 +566,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // partner Hard/Soft Reset and detach are handled above or by
                 // Error::from before a Sink reset is selected.
                 (
-                    State::Transmit(TransmitOperation::EprKeepAlive(_))
-                    | State::Receive(ReceiveOperation::EprKeepAlive(_)),
+                    State::Transmit(TransmitOperation::EprKeepAlive) | State::Receive(ReceiveOperation::EprKeepAlive),
                     _,
                 ) => Some(hard_reset_state!(HardResetReason::EprKeepAliveFailed)),
 
@@ -579,9 +581,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 (_, ProtocolError::RxError(RxError::ParseError(_))) => Some(State::SendSoftReset),
 
                 // Per spec Table 6.72: Unsupported messages in Ready state get Not_Supported response.
-                (State::Ready(power_source), ProtocolError::RxError(RxError::UnsupportedMessage)) => {
-                    Some(State::SendNotSupported(*power_source))
-                }
+                (State::Ready, ProtocolError::RxError(RxError::UnsupportedMessage)) => Some(State::SendNotSupported),
 
                 // Before a contract exists there is no retained power request
                 // for SendNotSupported, so recover unsupported wire traffic
@@ -668,31 +668,42 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    fn state_for_sink_ams(ams: SinkInitiatedAms, power_source: request::PowerSource) -> State {
+    fn state_for_sink_ams(&mut self, ams: SinkInitiatedAms) -> State {
         match ams {
-            SinkInitiatedAms::GetSourceCap(mode) => State::GetSourceCap(mode, power_source),
-            SinkInitiatedAms::GetSourceInfo => State::GetSourceInfo(power_source),
-            SinkInitiatedAms::GetStatus(query) => State::GetStatus(query, power_source),
-            SinkInitiatedAms::EnterEprMode(pdp) => State::EprModeEntry(power_source, pdp),
-            SinkInitiatedAms::ExitEprMode => match power_source {
+            SinkInitiatedAms::GetSourceCap(mode) => State::GetSourceCap(mode),
+            SinkInitiatedAms::GetSourceInfo => State::GetSourceInfo,
+            SinkInitiatedAms::GetStatus(query) => State::GetStatus(query),
+            SinkInitiatedAms::EnterEprMode(pdp) => State::EprModeEntry(pdp),
+            SinkInitiatedAms::ExitEprMode => match self.active_power_source() {
                 PowerSource::EprRequest(epr) if epr.object_position() <= 7 => State::EprSendExit,
-                _ => State::Ready(power_source),
+                _ => State::Ready,
             },
-            SinkInitiatedAms::RequestPower(request) => State::SelectCapability(request),
-            SinkInitiatedAms::EprKeepAlive => State::EprKeepAlive(power_source),
+            SinkInitiatedAms::RequestPower(request) => {
+                self.proposed_power_source = Some(request);
+                State::SelectCapability
+            }
+            SinkInitiatedAms::EprKeepAlive => State::EprKeepAlive,
         }
     }
 
-    fn begin_or_defer_sink_ams(&mut self, ams: SinkInitiatedAms, power_source: request::PowerSource) -> State {
+    fn begin_or_defer_sink_ams(&mut self, ams: SinkInitiatedAms) -> State {
         if self.protocol_layer.sink_tx_ok() {
-            Self::state_for_sink_ams(ams, power_source)
+            self.state_for_sink_ams(ams)
         } else {
             // Keep the exact command/request object. Re-planning is only
             // necessary if the Source changes its Capabilities; that path
             // clears this pending value and evaluates the retained DPM intent.
             self.pending_sink_ams.get_or_insert(ams);
-            State::Ready(power_source)
+            State::Ready
         }
+    }
+
+    fn active_power_source(&self) -> request::PowerSource {
+        self.active_power_source.expect("an explicit contract has an active request")
+    }
+
+    fn proposed_power_source(&self) -> request::PowerSource {
+        self.proposed_power_source.expect("a power transition has a proposed request")
     }
 
     fn is_pps(power_source: request::PowerSource) -> bool {
@@ -782,7 +793,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    fn handle_ready_message(&mut self, message: SinkMessage, power_source: request::PowerSource) -> State {
+    fn handle_ready_message(&mut self, message: SinkMessage) -> State {
         match message.header.message_type() {
             MessageType::Data(DataMessageType::SourceCapabilities) => {
                 // A capability change invalidates any already-encoded pending
@@ -827,29 +838,29 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.pending_sink_ams = None;
                 match message.payload {
                     SinkPayload::EprMode(mode) if self.mode == Mode::Epr && mode.action() == Action::Exit => {
-                        State::EprExitReceived(power_source)
+                        State::EprExitReceived
                     }
                     _ => State::SendSoftReset,
                 }
             }
             MessageType::Data(DataMessageType::Alert) => match message.payload {
-                SinkPayload::Alert(alert) => State::SourceAlert(alert, power_source),
+                SinkPayload::Alert(alert) => State::SourceAlert(alert),
                 _ => State::SendSoftReset,
             },
-            MessageType::Control(ControlMessageType::GetSinkCap) => State::GiveSinkCap(Mode::Spr, power_source),
-            MessageType::Control(ControlMessageType::GetSinkCapExtended) => State::GiveSinkCapExtended(power_source),
+            MessageType::Control(ControlMessageType::GetSinkCap) => State::GiveSinkCap(Mode::Spr),
+            MessageType::Control(ControlMessageType::GetSinkCapExtended) => State::GiveSinkCapExtended,
             MessageType::Extended(ExtendedMessageType::ExtendedControl) => {
                 if let SinkPayload::ExtendedControl(ctrl) = message.payload {
                     if ctrl.message_type() == ExtendedControlMessageType::EprGetSinkCap {
-                        State::GiveSinkCap(Mode::Epr, power_source)
+                        State::GiveSinkCap(Mode::Epr)
                     } else {
-                        State::SendNotSupported(power_source)
+                        State::SendNotSupported
                     }
                 } else {
-                    State::SendNotSupported(power_source)
+                    State::SendNotSupported
                 }
             }
-            _ => State::SendNotSupported(power_source),
+            _ => State::SendNotSupported,
         }
     }
 
@@ -859,34 +870,22 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             TransmitOperation::ProbeSourceCapabilities => {
                 State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::Probe))
             }
-            TransmitOperation::SelectCapability(power_source) => {
-                State::Receive(ReceiveOperation::RequestResponse(power_source))
-            }
-            TransmitOperation::SendNotSupported(power_source) => State::Ready(power_source),
+            TransmitOperation::SelectCapability => State::Receive(ReceiveOperation::RequestResponse),
+            TransmitOperation::SendNotSupported => State::Ready,
             TransmitOperation::SendSoftReset => State::Receive(ReceiveOperation::SoftResetAccept),
             TransmitOperation::AcceptSoftReset => State::WaitForCapabilities,
-            TransmitOperation::GiveSinkCap(_, power_source) | TransmitOperation::GiveSinkCapExtended(power_source) => {
-                State::Ready(power_source)
-            }
-            TransmitOperation::GetSourceCap(mode, power_source) => {
-                State::Receive(ReceiveOperation::GetSourceCap(mode, power_source))
-            }
-            TransmitOperation::GetSourceInfo(power_source) => {
-                State::Receive(ReceiveOperation::GetSourceInfo(power_source))
-            }
-            TransmitOperation::GetStatus(query, power_source) => {
-                State::Receive(ReceiveOperation::GetStatus(query, power_source))
-            }
-            TransmitOperation::EnterEprMode(power_source, pdp_watts) => {
-                State::Receive(ReceiveOperation::EprEntryAcknowledgement(power_source, pdp_watts))
+            TransmitOperation::GiveSinkCap(_) | TransmitOperation::GiveSinkCapExtended => State::Ready,
+            TransmitOperation::GetSourceCap(mode) => State::Receive(ReceiveOperation::GetSourceCap(mode)),
+            TransmitOperation::GetSourceInfo => State::Receive(ReceiveOperation::GetSourceInfo),
+            TransmitOperation::GetStatus(query) => State::Receive(ReceiveOperation::GetStatus(query)),
+            TransmitOperation::EnterEprMode(pdp_watts) => {
+                State::Receive(ReceiveOperation::EprEntryAcknowledgement(pdp_watts))
             }
             TransmitOperation::ExitEprMode => {
                 self.mode = Mode::Spr;
                 State::WaitForCapabilities
             }
-            TransmitOperation::EprKeepAlive(power_source) => {
-                State::Receive(ReceiveOperation::EprKeepAlive(power_source))
-            }
+            TransmitOperation::EprKeepAlive => State::Receive(ReceiveOperation::EprKeepAlive),
         }
     }
 
@@ -947,7 +946,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     CapabilityWait::EprEntry => unreachable!(),
                 }
             }
-            ReceiveOperation::RequestResponse(power_source) => {
+            ReceiveOperation::RequestResponse => {
                 let message_type = result?.header.message_type();
                 let MessageType::Control(control_message_type) = message_type else { unreachable!() };
 
@@ -962,9 +961,12 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     ControlMessageType::Accept => {}
                     _ => unreachable!(),
                 }
+                if control_message_type != ControlMessageType::Accept {
+                    self.proposed_power_source = None;
+                }
 
                 Ok(match (self.contract, control_message_type) {
-                    (_, ControlMessageType::Accept) => State::TransitionSink(power_source),
+                    (_, ControlMessageType::Accept) => State::TransitionSink,
                     (Contract::Safe5V, ControlMessageType::Wait | ControlMessageType::Reject) => {
                         State::WaitForCapabilities
                     }
@@ -974,14 +976,13 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     {
                         hard_reset_state!(HardResetReason::EprProtocolError)
                     }
-                    (Contract::Explicit, ControlMessageType::Reject | ControlMessageType::Wait) => {
-                        State::Ready(self.active_power_source.expect("explicit contract has an active request"))
-                    }
+                    (Contract::Explicit, ControlMessageType::Reject | ControlMessageType::Wait) => State::Ready,
                     _ => unreachable!(),
                 })
             }
-            ReceiveOperation::PowerTransition(accepted_power_source, _) => {
+            ReceiveOperation::PowerTransition(_) => {
                 result?;
+                let accepted_power_source = self.proposed_power_source.take().expect("accepted request was retained");
                 self.contract = Contract::TransitionToExplicit;
                 self.device_policy_manager.transition_power(&accepted_power_source);
                 self.active_power_source = Some(accepted_power_source);
@@ -992,19 +993,19 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 }
                 self.epr_keep_alive_deadline_tick = None;
                 self.ensure_periodic_deadlines(accepted_power_source);
-                Ok(State::Ready(accepted_power_source))
+                Ok(State::Ready)
             }
             ReceiveOperation::SoftResetAccept => {
                 result?;
                 Ok(State::WaitForCapabilities)
             }
-            ReceiveOperation::GetSourceCap(requested_mode, power_source) => {
+            ReceiveOperation::GetSourceCap(requested_mode) => {
                 self.get_source_cap_pending = false;
                 let message = match result {
                     Ok(message) => message,
                     Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
                         warn!("Get_Source_Cap timeout, returning to Ready");
-                        return Ok(State::Ready(power_source));
+                        return Ok(State::Ready);
                     }
                     Err(error) => return Err(error.into()),
                 };
@@ -1030,11 +1031,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         self.cache_capabilities(capabilities)
                     }
                     Some(_) if mode_matches => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
-                    Some(_) => State::Ready(power_source),
+                    Some(_) => State::Ready,
                     None => State::SendSoftReset,
                 })
             }
-            ReceiveOperation::GetSourceInfo(power_source) => {
+            ReceiveOperation::GetSourceInfo => {
                 match result {
                     Ok(message) => {
                         if let SinkPayload::SourceInfo(source_info) = message.payload {
@@ -1049,9 +1050,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     }
                     Err(_) => {}
                 }
-                Ok(State::Ready(power_source))
+                Ok(State::Ready)
             }
-            ReceiveOperation::GetStatus(query, power_source) => {
+            ReceiveOperation::GetStatus(query) => {
                 match result {
                     Ok(message) => match (query, message.payload) {
                         (StatusQueryKind::General, SinkPayload::Status(status)) => {
@@ -1080,15 +1081,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     }
                     Err(error) => return Err(error.into()),
                 }
-                Ok(State::Ready(power_source))
+                Ok(State::Ready)
             }
-            ReceiveOperation::EprEntryAcknowledgement(power_source, _) => {
+            ReceiveOperation::EprEntryAcknowledgement(_) => {
                 let message = result?;
                 Ok(match message.payload {
                     SinkPayload::EprMode(epr_mode) => match epr_mode.action() {
-                        Action::EnterAcknowledged => State::EprEntryWaitForResponse(power_source),
+                        Action::EnterAcknowledged => State::EprEntryWaitForResponse,
                         Action::EnterSucceeded => State::SendSoftReset,
-                        Action::Exit => State::EprExitReceived(power_source),
+                        Action::Exit => State::EprExitReceived,
                         Action::EnterFailed => {
                             let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
                             self.device_policy_manager.epr_mode_entry_failed(reason);
@@ -1099,15 +1100,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     _ => State::SendSoftReset,
                 })
             }
-            ReceiveOperation::EprEntryResult(power_source) => {
+            ReceiveOperation::EprEntryResult => {
                 let message = result?;
                 Ok(match message.payload {
                     SinkPayload::EprMode(epr_mode) => match epr_mode.action() {
                         Action::EnterSucceeded => {
                             self.mode = Mode::Epr;
-                            State::EprWaitForCapabilities(power_source)
+                            State::EprWaitForCapabilities
                         }
-                        Action::Exit => State::EprExitReceived(power_source),
+                        Action::Exit => State::EprExitReceived,
                         Action::EnterFailed => {
                             let reason = epr_mode::DataEnterFailed::from(epr_mode.data());
                             self.device_policy_manager.epr_mode_entry_failed(reason);
@@ -1118,7 +1119,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     _ => State::SendSoftReset,
                 })
             }
-            ReceiveOperation::EprKeepAlive(power_source) => {
+            ReceiveOperation::EprKeepAlive => {
                 let message = match result {
                     Ok(message) => message,
                     Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
@@ -1161,7 +1162,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     ));
                     self.mode = Mode::Epr;
                     self.epr_keep_alive_deadline_tick = Some(Self::deadline_after(3));
-                    Ok(State::Ready(power_source))
+                    Ok(State::Ready)
                 } else {
                     numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                         crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
@@ -1171,7 +1172,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         message.header.0,
                         crate::numeric_trace::UNAVAILABLE_U16,
                     ));
-                    Ok(State::SendNotSupported(power_source))
+                    Ok(State::SendNotSupported)
                 }
             }
         }
@@ -1182,6 +1183,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             State::Startup => {
                 self.contract = Default::default();
                 self.active_power_source = None;
+                self.proposed_power_source = None;
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 self.pps_refresh_deadline_tick = None;
@@ -1223,19 +1225,18 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     return Err(Error::InvalidRequestForMode);
                 }
 
-                State::SelectCapability(request)
+                self.proposed_power_source = Some(request);
+                State::SelectCapability
             }
-            State::SelectCapability(power_source) => {
+            State::SelectCapability => {
                 // Any power request now being attempted supersedes an older
                 // scheduled retry. A new Wait response below arms it again.
                 self.wait_retry_pending = false;
-                State::Transmit(TransmitOperation::SelectCapability(*power_source))
+                State::Transmit(TransmitOperation::SelectCapability)
             }
-            State::TransitionSink(power_source) => {
-                State::Receive(ReceiveOperation::PowerTransition(*power_source, self.mode))
-            }
-            State::Ready(power_source) => {
-                let active_power_source = *power_source;
+            State::TransitionSink => State::Receive(ReceiveOperation::PowerTransition(self.mode)),
+            State::Ready => {
+                let active_power_source = self.active_power_source();
                 self.ensure_periodic_deadlines(active_power_source);
                 // TODO: Entry: Init. and run DiscoverIdentityTimer(4)
                 // TODO: Entry: Send GetSinkCap message if sink supports fast role swap
@@ -1250,15 +1251,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 if let Some(pending) = self.pending_sink_ams.take() {
                     if self.protocol_layer.sink_tx_ok() {
-                        Self::state_for_sink_ams(pending, active_power_source)
+                        self.state_for_sink_ams(pending)
                     } else {
                         // While the Source owns CC, continue servicing its AMS
                         // and periodically re-sample Rp without dropping the
                         // exact user/timer request that is waiting.
                         self.pending_sink_ams = Some(pending);
                         match select(self.protocol_layer.receive_message(), TIMER::after_millis(1)).await {
-                            Either::First(message) => self.handle_ready_message(message?, active_power_source),
-                            Either::Second(()) => State::Ready(active_power_source),
+                            Either::First(message) => self.handle_ready_message(message?),
+                            Either::Second(()) => State::Ready,
                         }
                     }
                 } else {
@@ -1271,10 +1272,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     let timeout_fut = Self::wait_for_ready_timeout(timeout);
 
                     match select3(receive_fut, event_fut, timeout_fut).await {
-                        Either3::First(message) => self.handle_ready_message(message?, active_power_source),
+                        Either3::First(message) => self.handle_ready_message(message?),
                         Either3::Second(event) => match Self::sink_ams_from_event(event) {
-                            Some(ams) => self.begin_or_defer_sink_ams(ams, active_power_source),
-                            None => State::Ready(active_power_source),
+                            Some(ams) => self.begin_or_defer_sink_ams(ams),
+                            None => State::Ready,
                         },
                         Either3::Third(timeout_kind) => {
                             let ams = match timeout_kind {
@@ -1301,28 +1302,29 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                                     SinkInitiatedAms::RequestPower(retry)
                                 }
                             };
-                            self.begin_or_defer_sink_ams(ams, active_power_source)
+                            self.begin_or_defer_sink_ams(ams)
                         }
                     }
                 }
             }
-            State::SendNotSupported(power_source) => {
-                State::Transmit(TransmitOperation::SendNotSupported(*power_source))
-            }
+            State::SendNotSupported => State::Transmit(TransmitOperation::SendNotSupported),
             State::SendSoftReset => {
                 self.pending_sink_ams = None;
+                self.proposed_power_source = None;
                 self.wait_retry_pending = false;
                 self.protocol_layer.reset();
                 State::Transmit(TransmitOperation::SendSoftReset)
             }
             State::SoftReset => {
                 self.pending_sink_ams = None;
+                self.proposed_power_source = None;
                 self.wait_retry_pending = false;
                 self.protocol_layer.reset();
                 State::Transmit(TransmitOperation::AcceptSoftReset)
             }
             hard_reset_pattern!(reason) => {
                 self.pending_sink_ams = None;
+                self.proposed_power_source = None;
                 self.wait_retry_pending = false;
                 self.pps_refresh_deadline_tick = None;
                 self.epr_keep_alive_deadline_tick = None;
@@ -1396,6 +1398,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             State::TransitionToDefault => {
                 self.pending_sink_ams = None;
+                self.proposed_power_source = None;
                 self.wait_retry_pending = false;
                 self.pps_refresh_deadline_tick = None;
                 self.epr_keep_alive_deadline_tick = None;
@@ -1450,16 +1453,14 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 State::Startup
             }
-            State::GiveSinkCap(response_mode, power_source) => {
+            State::GiveSinkCap(response_mode) => {
                 // Per USB PD Spec R3.2 Section 8.3.3.3.10:
                 // - Send Sink_Capabilities when Get_Sink_Cap was received
                 // - Send EPR_Sink_Capabilities when EPR_Get_Sink_Cap was received
-                State::Transmit(TransmitOperation::GiveSinkCap(*response_mode, *power_source))
+                State::Transmit(TransmitOperation::GiveSinkCap(*response_mode))
             }
-            State::GiveSinkCapExtended(power_source) => {
-                State::Transmit(TransmitOperation::GiveSinkCapExtended(*power_source))
-            }
-            State::GetSourceCap(requested_mode, power_source) => {
+            State::GiveSinkCapExtended => State::Transmit(TransmitOperation::GiveSinkCapExtended),
+            State::GetSourceCap(requested_mode) => {
                 // Per USB PD Spec R3.2 Section 8.3.3.3.12 (PE_SNK_Get_Source_Cap):
                 // - Send Get_Source_Cap (SPR) or EPR_Get_Source_Cap (EPR)
                 // - Start SenderResponseTimer
@@ -1470,17 +1471,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Per spec 8.3.3.3.8, in EPR mode, receiving an unrequested
                 // Source_Capabilities message triggers a Hard Reset.
                 self.get_source_cap_pending = true;
-                State::Transmit(TransmitOperation::GetSourceCap(*requested_mode, *power_source))
+                State::Transmit(TransmitOperation::GetSourceCap(*requested_mode))
             }
-            State::GetSourceInfo(power_source) => State::Transmit(TransmitOperation::GetSourceInfo(*power_source)),
-            State::SourceAlert(alert, power_source) => {
+            State::GetSourceInfo => State::Transmit(TransmitOperation::GetSourceInfo),
+            State::SourceAlert(alert) => {
                 self.device_policy_manager.inform_alert(alert);
-                State::Ready(*power_source)
+                State::Ready
             }
-            State::GetStatus(query, power_source) => {
-                State::Transmit(TransmitOperation::GetStatus(*query, *power_source))
-            }
-            State::EprModeEntry(power_source, operational_pdp) => {
+            State::GetStatus(query) => State::Transmit(TransmitOperation::GetStatus(*query)),
+            State::EprModeEntry(operational_pdp) => {
                 // Request entry into EPR mode.
                 // Per spec 8.3.3.26.2.1 (PE_SNK_Send_EPR_Mode_Entry), sink sends EPR_Mode (Enter)
                 // and starts SenderResponseTimer and SinkEPREnterTimer.
@@ -1499,15 +1498,15 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 if !(1..=240).contains(&pdp_watts) {
                     return Err(Error::InvalidEprOperationalPdp);
                 }
-                State::Transmit(TransmitOperation::EnterEprMode(*power_source, pdp_watts))
+                State::Transmit(TransmitOperation::EnterEprMode(pdp_watts))
             }
-            State::EprEntryWaitForResponse(power_source) => {
+            State::EprEntryWaitForResponse => {
                 // Wait for EnterSucceeded after receiving EnterAcknowledged.
                 // Per spec 8.3.3.26.2.2 (PE_SNK_EPR_Mode_Wait_For_Response), use SinkEPREnterTimer
                 // for the overall timeout while source performs cable discovery.
-                State::Receive(ReceiveOperation::EprEntryResult(*power_source))
+                State::Receive(ReceiveOperation::EprEntryResult)
             }
-            State::EprWaitForCapabilities(_power_source) => {
+            State::EprWaitForCapabilities => {
                 // After successful EPR mode entry, source automatically sends EPR_Source_Capabilities.
                 // This may be a chunked extended message that requires assembly.
                 // Wait for the capabilities and evaluate them.
@@ -1517,7 +1516,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // Inform partner we are exiting EPR.
                 State::Transmit(TransmitOperation::ExitEprMode)
             }
-            State::EprExitReceived(power_source) => {
+            State::EprExitReceived => {
                 // Per USB PD Spec R3.2 Section 8.3.3.26.4.2 (PE_SNK_EPR_Mode_Exit_Received):
                 // - If in an Explicit Contract with an SPR (A)PDO → WaitForCapabilities
                 // - If NOT in an Explicit Contract with an SPR (A)PDO → HardReset
@@ -1530,7 +1529,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.epr_keep_alive_deadline_tick = None;
                 self.mode = Mode::Spr;
 
-                let is_epr_pdo_contract = match power_source {
+                let is_epr_pdo_contract = match self.active_power_source() {
                     PowerSource::EprRequest(epr) => {
                         // Extract object position from RDO (bits 28-31)
                         epr.object_position() >= 8
@@ -1545,7 +1544,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     State::WaitForCapabilities
                 }
             }
-            State::EprKeepAlive(power_source) => {
+            State::EprKeepAlive => {
                 // Per spec 8.3.3.3.11 (PE_SNK_EPR_Keep_Alive):
                 // - Entry: Send EPR_KeepAlive message, start SenderResponseTimer
                 // - On EPR_KeepAlive_Ack: transition to Ready (which restarts SinkEPRKeepAliveTimer)
@@ -1558,7 +1557,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     crate::numeric_trace::UNAVAILABLE_U16,
                     crate::numeric_trace::UNAVAILABLE_U16,
                 ));
-                State::Transmit(TransmitOperation::EprKeepAlive(*power_source))
+                State::Transmit(TransmitOperation::EprKeepAlive)
             }
             State::Transmit(operation) => {
                 let operation = *operation;
@@ -1567,52 +1566,50 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     TransmitOperation::ProbeSourceCapabilities => {
                         SinkTransmit::Control(ControlMessageType::GetSourceCap)
                     }
-                    TransmitOperation::SendNotSupported(_)
+                    TransmitOperation::SendNotSupported
                     | TransmitOperation::SendSoftReset
                     | TransmitOperation::AcceptSoftReset
-                    | TransmitOperation::GetSourceCap(Mode::Spr, _)
-                    | TransmitOperation::GetSourceInfo(_)
-                    | TransmitOperation::GetStatus(_, _) => {
+                    | TransmitOperation::GetSourceCap(Mode::Spr)
+                    | TransmitOperation::GetSourceInfo
+                    | TransmitOperation::GetStatus(_) => {
                         let message_type = match operation {
-                            TransmitOperation::GetSourceCap(Mode::Spr, _) => ControlMessageType::GetSourceCap,
-                            TransmitOperation::SendNotSupported(_) => ControlMessageType::NotSupported,
+                            TransmitOperation::GetSourceCap(Mode::Spr) => ControlMessageType::GetSourceCap,
+                            TransmitOperation::SendNotSupported => ControlMessageType::NotSupported,
                             TransmitOperation::SendSoftReset => ControlMessageType::SoftReset,
                             TransmitOperation::AcceptSoftReset => ControlMessageType::Accept,
-                            TransmitOperation::GetSourceInfo(_) => ControlMessageType::GetSourceInfo,
-                            TransmitOperation::GetStatus(StatusQueryKind::General, _) => ControlMessageType::GetStatus,
-                            TransmitOperation::GetStatus(StatusQueryKind::Pps, _) => ControlMessageType::GetPpsStatus,
+                            TransmitOperation::GetSourceInfo => ControlMessageType::GetSourceInfo,
+                            TransmitOperation::GetStatus(StatusQueryKind::General) => ControlMessageType::GetStatus,
+                            TransmitOperation::GetStatus(StatusQueryKind::Pps) => ControlMessageType::GetPpsStatus,
                             _ => unreachable!(),
                         };
                         SinkTransmit::Control(message_type)
                     }
-                    TransmitOperation::GetSourceCap(Mode::Epr, _) | TransmitOperation::EprKeepAlive(_) => {
+                    TransmitOperation::GetSourceCap(Mode::Epr) | TransmitOperation::EprKeepAlive => {
                         let message_type = match operation {
-                            TransmitOperation::GetSourceCap(Mode::Epr, _) => {
-                                ExtendedControlMessageType::EprGetSourceCap
-                            }
-                            TransmitOperation::EprKeepAlive(_) => ExtendedControlMessageType::EprKeepAlive,
+                            TransmitOperation::GetSourceCap(Mode::Epr) => ExtendedControlMessageType::EprGetSourceCap,
+                            TransmitOperation::EprKeepAlive => ExtendedControlMessageType::EprKeepAlive,
                             _ => unreachable!(),
                         };
                         SinkTransmit::ExtendedControl(message_type)
                     }
-                    TransmitOperation::SelectCapability(power_source) => SinkTransmit::Request(power_source),
-                    TransmitOperation::GiveSinkCap(mode, _) => {
+                    TransmitOperation::SelectCapability => SinkTransmit::Request(self.proposed_power_source()),
+                    TransmitOperation::GiveSinkCap(mode) => {
                         let sink_caps = self.device_policy_manager.sink_capabilities();
                         match mode {
                             Mode::Spr => SinkTransmit::SinkCapabilities(sink_caps),
                             Mode::Epr => SinkTransmit::EprSinkCapabilities(sink_caps),
                         }
                     }
-                    TransmitOperation::GiveSinkCapExtended(_) => {
+                    TransmitOperation::GiveSinkCapExtended => {
                         let capabilities = self.device_policy_manager.sink_capabilities_extended();
                         SinkTransmit::SinkCapabilitiesExtended(capabilities)
                     }
-                    TransmitOperation::EnterEprMode(_, pdp_watts) => SinkTransmit::EprMode(Action::Enter, pdp_watts),
+                    TransmitOperation::EnterEprMode(pdp_watts) => SinkTransmit::EprMode(Action::Enter, pdp_watts),
                     TransmitOperation::ExitEprMode => SinkTransmit::EprMode(Action::Exit, 0),
                 };
                 let result = self.protocol_layer.transmit_sink(message).await;
 
-                if matches!(operation, TransmitOperation::EprKeepAlive(_)) && result.is_err() {
+                if matches!(operation, TransmitOperation::EprKeepAlive) && result.is_err() {
                     numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
                         crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
                         crate::numeric_trace::NumericTraceEprKeepAlivePhase::ProtocolFailure as u8,

@@ -22,7 +22,9 @@ use crate::sink::device_policy_manager::{
 };
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{HardResetOrigin, HardResetReason};
-use crate::sink::policy_engine::{ReadyTimeout, ReadyTimeoutKind, State, TransmitOperation};
+use crate::sink::policy_engine::{
+    Contract, ReadyTimeout, ReadyTimeoutKind, ReceiveOperation, State, TransmitOperation,
+};
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
 use usbpd_traits::{Driver, DriverRxError, DriverTxError};
@@ -296,15 +298,16 @@ async fn run_returns_local_tx_validation_once_without_state_reentry() {
     let dpm = InvalidTransmitDpm { protocol_lost_count: std::sync::Arc::clone(&protocol_lost_count) };
     let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, InvalidTransmitDpm> =
         Sink::new(DummyDriver::new(), dpm);
-    policy_engine.state =
-        State::SelectCapability(PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23))));
+    policy_engine.proposed_power_source =
+        Some(PowerSource::FixedVariableSupply(FixedVariableSupply((1 << 28) | (1 << 23))));
+    policy_engine.state = State::SelectCapability;
 
     assert!(matches!(
         policy_engine.run().await,
         Err(super::Error::InvalidTransmitMessage(TxValidationError::UnchunkedExtendedMessagesNotSupported))
     ));
     assert_eq!(protocol_lost_count.load(Ordering::SeqCst), 1);
-    assert!(matches!(policy_engine.state, State::Transmit(TransmitOperation::SelectCapability(_))));
+    assert!(matches!(policy_engine.state, State::Transmit(TransmitOperation::SelectCapability)));
     assert!(!policy_engine.protocol_layer.driver().has_transmitted_data());
 }
 
@@ -389,12 +392,13 @@ fn status_query_fixture() -> StatusQueryFixture {
         pps_status: std::sync::Arc::clone(&pps_status),
         failure: std::sync::Arc::clone(&failure),
     };
-    StatusQueryFixture { policy_engine: Sink::new(DummyDriver::new(), dpm), general_status, pps_status, failure }
+    let mut policy_engine = Sink::new(DummyDriver::new(), dpm);
+    policy_engine.active_power_source = Some(crate::dummy::get_source_capability_request());
+    StatusQueryFixture { policy_engine, general_status, pps_status, failure }
 }
 
 #[tokio::test]
 async fn shared_status_query_path_preserves_request_and_response_kinds() {
-    use crate::dummy::get_source_capability_request;
     use crate::protocol_layer::message::extended::pps_status::PpsStatus;
     use crate::protocol_layer::message::extended::status::Status;
 
@@ -419,7 +423,7 @@ async fn shared_status_query_path_preserves_request_and_response_kinds() {
 
     for (query, request_type, response_type, response, expected_general, expected_pps) in cases {
         let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
-        policy_engine.state = State::GetStatus(query, get_source_capability_request());
+        policy_engine.state = State::GetStatus(query);
         simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
         simulate_source_extended_message(&mut policy_engine, response_type, response, 0);
 
@@ -430,20 +434,18 @@ async fn shared_status_query_path_preserves_request_and_response_kinds() {
         assert_eq!(general_status.load(Ordering::SeqCst), expected_general);
         assert_eq!(pps_status.load(Ordering::SeqCst), expected_pps);
         assert_eq!(failure.load(Ordering::SeqCst), 0);
-        assert!(matches!(policy_engine.state, State::Ready(_)));
+        assert!(matches!(policy_engine.state, State::Ready));
     }
 }
 
 #[tokio::test]
 async fn shared_status_query_path_preserves_failure_kind() {
-    use crate::dummy::get_source_capability_request;
-
     for (query, query_code) in [(StatusQueryKind::General, 10), (StatusQueryKind::Pps, 20)] {
         for (response, failure_code) in
             [(ControlMessageType::NotSupported, 1), (ControlMessageType::Reject, 2), (ControlMessageType::Wait, 3)]
         {
             let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
-            policy_engine.state = State::GetStatus(query, get_source_capability_request());
+            policy_engine.state = State::GetStatus(query);
             simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
             simulate_source_control_message(&mut policy_engine, response, 0);
 
@@ -452,11 +454,11 @@ async fn shared_status_query_path_preserves_failure_kind() {
             assert_eq!(general_status.load(Ordering::SeqCst), 0);
             assert_eq!(pps_status.load(Ordering::SeqCst), 0);
             assert_eq!(failure.load(Ordering::SeqCst), query_code + failure_code);
-            assert!(matches!(policy_engine.state, State::Ready(_)));
+            assert!(matches!(policy_engine.state, State::Ready));
         }
 
         let StatusQueryFixture { mut policy_engine, general_status, pps_status, failure } = status_query_fixture();
-        policy_engine.state = State::GetStatus(query, get_source_capability_request());
+        policy_engine.state = State::GetStatus(query);
         simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
 
         policy_engine.run_step().await.unwrap();
@@ -464,7 +466,7 @@ async fn shared_status_query_path_preserves_failure_kind() {
         assert_eq!(general_status.load(Ordering::SeqCst), 0);
         assert_eq!(pps_status.load(Ordering::SeqCst), 0);
         assert_eq!(failure.load(Ordering::SeqCst), query_code + 4);
-        assert!(matches!(policy_engine.state, State::Ready(_)));
+        assert!(matches!(policy_engine.state, State::Ready));
     }
 }
 
@@ -555,15 +557,38 @@ async fn successful_epr_power_transition_rearms_keep_alive_from_ps_rdy() {
     let request = get_source_capability_request();
 
     policy_engine.mode = Mode::Epr;
-    policy_engine.state = State::TransitionSink(request);
+    policy_engine.proposed_power_source = Some(request);
+    policy_engine.state = State::TransitionSink;
     policy_engine.epr_keep_alive_deadline_tick = Some(7);
     TRANSITION_CLOCK.store(100, Ordering::SeqCst);
     simulate_source_control_message(&mut policy_engine, ControlMessageType::PsRdy, 0);
 
     policy_engine.run_step().await.unwrap();
 
-    assert!(matches!(policy_engine.state, State::Ready(..)));
+    assert!(matches!(policy_engine.state, State::Ready));
+    assert_eq!(policy_engine.active_power_source.unwrap().object_position(), request.object_position());
+    assert!(policy_engine.proposed_power_source.is_none());
     assert_eq!(policy_engine.epr_keep_alive_deadline_tick, Some(103));
+}
+
+#[tokio::test]
+async fn rejected_request_keeps_confirmed_contract_and_discards_proposal() {
+    use crate::dummy::get_source_capability_request;
+
+    let mut policy_engine = get_policy_engine();
+    let active = get_source_capability_request();
+    let proposed = PowerSource::FixedVariableSupply(FixedVariableSupply(2 << 28));
+    policy_engine.contract = Contract::Explicit;
+    policy_engine.active_power_source = Some(active);
+    policy_engine.proposed_power_source = Some(proposed);
+    policy_engine.state = State::Receive(ReceiveOperation::RequestResponse);
+    simulate_source_control_message(&mut policy_engine, ControlMessageType::Reject, 0);
+
+    policy_engine.run_step().await.unwrap();
+
+    assert!(matches!(policy_engine.state, State::Ready));
+    assert_eq!(policy_engine.active_power_source.unwrap().object_position(), active.object_position());
+    assert!(policy_engine.proposed_power_source.is_none());
 }
 
 #[cfg(feature = "hard-reset-reasons")]
@@ -627,7 +652,8 @@ async fn source_hard_reset_while_waiting_for_keep_alive_ack_is_not_retransmitted
     let mut policy_engine: Sink<_, DummyTimer, _> = Sink::new(driver, dpm);
 
     policy_engine.mode = Mode::Epr;
-    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+    policy_engine.active_power_source = Some(get_source_capability_request());
+    policy_engine.state = State::EprKeepAlive;
 
     policy_engine.run_step().await.unwrap();
     assert!(matches!(policy_engine.state, State::TransitionToDefault));
@@ -732,7 +758,8 @@ async fn numeric_trace_orders_successful_epr_keep_alive() {
 
     let mut policy_engine = get_policy_engine();
     policy_engine.mode = Mode::Epr;
-    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+    policy_engine.active_power_source = Some(get_source_capability_request());
+    policy_engine.state = State::EprKeepAlive;
     simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
     simulate_epr_keep_alive_ack(&mut policy_engine, 0);
 
@@ -758,7 +785,7 @@ async fn numeric_trace_orders_successful_epr_keep_alive() {
     assert_eq!(events[1].code, u8::from(ExtendedControlMessageType::EprKeepAlive));
     assert_eq!(events[6].code, u8::from(ExtendedControlMessageType::EprKeepAliveAck));
     assert_eq!(events[8].code, NumericTraceEprKeepAlivePhase::Acknowledged as u8);
-    assert!(matches!(policy_engine.state, State::Ready(_)));
+    assert!(matches!(policy_engine.state, State::Ready));
 }
 
 #[cfg(all(feature = "numeric-trace", feature = "hard-reset-reasons"))]
@@ -774,7 +801,8 @@ async fn numeric_trace_reports_keep_alive_timeout_and_hard_reset_reason() {
 
     let mut policy_engine = get_policy_engine();
     policy_engine.mode = Mode::Epr;
-    policy_engine.state = State::EprKeepAlive(get_source_capability_request());
+    policy_engine.active_power_source = Some(get_source_capability_request());
+    policy_engine.state = State::EprKeepAlive;
     simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
 
     let capture = CaptureGuard::start();
@@ -851,7 +879,7 @@ async fn test_negotiation() {
 
     // `TransitionSink` -> `Ready`
     policy_engine.run_step().await.unwrap();
-    assert!(matches!(policy_engine.state, State::Ready(..)));
+    assert!(matches!(policy_engine.state, State::Ready));
 
     let good_crc = Message::from_bytes(&policy_engine.protocol_layer.driver().probe_transmitted_data()).unwrap();
     assert!(matches!(good_crc.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)));
@@ -864,7 +892,8 @@ async fn test_reserved_epr_mode_entry_response_sends_soft_reset() {
 
     let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, DummyTimer, DummySinkEprDevice> =
         Sink::new(DummyDriver::new(), DummySinkEprDevice::new());
-    policy_engine.state = State::EprModeEntry(get_source_capability_request(), Power::from_watts(140));
+    policy_engine.active_power_source = Some(get_source_capability_request());
+    policy_engine.state = State::EprModeEntry(Power::from_watts(140));
 
     // The EPR_Mode Enter transmission starts with MessageID 0 in a fresh
     // protocol layer. A reserved action from the Source must be recovered via
@@ -926,7 +955,7 @@ async fn test_epr_negotiation() {
     // TransitionSink -> Ready
     policy_engine.run_step().await.unwrap();
     eprintln!("State after last run_step: {:?}", policy_engine.state);
-    assert!(matches!(policy_engine.state, State::Ready(..)));
+    assert!(matches!(policy_engine.state, State::Ready));
 
     eprintln!("Has transmitted data: {}", policy_engine.protocol_layer.driver().has_transmitted_data());
     let good_crc = Message::from_bytes(&policy_engine.protocol_layer.driver().probe_transmitted_data()).unwrap();
@@ -1138,7 +1167,7 @@ async fn test_epr_negotiation() {
     }
 
     // Verify we're in Ready state with EPR power
-    assert!(matches!(policy_engine.state, State::Ready(..)));
+    assert!(matches!(policy_engine.state, State::Ready));
     eprintln!("Final state: {:?}", policy_engine.state);
 
     eprintln!("=== Phase 4 Complete: EPR power negotiation at 28V/5A (140W) ===\n");
@@ -1166,8 +1195,8 @@ async fn test_epr_negotiation() {
         eprintln!("--- Keep-Alive cycle {} ---", cycle);
 
         // Manually set state to EprKeepAlive (normally triggered by SinkEPRKeepAliveTimer in Ready state)
-        if let State::Ready(power_source) = policy_engine.state.clone() {
-            policy_engine.state = State::EprKeepAlive(power_source);
+        if let State::Ready = policy_engine.state {
+            policy_engine.state = State::EprKeepAlive;
         } else {
             panic!("Expected Ready state before keep-alive cycle {}", cycle);
         }
@@ -1223,7 +1252,7 @@ async fn test_epr_negotiation() {
         assert!(matches!(good_crc.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)));
 
         // Verify we're back in Ready state (ready for next keep-alive cycle)
-        assert!(matches!(policy_engine.state, State::Ready(..)));
+        assert!(matches!(policy_engine.state, State::Ready));
         eprintln!("  Returned to Ready state");
     }
 
