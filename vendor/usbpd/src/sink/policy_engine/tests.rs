@@ -22,7 +22,7 @@ use crate::sink::device_policy_manager::{
 };
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{HardResetOrigin, HardResetReason};
-use crate::sink::policy_engine::{State, TransmitOperation};
+use crate::sink::policy_engine::{ReadyTimeout, ReadyTimeoutKind, State, TransmitOperation};
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
 use usbpd_traits::{Driver, DriverRxError, DriverTxError};
@@ -480,6 +480,69 @@ impl Timer for TransitionDeadlineTimer {
     async fn after_millis(_milliseconds: u64) {
         embassy_futures::yield_now().await;
     }
+}
+
+static READY_CLOCK: AtomicU32 = AtomicU32::new(0);
+
+struct ReadyDeadlineTimer;
+
+impl Timer for ReadyDeadlineTimer {
+    fn now_128ms_ticks() -> u32 {
+        READY_CLOCK.load(Ordering::SeqCst)
+    }
+
+    async fn after_millis(_milliseconds: u64) {
+        embassy_futures::yield_now().await;
+    }
+}
+
+#[test]
+fn ready_timeout_uses_one_timer_with_existing_priority_and_wraparound() {
+    let mut policy_engine: Sink<DummyDriver<MAX_DATA_MESSAGE_SIZE>, ReadyDeadlineTimer, DummySinkDevice> =
+        Sink::new(DummyDriver::new(), DummySinkDevice {});
+
+    READY_CLOCK.store(100, Ordering::SeqCst);
+    assert_eq!(policy_engine.next_ready_timeout(), None);
+
+    policy_engine.pps_refresh_deadline_tick = Some(139);
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::PpsRefresh, delay_ms: 4_992 })
+    );
+
+    policy_engine.epr_keep_alive_deadline_tick = Some(103);
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::EprKeepAlive, delay_ms: 384 })
+    );
+
+    policy_engine.wait_retry_pending = true;
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::SinkRequest, delay_ms: 100 })
+    );
+
+    policy_engine.wait_retry_pending = false;
+    policy_engine.pps_refresh_deadline_tick = Some(103);
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::PpsRefresh, delay_ms: 384 })
+    );
+
+    READY_CLOCK.store(100, Ordering::SeqCst);
+    policy_engine.epr_keep_alive_deadline_tick = None;
+    policy_engine.pps_refresh_deadline_tick = Some(99);
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::PpsRefresh, delay_ms: 0 })
+    );
+
+    READY_CLOCK.store(u32::MAX - 1, Ordering::SeqCst);
+    policy_engine.pps_refresh_deadline_tick = Some(1);
+    assert_eq!(
+        policy_engine.next_ready_timeout(),
+        Some(ReadyTimeout { kind: ReadyTimeoutKind::PpsRefresh, delay_ms: 384 })
+    );
 }
 
 #[tokio::test]

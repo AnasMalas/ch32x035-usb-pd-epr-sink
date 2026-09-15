@@ -136,6 +136,19 @@ enum SinkInitiatedAms {
     EprKeepAlive,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum ReadyTimeoutKind {
+    PpsRefresh,
+    EprKeepAlive,
+    SinkRequest,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ReadyTimeout {
+    kind: ReadyTimeoutKind,
+    delay_ms: u32,
+}
+
 #[derive(Debug, Clone, Copy)]
 enum TransmitOperation {
     #[cfg(feature = "initial-capabilities-fallback")]
@@ -731,12 +744,49 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    async fn wait_until(deadline_tick: Option<u32>) {
-        match deadline_tick {
-            Some(deadline_tick) => {
-                let remaining = deadline_tick.wrapping_sub(TIMER::now_128ms_ticks());
-                let remaining = if remaining > i32::MAX as u32 { 0 } else { remaining };
-                TIMER::after_millis(u64::from(remaining) * 128).await;
+    fn deadline_delay_ms(deadline_tick: u32, now_tick: u32) -> u32 {
+        let remaining = deadline_tick.wrapping_sub(now_tick);
+        let remaining = if remaining > i32::MAX as u32 { 0 } else { remaining };
+        remaining.saturating_mul(128)
+    }
+
+    fn earlier_timeout(current: Option<ReadyTimeout>, candidate: ReadyTimeout) -> Option<ReadyTimeout> {
+        match current {
+            Some(current) if current.delay_ms <= candidate.delay_ms => Some(current),
+            _ => Some(candidate),
+        }
+    }
+
+    fn next_ready_timeout(&self) -> Option<ReadyTimeout> {
+        let now_tick = TIMER::now_128ms_ticks();
+        let mut timeout = self.pps_refresh_deadline_tick.map(|deadline_tick| ReadyTimeout {
+            kind: ReadyTimeoutKind::PpsRefresh,
+            delay_ms: Self::deadline_delay_ms(deadline_tick, now_tick),
+        });
+
+        if let Some(deadline_tick) = self.epr_keep_alive_deadline_tick {
+            timeout = Self::earlier_timeout(
+                timeout,
+                ReadyTimeout {
+                    kind: ReadyTimeoutKind::EprKeepAlive,
+                    delay_ms: Self::deadline_delay_ms(deadline_tick, now_tick),
+                },
+            );
+        }
+
+        if self.wait_retry_pending {
+            timeout =
+                Self::earlier_timeout(timeout, ReadyTimeout { kind: ReadyTimeoutKind::SinkRequest, delay_ms: 100 });
+        }
+
+        timeout
+    }
+
+    async fn wait_for_ready_timeout(timeout: Option<ReadyTimeout>) -> ReadyTimeoutKind {
+        match timeout {
+            Some(timeout) => {
+                TIMER::after_millis(u64::from(timeout.delay_ms)).await;
+                timeout.kind
             }
             None => core::future::pending().await,
         }
@@ -1222,38 +1272,28 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         }
                     }
                 } else {
+                    let timeout = self.next_ready_timeout();
                     let receive_fut = self.protocol_layer.receive_message();
                     let event_fut = self.device_policy_manager.get_event(self.source_capabilities.as_ref().unwrap());
-                    let pps_periodic_fut = Self::wait_until(self.pps_refresh_deadline_tick);
-                    let epr_keep_alive_fut = Self::wait_until(self.epr_keep_alive_deadline_tick);
                     // Per spec 8.3.3.3.7: SinkRequestTimer runs concurrently when re-entering
                     // Ready after a Wait response. On timeout, transition to SelectCapability.
                     // Per spec 6.6.4.1: Ensures minimum tSinkRequest (100ms) delay before re-request.
-                    let retry_waiting = self.wait_retry_pending;
-                    let sink_request_fut = async move {
-                        if retry_waiting {
-                            TimerType::get_timer::<TIMER>(TimerType::SinkRequest).await
-                        } else {
-                            core::future::pending().await
-                        }
-                    };
-                    let timers_fut = async { select3(pps_periodic_fut, epr_keep_alive_fut, sink_request_fut).await };
+                    let timeout_fut = Self::wait_for_ready_timeout(timeout);
 
-                    match select3(receive_fut, event_fut, timers_fut).await {
+                    match select3(receive_fut, event_fut, timeout_fut).await {
                         Either3::First(message) => self.handle_ready_message(message?, active_power_source),
                         Either3::Second(event) => match Self::sink_ams_from_event(event) {
                             Some(ams) => self.begin_or_defer_sink_ams(ams, active_power_source),
                             None => State::Ready(active_power_source),
                         },
-                        Either3::Third(timeout_source) => {
-                            let pps_timeout = matches!(&timeout_source, Either3::First(_));
-                            let ams = match timeout_source {
-                                Either3::Second(_) => {
+                        Either3::Third(timeout_kind) => {
+                            let ams = match timeout_kind {
+                                ReadyTimeoutKind::EprKeepAlive => {
                                     self.epr_keep_alive_deadline_tick = None;
                                     SinkInitiatedAms::EprKeepAlive
                                 }
-                                Either3::First(_) | Either3::Third(_) => {
-                                    if pps_timeout {
+                                ReadyTimeoutKind::PpsRefresh | ReadyTimeoutKind::SinkRequest => {
+                                    if timeout_kind == ReadyTimeoutKind::PpsRefresh {
                                         self.pps_refresh_deadline_tick = None;
                                     } else {
                                         self.wait_retry_pending = false;
