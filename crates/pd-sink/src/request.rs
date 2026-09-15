@@ -260,17 +260,16 @@ impl RequestPlanner {
         let common = common_rdo_bits(position, context.flags);
 
         match (pdo.supply, demand) {
-            (SourceSupply::Fixed(fixed), Demand::Maximum) => {
+            (SourceSupply::Fixed(fixed), demand @ (Demand::Maximum | Demand::Current(_))) => {
                 validate_voltage_limit(fixed.voltage, context.limits)?;
-                let current =
-                    plan_current(fixed.max_current, None, fixed.voltage, 10, CurrentConfidence::Advertised, context)?;
-                Ok(current_request_plan(pdo, message, pdo_copy, PlannedVoltage::Fixed(fixed.voltage), current, common))
-            }
-            (SourceSupply::Fixed(fixed), Demand::Current(requested)) => {
-                validate_voltage_limit(fixed.voltage, context.limits)?;
+                let requested = match demand {
+                    Demand::Maximum => None,
+                    Demand::Current(requested) => Some(requested),
+                    Demand::Adjustable { .. } => unreachable!(),
+                };
                 let current = plan_current(
                     fixed.max_current,
-                    Some(requested),
+                    requested,
                     fixed.voltage,
                     10,
                     CurrentConfidence::Advertised,
@@ -278,57 +277,44 @@ impl RequestPlanner {
                 )?;
                 Ok(current_request_plan(pdo, message, pdo_copy, PlannedVoltage::Fixed(fixed.voltage), current, common))
             }
-            (SourceSupply::Pps(pps), demand @ (Demand::Maximum | Demand::Adjustable { .. })) => {
-                let (voltage, current) = maximum_or_adjustable(demand, pps.max_voltage);
-                let encoded = adjustable_voltage(pdo.position, voltage, pps.min_voltage, pps.max_voltage, 20, context)?;
-                let (source_limit, confidence) = if pps.power_limited {
-                    if let Some(pdp) = context.source_present_pdp {
-                        (pps.max_current.min(current_for_power(pdp, encoded)), CurrentConfidence::DerivedFromSourceInfo)
-                    } else {
-                        (pps.max_current, CurrentConfidence::PowerLimitedUpperBound)
-                    }
-                } else {
-                    (pps.max_current, CurrentConfidence::Advertised)
+            (
+                supply @ (SourceSupply::Pps(_) | SourceSupply::SprAvs(_) | SourceSupply::EprAvs(_)),
+                demand @ (Demand::Maximum | Demand::Adjustable { .. }),
+            ) => {
+                let (minimum, maximum, voltage_step) = match supply {
+                    SourceSupply::Pps(pps) => (pps.min_voltage, pps.max_voltage, 20),
+                    SourceSupply::SprAvs(avs) => (avs.min_voltage, avs.max_voltage, 100),
+                    SourceSupply::EprAvs(avs) => (avs.min_voltage, avs.max_voltage, 100),
+                    _ => unreachable!(),
+                };
+                let (voltage, current) = maximum_or_adjustable(demand, maximum);
+                let encoded = adjustable_voltage(pdo.position, voltage, minimum, maximum, voltage_step, context)?;
+                let (source_limit, confidence) = match supply {
+                    SourceSupply::Pps(pps) if pps.power_limited => match context.source_present_pdp {
+                        Some(pdp) => (
+                            pps.max_current.min(current_for_power(pdp, encoded)),
+                            CurrentConfidence::DerivedFromSourceInfo,
+                        ),
+                        None => (pps.max_current, CurrentConfidence::PowerLimitedUpperBound),
+                    },
+                    SourceSupply::Pps(pps) => (pps.max_current, CurrentConfidence::Advertised),
+                    SourceSupply::SprAvs(avs) => (
+                        avs.max_current_at(encoded)
+                            .ok_or(PlanError::VoltageOutsideOffer { position: pdo.position, requested: voltage })?,
+                        CurrentConfidence::Advertised,
+                    ),
+                    SourceSupply::EprAvs(avs) => (
+                        current_for_power(avs.pdp, encoded).min(PROTOCOL_MAX_CURRENT),
+                        CurrentConfidence::DerivedFromPdoPdp,
+                    ),
+                    _ => unreachable!(),
                 };
                 let planned = plan_current(source_limit, current, encoded, 50, confidence, context)?;
                 Ok(adjustable_request_plan(
                     pdo,
                     message,
                     pdo_copy,
-                    PlannedVoltage::Adjustable { requested: voltage, encoded, step_mv: 20 },
-                    planned,
-                    common,
-                ))
-            }
-            (SourceSupply::SprAvs(avs), demand @ (Demand::Maximum | Demand::Adjustable { .. })) => {
-                let (voltage, current) = maximum_or_adjustable(demand, avs.max_voltage);
-                let encoded =
-                    adjustable_voltage(pdo.position, voltage, avs.min_voltage, avs.max_voltage, 100, context)?;
-                let source_limit = avs
-                    .max_current_at(encoded)
-                    .ok_or(PlanError::VoltageOutsideOffer { position: pdo.position, requested: voltage })?;
-                let planned = plan_current(source_limit, current, encoded, 50, CurrentConfidence::Advertised, context)?;
-                Ok(adjustable_request_plan(
-                    pdo,
-                    message,
-                    pdo_copy,
-                    PlannedVoltage::Adjustable { requested: voltage, encoded, step_mv: 100 },
-                    planned,
-                    common,
-                ))
-            }
-            (SourceSupply::EprAvs(avs), demand @ (Demand::Maximum | Demand::Adjustable { .. })) => {
-                let (voltage, current) = maximum_or_adjustable(demand, avs.max_voltage);
-                let encoded =
-                    adjustable_voltage(pdo.position, voltage, avs.min_voltage, avs.max_voltage, 100, context)?;
-                let source_limit = current_for_power(avs.pdp, encoded).min(PROTOCOL_MAX_CURRENT);
-                let planned =
-                    plan_current(source_limit, current, encoded, 50, CurrentConfidence::DerivedFromPdoPdp, context)?;
-                Ok(adjustable_request_plan(
-                    pdo,
-                    message,
-                    pdo_copy,
-                    PlannedVoltage::Adjustable { requested: voltage, encoded, step_mv: 100 },
+                    PlannedVoltage::Adjustable { requested: voltage, encoded, step_mv: voltage_step as u16 },
                     planned,
                     common,
                 ))
