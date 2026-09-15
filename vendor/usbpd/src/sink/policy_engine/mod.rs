@@ -88,7 +88,7 @@ enum State {
     WaitForCapabilitiesPassive,
     #[cfg(feature = "initial-capabilities-fallback")]
     ProbeSourceCapabilities,
-    EvaluateCapabilities(SourceCapabilities),
+    EvaluateCapabilities,
     SelectCapability(request::PowerSource),
     TransitionSink(request::PowerSource),
     Ready(request::PowerSource),
@@ -649,6 +649,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
     }
 
+    fn cache_capabilities(&mut self, capabilities: SourceCapabilities) -> State {
+        self.source_capabilities = Some(capabilities);
+        State::EvaluateCapabilities
+    }
+
     fn sink_ams_from_event(event: Event) -> Option<SinkInitiatedAms> {
         match event {
             Event::None => None,
@@ -792,7 +797,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             self.get_source_cap_pending = false;
                             match self.protocol_layer.take_source_capabilities() {
                                 Some(capabilities) if Self::capabilities_valid_for_mode(&capabilities, self.mode) => {
-                                    State::EvaluateCapabilities(capabilities)
+                                    self.cache_capabilities(capabilities)
                                 }
                                 Some(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
                                 None => State::SendSoftReset,
@@ -809,7 +814,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     self.get_source_cap_pending = false;
                     match self.protocol_layer.take_source_capabilities() {
                         Some(caps) if self.mode == Mode::Epr && Self::capabilities_valid_for_mode(&caps, Mode::Epr) => {
-                            State::EvaluateCapabilities(caps)
+                            self.cache_capabilities(caps)
                         }
                         Some(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
                         None => State::SendSoftReset,
@@ -909,7 +914,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         MessageType::Extended(ExtendedMessageType::EprSourceCapabilities) => {
                             match self.source_capabilities_from_message(message) {
                                 Ok(capabilities) if Self::capabilities_valid_for_mode(&capabilities, Mode::Epr) => {
-                                    State::EvaluateCapabilities(capabilities)
+                                    self.cache_capabilities(capabilities)
                                 }
                                 Ok(_) => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
                                 Err(_) => hard_reset_state!(HardResetReason::EprProtocolError),
@@ -926,7 +931,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                             if recovery_ms.is_some() {
                                 self.device_policy_manager.hard_reset_recovered();
                             }
-                            Ok(State::EvaluateCapabilities(capabilities))
+                            Ok(self.cache_capabilities(capabilities))
                         } else {
                             Ok(hard_reset_state!(HardResetReason::InvalidSourceCapabilities))
                         }
@@ -934,7 +939,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     #[cfg(feature = "initial-capabilities-fallback")]
                     CapabilityWait::Passive | CapabilityWait::Probe => {
                         if Self::capabilities_valid_for_mode(&capabilities, self.mode) {
-                            Ok(State::EvaluateCapabilities(capabilities))
+                            Ok(self.cache_capabilities(capabilities))
                         } else {
                             Ok(hard_reset_state!(HardResetReason::InvalidSourceCapabilities))
                         }
@@ -1022,7 +1027,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     Some(capabilities)
                         if mode_matches && Self::capabilities_valid_for_mode(&capabilities, self.mode) =>
                     {
-                        State::EvaluateCapabilities(capabilities)
+                        self.cache_capabilities(capabilities)
                     }
                     Some(_) if mode_matches => hard_reset_state!(HardResetReason::InvalidSourceCapabilities),
                     Some(_) => State::Ready(power_source),
@@ -1202,16 +1207,17 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             #[cfg(feature = "initial-capabilities-fallback")]
             State::ProbeSourceCapabilities => State::Transmit(TransmitOperation::ProbeSourceCapabilities),
-            State::EvaluateCapabilities(capabilities) => {
+            State::EvaluateCapabilities => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
                 // Sink now knows that it is attached.
+                let capabilities =
+                    self.source_capabilities.as_ref().expect("capabilities were cached before evaluation");
                 self.device_policy_manager.inform(capabilities);
-                self.source_capabilities = Some(capabilities.clone());
 
                 self.hard_reset_counter.reset();
 
-                let request = self.device_policy_manager.request(self.source_capabilities.as_ref().unwrap());
+                let request = self.device_policy_manager.request(capabilities);
 
                 if (self.mode == Mode::Epr) != matches!(request, PowerSource::EprRequest(_)) {
                     return Err(Error::InvalidRequestForMode);

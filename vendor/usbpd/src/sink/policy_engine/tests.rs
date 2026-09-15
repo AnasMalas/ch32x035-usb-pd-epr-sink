@@ -92,7 +92,7 @@ async fn passive_default_power_keeps_listening_and_accepts_late_capabilities() {
 
     policy_engine.protocol_layer.driver().inject_received_data(&DUMMY_CAPABILITIES);
     policy_engine.run_step().await.unwrap();
-    assert!(matches!(policy_engine.state, State::EvaluateCapabilities(_)));
+    assert!(matches!(policy_engine.state, State::EvaluateCapabilities));
 }
 
 #[cfg(feature = "initial-capabilities-fallback")]
@@ -149,7 +149,7 @@ async fn source_capability_probe_accepts_a_response_without_entering_default_pow
     policy_engine.protocol_layer.driver().inject_received_data(&DUMMY_CAPABILITIES);
     policy_engine.run_step().await.unwrap();
 
-    assert!(matches!(policy_engine.state, State::EvaluateCapabilities(_)));
+    assert!(matches!(policy_engine.state, State::EvaluateCapabilities));
     assert_eq!(default_ready.load(Ordering::SeqCst), 0);
 }
 
