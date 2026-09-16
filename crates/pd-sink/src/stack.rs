@@ -36,17 +36,17 @@ pub fn capabilities_from_stack(
 /// Convert a validated public request plan into the exact stack request type
 /// required for the current SPR or EPR mode.
 pub fn request_to_stack(plan: RequestPlan) -> Result<PowerSource, StackConversionError> {
-    if matches!(plan.message, RequestMessage::EprRequest) {
-        let pdo = plan.pdo_copy.ok_or(StackConversionError::MissingEprPdoCopy)?;
-        return Ok(PowerSource::EprRequest(EprRequestDataObject { rdo: plan.rdo, pdo }));
+    if matches!(plan.message(), RequestMessage::EprRequest) {
+        let pdo = plan.pdo_copy().ok_or(StackConversionError::MissingEprPdoCopy)?;
+        return Ok(PowerSource::EprRequest(EprRequestDataObject { rdo: plan.rdo(), pdo }));
     }
 
-    let request = match plan.supply {
-        SupplyKind::Fixed => PowerSource::FixedVariableSupply(request::FixedVariableSupply(plan.rdo)),
-        SupplyKind::Pps => PowerSource::Pps(request::Pps(plan.rdo)),
-        SupplyKind::SprAvs | SupplyKind::EprAvs => PowerSource::Avs(request::Avs(plan.rdo)),
+    let request = match plan.supply() {
+        SupplyKind::Fixed => PowerSource::FixedVariableSupply(request::FixedVariableSupply(plan.rdo())),
+        SupplyKind::Pps => PowerSource::Pps(request::Pps(plan.rdo())),
+        SupplyKind::SprAvs | SupplyKind::EprAvs => PowerSource::Avs(request::Avs(plan.rdo())),
         SupplyKind::ZeroPadding | SupplyKind::Unsupported => {
-            return Err(StackConversionError::InvalidSupply(plan.supply));
+            return Err(StackConversionError::InvalidSupply(plan.supply()));
         }
     };
     Ok(request)

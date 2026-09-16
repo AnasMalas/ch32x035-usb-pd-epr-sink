@@ -74,6 +74,7 @@ pub struct RequestContext {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum CurrentConfidence {
     Advertised,
     DerivedFromPdoPdp,
@@ -82,6 +83,7 @@ pub enum CurrentConfidence {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[repr(u8)]
 pub enum LimitReason {
     Source,
     Protocol,
@@ -110,35 +112,94 @@ pub enum PlannedOperating {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct RequestPlan {
-    pub object_position: u8,
-    pub supply: SupplyKind,
-    pub message: RequestMessage,
-    pub rdo: u32,
-    pub pdo_copy: Option<u32>,
-    pub voltage: PlannedVoltage,
-    pub operating: PlannedOperating,
-    pub capability_mismatch: bool,
+    rdo: u32,
+    /// Zero means an ordinary Request. Requestable PDOs are always nonzero,
+    /// so an EPR Request can retain its exact PDO without a separate tag.
+    pdo_copy: u32,
+    /// Zero means that the caller requested the Source maximum. A successful
+    /// plan can never contain an explicit zero-current request.
+    requested_current_ma: u32,
+    encoded_voltage_mv: u16,
+    source_limit_ma: u16,
+    operating_current_ma: u16,
+    /// Zero identifies a fixed-voltage plan; adjustable wire steps fit in u8.
+    voltage_step_mv: u8,
+    requested_voltage_delta_mv: u8,
+    supply: SupplyKind,
+    confidence: CurrentConfidence,
+    limited_by: LimitReason,
 }
 
 impl RequestPlan {
+    pub const fn object_position(self) -> u8 {
+        (self.rdo >> 28) as u8
+    }
+
+    pub const fn supply(self) -> SupplyKind {
+        self.supply
+    }
+
+    pub const fn message(self) -> RequestMessage {
+        if self.pdo_copy == 0 {
+            RequestMessage::Request
+        } else {
+            RequestMessage::EprRequest
+        }
+    }
+
+    pub const fn rdo(self) -> u32 {
+        self.rdo
+    }
+
+    pub const fn pdo_copy(self) -> Option<u32> {
+        if self.pdo_copy == 0 {
+            None
+        } else {
+            Some(self.pdo_copy)
+        }
+    }
+
+    pub const fn voltage(self) -> PlannedVoltage {
+        let encoded = Millivolts(self.encoded_voltage_mv as u32);
+        if self.voltage_step_mv == 0 {
+            PlannedVoltage::Fixed(encoded)
+        } else {
+            PlannedVoltage::Adjustable {
+                requested: Millivolts(encoded.0 + self.requested_voltage_delta_mv as u32),
+                encoded,
+                step_mv: self.voltage_step_mv as u16,
+            }
+        }
+    }
+
+    pub const fn operating(self) -> PlannedOperating {
+        PlannedOperating::Current {
+            requested: if self.requested_current_ma == 0 { None } else { Some(Milliamps(self.requested_current_ma)) },
+            source_limit: Milliamps(self.source_limit_ma as u32),
+            operating: Milliamps(self.operating_current_ma as u32),
+            confidence: self.confidence,
+            limited_by: self.limited_by,
+        }
+    }
+
+    pub const fn capability_mismatch(self) -> bool {
+        self.rdo & (1 << 26) != 0
+    }
+
     pub fn data_objects(self) -> ([u32; 2], usize) {
-        match self.pdo_copy {
+        match self.pdo_copy() {
             Some(pdo) => ([self.rdo, pdo], 2),
             None => ([self.rdo, 0], 1),
         }
     }
 
-    pub fn operating_current(self) -> Option<Milliamps> {
-        match self.operating {
-            PlannedOperating::Current { operating, .. } => Some(operating),
-        }
+    pub const fn operating_current(self) -> Milliamps {
+        Milliamps(self.operating_current_ma as u32)
     }
 
     /// Voltage that is actually encoded in this request.
     pub const fn encoded_voltage(self) -> Millivolts {
-        match self.voltage {
-            PlannedVoltage::Fixed(voltage) | PlannedVoltage::Adjustable { encoded: voltage, .. } => voltage,
-        }
+        Millivolts(self.encoded_voltage_mv as u32)
     }
 }
 
@@ -211,10 +272,9 @@ impl RequestPlanner {
             };
 
             let plan = self.for_pdo(capabilities, mode, pdo.position, demand, context)?;
-            let plan_current = plan.operating_current().map_or(0, Milliamps::get);
+            let plan_current = plan.operating_current().get();
             let replace = best.as_ref().is_none_or(|(best_score, best_plan)| {
-                score < *best_score
-                    || (score == *best_score && plan_current > best_plan.operating_current().map_or(0, Milliamps::get))
+                score < *best_score || (score == *best_score && plan_current > best_plan.operating_current().get())
             });
             if replace {
                 best = Some((score, plan));
@@ -334,12 +394,21 @@ fn maximum_or_adjustable(demand: Demand, maximum: Millivolts) -> (Millivolts, Op
 
 #[derive(Clone, Copy)]
 struct CurrentPlan {
-    requested: Option<Milliamps>,
-    source_limit: Milliamps,
-    operating: Milliamps,
+    requested_ma: u32,
+    source_limit_ma: u16,
+    operating_ma: u16,
     confidence: CurrentConfidence,
     limited_by: LimitReason,
-    mismatch: bool,
+}
+
+impl CurrentPlan {
+    const fn operating(self) -> Milliamps {
+        Milliamps(self.operating_ma as u32)
+    }
+
+    const fn mismatch(self) -> bool {
+        self.requested_ma > self.source_limit_ma as u32
+    }
 }
 
 fn voltage_match_score(pdo: AdvertisedPdo, voltage: Millivolts, preference: Preference) -> Option<u8> {
@@ -446,12 +515,11 @@ fn plan_current(
     }
 
     Ok(CurrentPlan {
-        requested,
-        source_limit,
-        operating,
+        requested_ma: requested.map_or(0, Milliamps::get),
+        source_limit_ma: source_limit.0 as u16,
+        operating_ma: operating.0 as u16,
         confidence,
         limited_by,
-        mismatch: requested.is_some_and(|value| value > source_limit),
     })
 }
 
@@ -477,24 +545,16 @@ fn current_request_plan(
     current: CurrentPlan,
     common: u32,
 ) -> RequestPlan {
-    let raw_current = current.operating.0 / 10;
-    let mismatch_bit = u32::from(current.mismatch) << 26;
-    RequestPlan {
-        object_position: pdo.position,
-        supply: pdo.kind(),
+    let raw_current = current.operating().0 / 10;
+    let mismatch_bit = u32::from(current.mismatch()) << 26;
+    compact_request_plan(
+        pdo,
         message,
-        rdo: common | mismatch_bit | (raw_current << 10) | raw_current,
         pdo_copy,
         voltage,
-        operating: PlannedOperating::Current {
-            requested: current.requested,
-            source_limit: current.source_limit,
-            operating: current.operating,
-            confidence: current.confidence,
-            limited_by: current.limited_by,
-        },
-        capability_mismatch: current.mismatch,
-    }
+        current,
+        common | mismatch_bit | (raw_current << 10) | raw_current,
+    )
 }
 
 fn adjustable_request_plan(
@@ -509,22 +569,48 @@ fn adjustable_request_plan(
         unreachable!("adjustable request helper requires an adjustable voltage plan")
     };
     let raw_voltage = if step_mv == 20 { encoded.0 / 20 } else { encoded.0 / 25 };
-    let raw_current = current.operating.0 / 50;
-    let mismatch_bit = u32::from(current.mismatch) << 26;
-    RequestPlan {
-        object_position: pdo.position,
-        supply: pdo.kind(),
+    let raw_current = current.operating().0 / 50;
+    let mismatch_bit = u32::from(current.mismatch()) << 26;
+    compact_request_plan(
+        pdo,
         message,
-        rdo: common | mismatch_bit | (raw_voltage << 9) | raw_current,
         pdo_copy,
         voltage,
-        operating: PlannedOperating::Current {
-            requested: current.requested,
-            source_limit: current.source_limit,
-            operating: current.operating,
-            confidence: current.confidence,
-            limited_by: current.limited_by,
-        },
-        capability_mismatch: current.mismatch,
+        current,
+        common | mismatch_bit | (raw_voltage << 9) | raw_current,
+    )
+}
+
+fn compact_request_plan(
+    pdo: AdvertisedPdo,
+    message: RequestMessage,
+    pdo_copy: Option<u32>,
+    voltage: PlannedVoltage,
+    current: CurrentPlan,
+    rdo: u32,
+) -> RequestPlan {
+    let (requested, encoded, step_mv) = match voltage {
+        PlannedVoltage::Fixed(voltage) => (voltage, voltage, 0),
+        PlannedVoltage::Adjustable { requested, encoded, step_mv } => (requested, encoded, step_mv),
+    };
+    let voltage_delta = requested.0 - encoded.0;
+    debug_assert!(encoded.0 <= u32::from(u16::MAX));
+    debug_assert!(step_mv <= u16::from(u8::MAX));
+    debug_assert!(voltage_delta <= u32::from(u8::MAX));
+    debug_assert_eq!(matches!(message, RequestMessage::EprRequest), pdo_copy.is_some());
+    debug_assert!(pdo_copy != Some(0));
+
+    RequestPlan {
+        rdo,
+        pdo_copy: pdo_copy.unwrap_or(0),
+        requested_current_ma: current.requested_ma,
+        encoded_voltage_mv: encoded.0 as u16,
+        source_limit_ma: current.source_limit_ma,
+        operating_current_ma: current.operating_ma,
+        voltage_step_mv: step_mv as u8,
+        requested_voltage_delta_mv: voltage_delta as u8,
+        supply: pdo.kind(),
+        confidence: current.confidence,
+        limited_by: current.limited_by,
     }
 }

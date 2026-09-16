@@ -78,10 +78,10 @@ fn a_new_attachment_starts_with_a_safe_five_volt_request() {
     let mut controller = configured_controller();
     let plan = controller.request_for_capabilities(spr(true)).unwrap();
 
-    assert_eq!(plan.object_position, 1);
-    assert_eq!(plan.message, RequestMessage::Request);
-    assert_eq!(plan.operating_current(), Some(Milliamps(3_000)));
-    assert_ne!(plan.rdo & (1 << 22), 0, "the SPR contract must declare EPR capability before entry");
+    assert_eq!(plan.object_position(), 1);
+    assert_eq!(plan.message(), RequestMessage::Request);
+    assert_eq!(plan.operating_current(), Milliamps(3_000));
+    assert_ne!(plan.rdo() & (1 << 22), 0, "the SPR contract must declare EPR capability before entry");
     assert_eq!(controller.epr_state(), EprState::Spr);
 }
 
@@ -97,9 +97,9 @@ fn epr_discovery_retains_no_high_voltage_intent_and_stays_at_five_volts() {
 
     let plan = controller.request_for_capabilities(epr()).unwrap();
     assert_eq!(controller.epr_state(), EprState::Epr);
-    assert_eq!(plan.object_position, 1);
-    assert_eq!(plan.supply, SupplyKind::Fixed);
-    assert_eq!(plan.message, RequestMessage::EprRequest);
+    assert_eq!(plan.object_position(), 1);
+    assert_eq!(plan.supply(), SupplyKind::Fixed);
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
 }
 
 #[test]
@@ -124,10 +124,10 @@ fn targetless_epr_entry_preserves_a_confirmed_fixed_contract() {
     ));
     let handover = controller.request_for_capabilities_with_contract(epr(), Some(active)).unwrap();
 
-    assert_eq!(handover.object_position, 2);
-    assert_eq!(handover.message, RequestMessage::EprRequest);
+    assert_eq!(handover.object_position(), 2);
+    assert_eq!(handover.message(), RequestMessage::EprRequest);
     assert_eq!(handover.encoded_voltage(), Millivolts(20_000));
-    assert_eq!(handover.operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(handover.operating_current(), Milliamps(2_000));
     let transition = ContractTransition::classify(Some(active), handover);
     assert_eq!(transition.kind, ContractTransitionKind::SameVoltageSufficientCurrent);
     assert!(!transition.inhibits_load());
@@ -153,11 +153,11 @@ fn targetless_epr_entry_preserves_a_confirmed_pps_contract() {
         .unwrap();
     let handover = controller.request_for_capabilities_with_contract(epr(), Some(active)).unwrap();
 
-    assert_eq!(handover.object_position, 3);
-    assert_eq!(handover.supply, SupplyKind::Pps);
-    assert_eq!(handover.message, RequestMessage::EprRequest);
+    assert_eq!(handover.object_position(), 3);
+    assert_eq!(handover.supply(), SupplyKind::Pps);
+    assert_eq!(handover.message(), RequestMessage::EprRequest);
     assert_eq!(handover.encoded_voltage(), Millivolts(19_400));
-    assert_eq!(handover.operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(handover.operating_current(), Milliamps(2_000));
     assert!(!ContractTransition::classify(Some(active), handover).inhibits_load());
 }
 
@@ -183,11 +183,11 @@ fn targetless_epr_entry_preserves_a_confirmed_spr_avs_contract() {
         .unwrap();
     let handover = controller.request_for_capabilities_with_contract(epr_with_spr_avs(avs), Some(active)).unwrap();
 
-    assert_eq!(handover.object_position, 2);
-    assert_eq!(handover.supply, SupplyKind::SprAvs);
-    assert_eq!(handover.message, RequestMessage::EprRequest);
+    assert_eq!(handover.object_position(), 2);
+    assert_eq!(handover.supply(), SupplyKind::SprAvs);
+    assert_eq!(handover.message(), RequestMessage::EprRequest);
     assert_eq!(handover.encoded_voltage(), Millivolts(19_400));
-    assert_eq!(handover.operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(handover.operating_current(), Milliamps(2_000));
     assert!(!ContractTransition::classify(Some(active), handover).inhibits_load());
 }
 
@@ -238,8 +238,8 @@ fn changed_epr_capabilities_apply_the_explicit_safe_five_volt_entry_fallback() {
         .unwrap();
     let fallback = controller.request_for_capabilities_with_contract(changed, Some(active)).unwrap();
 
-    assert_eq!(fallback.object_position, 1);
-    assert_eq!(fallback.supply, SupplyKind::Fixed);
+    assert_eq!(fallback.object_position(), 1);
+    assert_eq!(fallback.supply(), SupplyKind::Fixed);
     assert_eq!(fallback.encoded_voltage(), Millivolts(5_000));
     assert_eq!(controller.epr_state(), EprState::Epr);
     assert!(ContractTransition::classify(Some(active), fallback).inhibits_load());
@@ -383,9 +383,9 @@ fn pps_request_is_immediate_when_spr_offer_can_satisfy_it() {
         .unwrap();
 
     let ControllerAction::Request(plan) = action else { panic!("expected request") };
-    assert_eq!(plan.supply, SupplyKind::Pps);
-    assert_eq!(plan.message, RequestMessage::Request);
-    assert_eq!((plan.rdo >> 9) & 0xfff, 970);
+    assert_eq!(plan.supply(), SupplyKind::Pps);
+    assert_eq!(plan.message(), RequestMessage::Request);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 970);
 }
 
 #[test]
@@ -405,9 +405,9 @@ fn forty_eight_volts_drives_epr_entry_then_epr_request() {
 
     let plan = controller.request_for_capabilities(epr()).unwrap();
     assert_eq!(controller.epr_state(), EprState::Epr);
-    assert_eq!(plan.object_position, 8);
-    assert_eq!(plan.message, RequestMessage::EprRequest);
-    assert_eq!(plan.operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(plan.object_position(), 8);
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
+    assert_eq!(plan.operating_current(), Milliamps(2_000));
 }
 
 #[test]
@@ -422,9 +422,9 @@ fn epr_avs_can_supply_nineteen_point_four_when_spr_cannot() {
     assert!(matches!(action, ControllerAction::EnterEprMode { .. }));
 
     let plan = controller.request_for_capabilities(epr()).unwrap();
-    assert_eq!(plan.object_position, 9);
-    assert_eq!(plan.supply, SupplyKind::EprAvs);
-    assert_eq!((plan.rdo >> 9) & 0xfff, 776);
+    assert_eq!(plan.object_position(), 9);
+    assert_eq!(plan.supply(), SupplyKind::EprAvs);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 776);
 }
 
 #[test]
@@ -453,9 +453,9 @@ fn nonstandard_epr_avs_requires_an_explicit_preference_before_epr_entry() {
     assert!(matches!(action, ControllerAction::EnterEprMode { .. }));
 
     let plan = controller.request_for_capabilities(epr_with_avs(epr_avs_range(5_000, 28_000, 140_000))).unwrap();
-    assert_eq!(plan.object_position, 9);
-    assert_eq!(plan.supply, SupplyKind::EprAvs);
-    assert_eq!((plan.rdo >> 9) & 0xfff, 400);
+    assert_eq!(plan.object_position(), 9);
+    assert_eq!(plan.supply(), SupplyKind::EprAvs);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 400);
 }
 
 #[test]
@@ -467,8 +467,8 @@ fn direct_epr_pdo_selection_is_retained_across_entry() {
     assert!(matches!(action, ControllerAction::EnterEprMode { .. }));
 
     let plan = controller.request_for_capabilities(epr()).unwrap();
-    assert_eq!(plan.object_position, 8);
-    assert_eq!(plan.message, RequestMessage::EprRequest);
+    assert_eq!(plan.object_position(), 8);
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
 }
 
 #[test]
@@ -480,11 +480,11 @@ fn direct_epr_avs_maximum_is_retained_across_entry() {
     assert!(matches!(action, ControllerAction::EnterEprMode { .. }));
 
     let plan = controller.request_for_capabilities(epr()).unwrap();
-    assert_eq!(plan.object_position, 9);
-    assert_eq!(plan.supply, SupplyKind::EprAvs);
-    assert_eq!(plan.message, RequestMessage::EprRequest);
+    assert_eq!(plan.object_position(), 9);
+    assert_eq!(plan.supply(), SupplyKind::EprAvs);
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
     assert_eq!(
-        plan.voltage,
+        plan.voltage(),
         pd_sink::PlannedVoltage::Adjustable {
             requested: Millivolts(48_000),
             encoded: Millivolts(48_000),
@@ -504,7 +504,7 @@ fn previewing_every_offer_does_not_change_epr_state_or_user_intent() {
     assert_eq!(controller.desired(), None);
     for position in [1, 2, 3, 8, 9] {
         let plan = controller.preview(UserRequest::Pdo { position, demand: Demand::Maximum }).unwrap();
-        assert_eq!(plan.object_position, position);
+        assert_eq!(plan.object_position(), position);
     }
     assert_eq!(controller.epr_state(), EprState::Epr);
     assert_eq!(controller.desired(), None);
@@ -540,7 +540,7 @@ fn detach_forgets_high_voltage_intent_and_returns_to_five_volts() {
     assert_eq!(controller.epr_state(), EprState::Spr);
 
     let plan = controller.request_for_capabilities(spr(true)).unwrap();
-    assert_eq!(plan.object_position, 1);
+    assert_eq!(plan.object_position(), 1);
 }
 
 #[test]
@@ -555,9 +555,9 @@ fn changed_capabilities_clear_an_unavailable_request_and_fall_back_to_five_volts
     let plan = controller.request_for_capabilities(five_volts_only).unwrap();
 
     assert_eq!(controller.desired(), None);
-    assert_eq!(plan.object_position, 1);
-    assert_eq!(plan.supply, SupplyKind::Fixed);
-    assert_eq!(plan.message, RequestMessage::Request);
+    assert_eq!(plan.object_position(), 1);
+    assert_eq!(plan.supply(), SupplyKind::Fixed);
+    assert_eq!(plan.message(), RequestMessage::Request);
 }
 
 #[test]
@@ -573,9 +573,9 @@ fn epr_exit_first_establishes_a_five_volt_spr_contract() {
         panic!("expected the pre-exit SPR request")
     };
     assert_eq!(controller.epr_state(), EprState::Exiting);
-    assert_eq!(plan.object_position, 1);
-    assert_eq!(plan.message, RequestMessage::EprRequest);
-    assert_eq!(plan.supply, SupplyKind::Fixed);
+    assert_eq!(plan.object_position(), 1);
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
+    assert_eq!(plan.supply(), SupplyKind::Fixed);
     assert_eq!(controller.take_ready_action(), None);
 
     controller.on_ps_ready();
@@ -618,8 +618,8 @@ fn deferred_pre_exit_request_remains_armed_until_the_retry_reaches_ps_rdy() {
     assert_eq!(controller.take_ready_action(), None);
 
     let retry = controller.request_for_capabilities(epr()).unwrap();
-    assert_eq!(retry.object_position, 1);
-    assert_eq!(retry.message, RequestMessage::EprRequest);
+    assert_eq!(retry.object_position(), 1);
+    assert_eq!(retry.message(), RequestMessage::EprRequest);
     assert_eq!(controller.epr_state(), EprState::Exiting);
 
     controller.on_ps_ready();
@@ -638,8 +638,8 @@ fn epr_exit_is_direct_when_the_confirmed_contract_already_uses_an_spr_object() {
         panic!("expected EPR_Request using SPR object 2")
     };
 
-    assert_eq!(active.message, RequestMessage::EprRequest);
-    assert_eq!(active.object_position, 2);
+    assert_eq!(active.message(), RequestMessage::EprRequest);
+    assert_eq!(active.object_position(), 2);
     assert_eq!(
         controller
             .exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active))
@@ -655,8 +655,8 @@ fn safe_five_volt_exit_is_direct_when_fixed_five_volts_is_already_confirmed() {
     controller.request_for_capabilities(spr(true)).unwrap();
     controller.begin_epr_discovery(EprEntryPolicy::Safe5V, None).unwrap();
     let active = controller.request_for_capabilities(epr()).unwrap();
-    assert_eq!(active.object_position, 1);
-    assert_eq!(active.message, RequestMessage::EprRequest);
+    assert_eq!(active.object_position(), 1);
+    assert_eq!(active.message(), RequestMessage::EprRequest);
 
     assert_eq!(controller.exit_epr(EprExitPolicy::Safe5V, Some(active)).unwrap(), ControllerAction::ExitEprMode);
 }
@@ -677,7 +677,7 @@ fn preserve_voltage_hands_an_epr_only_contract_to_a_sufficient_spr_object_before
     else {
         panic!("expected EPR-only AVS request")
     };
-    assert_eq!(active.object_position, 9);
+    assert_eq!(active.object_position(), 9);
 
     let ControllerAction::Request(handover) = controller
         .exit_epr(EprExitPolicy::PreserveVoltage { fallback: EprExitFallback::Refuse }, Some(active))
@@ -685,10 +685,10 @@ fn preserve_voltage_hands_an_epr_only_contract_to_a_sufficient_spr_object_before
     else {
         panic!("expected same-voltage SPR handover")
     };
-    assert_eq!(handover.object_position, 2);
-    assert_eq!(handover.message, RequestMessage::EprRequest);
+    assert_eq!(handover.object_position(), 2);
+    assert_eq!(handover.message(), RequestMessage::EprRequest);
     assert_eq!(handover.encoded_voltage(), Millivolts(20_000));
-    assert_eq!(handover.operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(handover.operating_current(), Milliamps(2_000));
     let transition = ContractTransition::classify(Some(active), handover);
     assert_eq!(transition.kind, ContractTransitionKind::SameVoltageSufficientCurrent);
     assert!(!transition.inhibits_load(), "same-voltage handover must preserve external load permission");
@@ -839,8 +839,8 @@ fn preserve_voltage_safe_fallback_establishes_fixed_five_volts_before_exit() {
     else {
         panic!("expected fixed 5 V fallback")
     };
-    assert_eq!(fallback.object_position, 1);
-    assert_eq!(fallback.supply, SupplyKind::Fixed);
+    assert_eq!(fallback.object_position(), 1);
+    assert_eq!(fallback.supply(), SupplyKind::Fixed);
     assert_eq!(fallback.encoded_voltage(), Millivolts(5_000));
     assert_eq!(controller.take_ready_action(), None);
 }
@@ -875,7 +875,7 @@ fn source_info_refines_power_limited_pps_current() {
         panic!("expected PPS request")
     };
 
-    assert_eq!(plan.operating_current(), Some(Milliamps(3_350)));
+    assert_eq!(plan.operating_current(), Milliamps(3_350));
 
     controller.reset_port();
     controller.request_for_capabilities(capabilities).unwrap();
@@ -885,5 +885,5 @@ fn source_info_refines_power_limited_pps_current() {
     else {
         panic!("expected PPS request")
     };
-    assert_eq!(plan.operating_current(), Some(Milliamps(5_000)));
+    assert_eq!(plan.operating_current(), Milliamps(5_000));
 }

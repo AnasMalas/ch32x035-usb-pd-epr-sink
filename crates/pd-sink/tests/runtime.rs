@@ -252,7 +252,7 @@ fn warm_spr_recovery_keeps_both_load_controls_off_until_ps_rdy() {
     let request = device.request(&source);
     assert_eq!(device.recovery_attempts(), 1);
     assert_eq!(device.contract().confirmed_current(), None);
-    assert_eq!(device.contract().pending_or_active_plan().unwrap().operating_current(), Some(Milliamps(2_000)));
+    assert_eq!(device.contract().pending_or_active_plan().unwrap().operating_current(), Milliamps(2_000));
     assert!(device.runtime_mut().load_states.iter().all(|permitted| !permitted));
     assert_eq!(device.runtime_mut().user_output_states, [false]);
 
@@ -266,7 +266,7 @@ fn warm_spr_recovery_keeps_both_load_controls_off_until_ps_rdy() {
     assert!(runtime.events.iter().any(|event| matches!(
         event,
         SinkEvent::RecoverySucceeded { attempt: 1, plan, output_restored: true }
-            if plan.operating_current() == Some(Milliamps(2_000))
+            if plan.operating_current() == Milliamps(2_000)
     )));
 }
 
@@ -294,7 +294,7 @@ fn recovery_wait_retries_are_bounded_and_then_fall_back_without_output_restore()
 
     device.inform(&source);
     let _ = device.request(&source);
-    assert_eq!(device.contract().pending_or_active_plan().unwrap().operating_current(), Some(Milliamps(5_000)));
+    assert_eq!(device.contract().pending_or_active_plan().unwrap().operating_current(), Milliamps(5_000));
     assert_eq!(device.runtime_mut().user_output_states, [false]);
     assert!(device.runtime_mut().load_states.iter().all(|permitted| !permitted));
 }
@@ -423,7 +423,7 @@ fn epr_recovery_selects_epr_startup_and_an_epr_request() {
     device.inform(&source);
     let request = device.request(&source);
     assert!(matches!(request, PowerSource::EprRequest(_)));
-    assert_eq!(device.contract().pending_or_active_plan().unwrap().object_position, 8);
+    assert_eq!(device.contract().pending_or_active_plan().unwrap().object_position(), 8);
 }
 
 #[test]
@@ -438,7 +438,7 @@ fn reusable_device_owns_contract_and_hard_reset_safety() {
 
     device.transition_power(&request);
     assert_eq!(device.contract().state(), ContractState::Ready);
-    assert_eq!(device.contract().active_plan().unwrap().object_position, 1);
+    assert_eq!(device.contract().active_plan().unwrap().object_position(), 1);
     assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
 
     device.hard_reset(HardResetOrigin::Source, HardResetReason::SourceSignaled);
@@ -479,7 +479,7 @@ fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
         .runtime_mut()
         .events
         .iter()
-        .any(|event| matches!(event, SinkEvent::ContractRefreshStarted(plan) if plan.object_position == 1)));
+        .any(|event| matches!(event, SinkEvent::ContractRefreshStarted(plan) if plan.object_position() == 1)));
     assert_eq!(device.runtime_mut().load_states.last(), Some(&true));
 
     device.transition_power(&refresh);
@@ -488,7 +488,7 @@ fn identical_request_is_reported_as_a_refresh_without_interrupting_the_load() {
     assert!(runtime
         .events
         .iter()
-        .any(|event| matches!(event, SinkEvent::ContractRefreshed(plan) if plan.object_position == 1)));
+        .any(|event| matches!(event, SinkEvent::ContractRefreshed(plan) if plan.object_position() == 1)));
 }
 
 #[test]

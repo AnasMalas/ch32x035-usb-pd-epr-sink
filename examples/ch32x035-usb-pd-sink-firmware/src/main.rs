@@ -795,26 +795,26 @@ fn limit_name(limit: LimitReason) -> &'static str {
 }
 
 fn log_request_plan(prefix: &str, plan: RequestPlan) {
-    match plan.voltage {
+    match plan.voltage() {
         PlannedVoltage::Fixed(voltage) => logln!(
             "{} PDO{} fixed={}mV EPR={}",
             prefix,
-            plan.object_position,
+            plan.object_position(),
             voltage.get(),
-            u8::from(matches!(plan.message, RequestMessage::EprRequest))
+            u8::from(matches!(plan.message(), RequestMessage::EprRequest))
         ),
         PlannedVoltage::Adjustable { requested, encoded, step_mv } => logln!(
             "{} PDO{} requested={}mV encoded={}mV step={}mV EPR={}",
             prefix,
-            plan.object_position,
+            plan.object_position(),
             requested.get(),
             encoded.get(),
             step_mv,
-            u8::from(matches!(plan.message, RequestMessage::EprRequest))
+            u8::from(matches!(plan.message(), RequestMessage::EprRequest))
         ),
     }
 
-    match plan.operating {
+    match plan.operating() {
         PlannedOperating::Current { requested, source_limit, operating, confidence, limited_by } => {
             if let Some(requested) = requested {
                 logln!(
@@ -825,7 +825,7 @@ fn log_request_plan(prefix: &str, plan: RequestPlan) {
                     operating.get(),
                     confidence_name(confidence),
                     limit_name(limited_by),
-                    plan.capability_mismatch
+                    plan.capability_mismatch()
                 );
             } else {
                 logln!(
@@ -835,7 +835,7 @@ fn log_request_plan(prefix: &str, plan: RequestPlan) {
                     operating.get(),
                     confidence_name(confidence),
                     limit_name(limited_by),
-                    plan.capability_mismatch
+                    plan.capability_mismatch()
                 );
             }
         }
@@ -1078,7 +1078,7 @@ impl SinkRuntime for FirmwareRuntime {
         control_event!(ControlEvent::Plan { stage: ControlPlanStage::Requesting, plan: Some(plan) });
         log_request_plan("Requesting", plan);
         #[cfg(feature = "sdi-log")]
-        logln!("RDO={:#010x}", plan.rdo);
+        logln!("RDO={:#010x}", plan.rdo());
     }
 
     fn on_contract_ready(&mut self, plan: Option<RequestPlan>) {

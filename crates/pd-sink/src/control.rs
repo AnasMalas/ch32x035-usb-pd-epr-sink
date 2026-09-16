@@ -745,18 +745,18 @@ fn optional_u32(value: u32) -> Option<u32> {
 }
 
 fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) {
-    writer.u8(plan.object_position);
-    writer.u8(supply_kind(plan.supply));
+    writer.u8(plan.object_position());
+    writer.u8(supply_kind(plan.supply()));
     let mut flags = 0;
-    if matches!(plan.message, RequestMessage::EprRequest) {
+    if matches!(plan.message(), RequestMessage::EprRequest) {
         flags |= 1 << 0;
     }
-    if plan.capability_mismatch {
+    if plan.capability_mismatch() {
         flags |= 1 << 1;
     }
     writer.u8(flags);
 
-    match plan.voltage {
+    match plan.voltage() {
         PlannedVoltage::Fixed(voltage) => {
             writer.u8(0);
             writer.u32(voltage.get());
@@ -771,7 +771,7 @@ fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) {
         }
     }
 
-    match plan.operating {
+    match plan.operating() {
         PlannedOperating::Current { requested, source_limit, operating, confidence, limited_by } => {
             writer.u32(requested.map_or(NONE_U32, Milliamps::get));
             writer.u32(source_limit.get());
@@ -780,8 +780,8 @@ fn encode_plan(plan: RequestPlan, writer: &mut PayloadWriter<'_>) {
             writer.u8(limit_code(limited_by));
         }
     }
-    writer.u32(plan.rdo);
-    writer.u32(plan.pdo_copy.unwrap_or(0));
+    writer.u32(plan.rdo());
+    writer.u32(plan.pdo_copy().unwrap_or(0));
 }
 
 fn controller_error_fields(error: ControllerError) -> (u8, u32, u32) {

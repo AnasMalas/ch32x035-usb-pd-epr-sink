@@ -899,7 +899,7 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
     }
 
     fn inform_status(&mut self, status: &stack_status::Status) {
-        let pps_mode_valid = matches!(self.contract.active_plan().map(|plan| plan.supply), Some(SupplyKind::Pps));
+        let pps_mode_valid = matches!(self.contract.active_plan().map(RequestPlan::supply), Some(SupplyKind::Pps));
         self.runtime.on_source_status(SourceStatus::from_raw_bytes(status.raw_bytes(), pps_mode_valid));
     }
 

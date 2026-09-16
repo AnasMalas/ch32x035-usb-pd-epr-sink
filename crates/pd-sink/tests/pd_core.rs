@@ -52,6 +52,64 @@ fn epr_capabilities(position_2: u32, position_8: u32) -> SourceCapabilities {
 }
 
 #[test]
+fn request_plan_compacts_without_losing_public_semantics() {
+    assert_eq!(core::mem::size_of::<pd_sink::RequestPlan>(), 24);
+
+    let fixed_caps = spr_capabilities(&[fixed(5_000, 3_000, false)]);
+    let oversized = RequestPlanner::new()
+        .for_pdo(&fixed_caps, PortMode::Spr, 1, Demand::Current(Milliamps(100_000)), RequestContext::default())
+        .unwrap();
+    assert_eq!(oversized.object_position(), 1);
+    assert_eq!(oversized.supply(), SupplyKind::Fixed);
+    assert_eq!(oversized.message(), RequestMessage::Request);
+    assert_eq!(oversized.pdo_copy(), None);
+    assert_eq!(oversized.voltage(), PlannedVoltage::Fixed(Millivolts(5_000)));
+    assert_eq!(
+        oversized.operating(),
+        PlannedOperating::Current {
+            requested: Some(Milliamps(100_000)),
+            source_limit: Milliamps(3_000),
+            operating: Milliamps(3_000),
+            confidence: CurrentConfidence::Advertised,
+            limited_by: LimitReason::Source,
+        }
+    );
+    assert!(oversized.capability_mismatch());
+    let pps_caps = spr_capabilities(&[fixed(5_000, 3_000, false), pps(5_000, 21_000, 5_000, false)]);
+    let adjustable = RequestPlanner::new()
+        .for_pdo(
+            &pps_caps,
+            PortMode::Spr,
+            2,
+            Demand::Adjustable { voltage: Millivolts(19_419), current: Some(Milliamps(3_333)) },
+            RequestContext::default(),
+        )
+        .unwrap();
+    assert_eq!(
+        adjustable.voltage(),
+        PlannedVoltage::Adjustable { requested: Millivolts(19_419), encoded: Millivolts(19_400), step_mv: 20 }
+    );
+    assert_eq!(
+        adjustable.operating(),
+        PlannedOperating::Current {
+            requested: Some(Milliamps(3_333)),
+            source_limit: Milliamps(5_000),
+            operating: Milliamps(3_300),
+            confidence: CurrentConfidence::Advertised,
+            limited_by: LimitReason::User,
+        }
+    );
+
+    let epr_pdo = fixed(48_000, 5_000, false);
+    let epr_caps = epr_capabilities(fixed(9_000, 3_000, false), epr_pdo);
+    let epr =
+        RequestPlanner::new().for_pdo(&epr_caps, PortMode::Epr, 8, Demand::Maximum, RequestContext::default()).unwrap();
+    assert_eq!(epr.message(), RequestMessage::EprRequest);
+    assert_eq!(epr.pdo_copy(), Some(epr_pdo));
+    assert_eq!(epr.data_objects(), ([epr.rdo(), epr_pdo], 2));
+}
+
+#[test]
 fn capability_parser_retains_unsupported_legacy_source_pdos() {
     let capabilities = SourceCapabilities::new(
         CapabilitiesKind::Epr,
@@ -141,8 +199,8 @@ fn bounded_noncanonical_pps_offers_remain_requestable_and_are_capped_safely() {
             RequestContext::default(),
         )
         .unwrap();
-    assert_eq!(aohi_style.object_position, 3);
-    assert_eq!(aohi_style.operating_current(), Some(Milliamps(3_000)));
+    assert_eq!(aohi_style.object_position(), 3);
+    assert_eq!(aohi_style.operating_current(), Milliamps(3_000));
 
     let proprietary_high_current = planner
         .for_pdo(
@@ -154,7 +212,7 @@ fn bounded_noncanonical_pps_offers_remain_requestable_and_are_capped_safely() {
         )
         .unwrap();
     assert!(matches!(
-        proprietary_high_current.operating,
+        proprietary_high_current.operating(),
         PlannedOperating::Current {
             source_limit: Milliamps(5_000),
             operating: Milliamps(5_000),
@@ -162,7 +220,7 @@ fn bounded_noncanonical_pps_offers_remain_requestable_and_are_capped_safely() {
             ..
         }
     ));
-    assert_eq!(proprietary_high_current.rdo & 0x7f, 100, "the wire request must never exceed 5 A");
+    assert_eq!(proprietary_high_current.rdo() & 0x7f, 100, "the wire request must never exceed 5 A");
 }
 
 #[test]
@@ -174,10 +232,10 @@ fn deprecated_three_point_three_volt_pps_endpoint_remains_requestable() {
         .for_voltage(&capabilities, PortMode::Spr, Millivolts(3_300), None, Preference::Pps, RequestContext::default())
         .unwrap();
     assert_eq!(
-        plan.voltage,
+        plan.voltage(),
         PlannedVoltage::Adjustable { requested: Millivolts(3_300), encoded: Millivolts(3_300), step_mv: 20 }
     );
-    assert_eq!((plan.rdo >> 9) & 0xfff, 165);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 165);
 }
 
 #[test]
@@ -218,7 +276,7 @@ fn aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen
             RequestContext::default(),
         )
         .unwrap();
-    assert_eq!(standard.object_position, 9);
+    assert_eq!(standard.object_position(), 9);
 
     let nonstandard = planner
         .for_voltage(
@@ -230,10 +288,10 @@ fn aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen
             RequestContext::default(),
         )
         .unwrap();
-    assert_eq!(nonstandard.object_position, 9);
-    assert_eq!(nonstandard.pdo_copy, Some(0xd230_328c));
-    assert_eq!((nonstandard.rdo >> 9) & 0xfff, 400);
-    assert_eq!(nonstandard.rdo & 0x7f, 100, "the non-standard range remains capped at 5 A");
+    assert_eq!(nonstandard.object_position(), 9);
+    assert_eq!(nonstandard.pdo_copy(), Some(0xd230_328c));
+    assert_eq!((nonstandard.rdo() >> 9) & 0xfff, 400);
+    assert_eq!(nonstandard.rdo() & 0x7f, 100, "the non-standard range remains capped at 5 A");
 }
 
 #[test]
@@ -293,15 +351,15 @@ fn advertised_fifty_volt_epr_avs_is_compatible_and_explicit() {
         )
         .unwrap();
     assert_eq!(
-        plan.voltage,
+        plan.voltage(),
         PlannedVoltage::Adjustable { requested: Millivolts(50_000), encoded: Millivolts(50_000), step_mv: 100 }
     );
-    assert_eq!((plan.rdo >> 9) & 0xfff, 2_000);
-    assert_eq!(plan.rdo & 0x7f, 56, "140 W at 50 V is limited to 2.8 A");
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 2_000);
+    assert_eq!(plan.rdo() & 0x7f, 56, "140 W at 50 V is limited to 2.8 A");
 
     match request_to_stack(plan).unwrap() {
         PowerSource::EprRequest(request) => {
-            assert_eq!(request.rdo, plan.rdo);
+            assert_eq!(request.rdo, plan.rdo());
             assert_eq!(request.pdo, epr_avs_range(15_000, 50_000, 140_000));
         }
         _ => panic!("50 V AVS must remain a two-object EPR Request"),
@@ -365,8 +423,8 @@ fn fixed_rdo_never_inverts_operating_and_maximum_fields() {
     let plan = RequestPlanner::new()
         .for_pdo(&capabilities, PortMode::Spr, 1, Demand::Current(Milliamps(1_500)), RequestContext::default())
         .unwrap();
-    let operating = (plan.rdo >> 10) & 0x3ff;
-    let maximum = plan.rdo & 0x3ff;
+    let operating = (plan.rdo() >> 10) & 0x3ff;
+    let maximum = plan.rdo() & 0x3ff;
     assert_ne!(operating, 0);
     assert!(operating <= maximum, "RDO operating field must not exceed its maximum field");
 }
@@ -386,15 +444,15 @@ fn pps_19_4_volts_is_exact_and_uses_an_ordinary_request() {
         )
         .unwrap();
 
-    assert_eq!(plan.supply, SupplyKind::Pps);
-    assert_eq!(plan.message, RequestMessage::Request);
-    assert_eq!(plan.pdo_copy, None);
-    assert_eq!(plan.rdo >> 28, 2);
-    assert_eq!((plan.rdo >> 9) & 0xfff, 970);
-    assert_eq!(plan.rdo & 0x7f, 60);
-    assert_eq!(plan.rdo & (1 << 25), 0, "power-only product must clear USB communications");
+    assert_eq!(plan.supply(), SupplyKind::Pps);
+    assert_eq!(plan.message(), RequestMessage::Request);
+    assert_eq!(plan.pdo_copy(), None);
+    assert_eq!(plan.rdo() >> 28, 2);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 970);
+    assert_eq!(plan.rdo() & 0x7f, 60);
+    assert_eq!(plan.rdo() & (1 << 25), 0, "power-only product must clear USB communications");
     assert_eq!(
-        plan.voltage,
+        plan.voltage(),
         PlannedVoltage::Adjustable { requested: Millivolts(19_400), encoded: Millivolts(19_400), step_mv: 20 }
     );
 }
@@ -414,8 +472,8 @@ fn auto_prefers_an_exact_fixed_pdo_over_an_adjustable_offer() {
         )
         .unwrap();
 
-    assert_eq!(plan.object_position, 2);
-    assert_eq!(plan.supply, SupplyKind::Fixed);
+    assert_eq!(plan.object_position(), 2);
+    assert_eq!(plan.supply(), SupplyKind::Fixed);
 }
 
 #[test]
@@ -433,21 +491,21 @@ fn epr_avs_19_4_volts_caps_a_140_watt_offer_at_five_amps() {
         )
         .unwrap();
 
-    assert_eq!(plan.message, RequestMessage::EprRequest);
-    assert_eq!(plan.pdo_copy, Some(avs_raw));
-    assert_eq!((plan.rdo >> 9) & 0xfff, 776);
-    assert_eq!(((plan.rdo >> 9) & 0xfff) & 0x3, 0);
-    assert_eq!(plan.rdo & 0x7f, 100);
-    assert_eq!(plan.operating_current(), Some(Milliamps(5_000)));
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
+    assert_eq!(plan.pdo_copy(), Some(avs_raw));
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 776);
+    assert_eq!(((plan.rdo() >> 9) & 0xfff) & 0x3, 0);
+    assert_eq!(plan.rdo() & 0x7f, 100);
+    assert_eq!(plan.operating_current(), Milliamps(5_000));
     assert!(matches!(
-        plan.operating,
+        plan.operating(),
         PlannedOperating::Current {
             source_limit: Milliamps(5_000),
             confidence: CurrentConfidence::DerivedFromPdoPdp,
             ..
         }
     ));
-    assert_eq!(plan.data_objects(), ([plan.rdo, avs_raw], 2));
+    assert_eq!(plan.data_objects(), ([plan.rdo(), avs_raw], 2));
 }
 
 #[test]
@@ -458,7 +516,7 @@ fn source_info_present_pdp_caps_fixed_and_epr_avs_current() {
     let fixed_plan =
         RequestPlanner::new().for_pdo(&fixed_capabilities, PortMode::Epr, 8, Demand::Maximum, context).unwrap();
     assert!(matches!(
-        fixed_plan.operating,
+        fixed_plan.operating(),
         PlannedOperating::Current {
             source_limit: Milliamps(1_250),
             operating: Milliamps(1_250),
@@ -473,7 +531,7 @@ fn source_info_present_pdp_caps_fixed_and_epr_avs_current() {
         .for_voltage(&avs_capabilities, PortMode::Epr, Millivolts(19_400), None, Preference::EprAvs, context)
         .unwrap();
     assert!(matches!(
-        avs_plan.operating,
+        avs_plan.operating(),
         PlannedOperating::Current {
             source_limit: Milliamps(3_050),
             operating: Milliamps(3_050),
@@ -482,7 +540,7 @@ fn source_info_present_pdp_caps_fixed_and_epr_avs_current() {
             ..
         }
     ));
-    assert_eq!(avs_plan.rdo & 0x7f, 61);
+    assert_eq!(avs_plan.rdo() & 0x7f, 61);
 }
 
 #[test]
@@ -499,8 +557,8 @@ fn epr_avs_current_is_rounded_down_to_fifty_milliamps() {
         )
         .unwrap();
 
-    assert_eq!(plan.operating_current(), Some(Milliamps(3_600)));
-    assert_eq!(plan.rdo & 0x7f, 72);
+    assert_eq!(plan.operating_current(), Milliamps(3_600));
+    assert_eq!(plan.rdo() & 0x7f, 72);
 }
 
 #[test]
@@ -518,8 +576,8 @@ fn epr_mode_always_uses_epr_request_even_for_an_spr_pps_position() {
         )
         .unwrap();
 
-    assert_eq!(plan.message, RequestMessage::EprRequest);
-    assert_eq!(plan.pdo_copy, Some(pps_raw));
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
+    assert_eq!(plan.pdo_copy(), Some(pps_raw));
     assert_eq!(plan.data_objects().1, 2);
 }
 
@@ -535,9 +593,9 @@ fn fixed_48_volts_is_only_planned_as_an_epr_request() {
     );
 
     let plan = planner.for_pdo(&capabilities, PortMode::Epr, 8, Demand::Maximum, RequestContext::default()).unwrap();
-    assert_eq!(plan.voltage, PlannedVoltage::Fixed(Millivolts(48_000)));
-    assert_eq!(plan.message, RequestMessage::EprRequest);
-    assert_eq!(plan.pdo_copy, Some(pdo_48v));
+    assert_eq!(plan.voltage(), PlannedVoltage::Fixed(Millivolts(48_000)));
+    assert_eq!(plan.message(), RequestMessage::EprRequest);
+    assert_eq!(plan.pdo_copy(), Some(pdo_48v));
 }
 
 #[test]
@@ -554,11 +612,11 @@ fn spr_avs_is_parsed_and_requested_with_100_mv_quantization() {
         )
         .unwrap();
 
-    assert_eq!(plan.supply, SupplyKind::SprAvs);
-    assert_eq!((plan.rdo >> 9) & 0xfff, 776);
-    assert_eq!(plan.operating_current(), Some(Milliamps(3_000)));
+    assert_eq!(plan.supply(), SupplyKind::SprAvs);
+    assert_eq!((plan.rdo() >> 9) & 0xfff, 776);
+    assert_eq!(plan.operating_current(), Milliamps(3_000));
     assert_eq!(
-        plan.voltage,
+        plan.voltage(),
         PlannedVoltage::Adjustable { requested: Millivolts(19_450), encoded: Millivolts(19_400), step_mv: 100 }
     );
 }
@@ -572,7 +630,7 @@ fn power_limited_pps_reports_uncertainty_until_source_info_is_known() {
         .for_voltage(&capabilities, PortMode::Spr, Millivolts(20_000), None, Preference::Pps, RequestContext::default())
         .unwrap();
     assert!(matches!(
-        unknown.operating,
+        unknown.operating(),
         PlannedOperating::Current {
             confidence: CurrentConfidence::PowerLimitedUpperBound,
             operating: Milliamps(5_000),
@@ -591,7 +649,7 @@ fn power_limited_pps_reports_uncertainty_until_source_info_is_known() {
         )
         .unwrap();
     assert!(matches!(
-        known.operating,
+        known.operating(),
         PlannedOperating::Current {
             confidence: CurrentConfidence::DerivedFromSourceInfo,
             operating: Milliamps(3_000),
@@ -623,10 +681,10 @@ fn requested_and_local_limits_are_applied_before_encoding() {
         .unwrap();
 
     assert!(matches!(
-        plan.operating,
+        plan.operating(),
         PlannedOperating::Current { operating: Milliamps(2_500), limited_by: LimitReason::SinkPower, .. }
     ));
-    assert_eq!(plan.rdo & 0x7f, 50);
+    assert_eq!(plan.rdo() & 0x7f, 50);
 }
 
 #[test]
@@ -643,9 +701,9 @@ fn over_limit_user_demand_sets_mismatch_but_encodes_a_valid_request() {
         )
         .unwrap();
 
-    assert!(plan.capability_mismatch);
-    assert_ne!(plan.rdo & (1 << 26), 0);
-    assert_eq!(plan.rdo & 0x7f, 60, "RDO current must be capped to the 3 A offer");
+    assert!(plan.capability_mismatch());
+    assert_ne!(plan.rdo() & (1 << 26), 0);
+    assert_eq!(plan.rdo() & 0x7f, 60, "RDO current must be capped to the 3 A offer");
 }
 
 #[test]
@@ -693,18 +751,18 @@ fn direct_maximum_request_reaches_every_position_in_a_full_epr_list() {
             .for_pdo(&capabilities, PortMode::Epr, position, Demand::Maximum, RequestContext::default())
             .unwrap();
 
-        assert_eq!(plan.object_position, position);
-        assert_eq!(plan.message, RequestMessage::EprRequest);
-        assert_eq!(plan.pdo_copy, Some(raw[usize::from(position - 1)]));
-        assert_eq!(plan.rdo >> 28, u32::from(position));
-        match plan.voltage {
+        assert_eq!(plan.object_position(), position);
+        assert_eq!(plan.message(), RequestMessage::EprRequest);
+        assert_eq!(plan.pdo_copy(), Some(raw[usize::from(position - 1)]));
+        assert_eq!(plan.rdo() >> 28, u32::from(position));
+        match plan.voltage() {
             PlannedVoltage::Fixed(voltage) => assert!(voltage <= Millivolts(48_000)),
             PlannedVoltage::Adjustable { requested, encoded, .. } => {
                 assert_eq!(requested, encoded);
                 assert!(encoded <= Millivolts(48_000));
             }
         }
-        match plan.operating {
+        match plan.operating() {
             PlannedOperating::Current { operating, .. } => assert!(operating > Milliamps(0)),
         }
     }
@@ -733,14 +791,14 @@ fn every_adjustable_family_accepts_its_minimum_and_maximum_voltage() {
                 .unwrap();
 
             assert_eq!(
-                plan.voltage,
+                plan.voltage(),
                 PlannedVoltage::Adjustable {
                     requested: Millivolts(requested_mv),
                     encoded: Millivolts(requested_mv),
                     step_mv,
                 }
             );
-            assert_eq!((plan.rdo >> 9) & 0xfff, requested_mv / wire_unit_mv);
+            assert_eq!((plan.rdo() >> 9) & 0xfff, requested_mv / wire_unit_mv);
         }
     }
 }
@@ -834,7 +892,7 @@ fn rejected_renegotiation_restores_the_previous_ready_contract() {
         .for_voltage(&capabilities, PortMode::Spr, Millivolts(19_401), None, Preference::Pps, RequestContext::default())
         .unwrap();
     assert_ne!(renegotiation, same_wire, "reported request metadata should retain the user's exact voltage");
-    assert_eq!(renegotiation.rdo, same_wire.rdo, "both voltages quantize to the same PPS RDO");
+    assert_eq!(renegotiation.rdo(), same_wire.rdo(), "both voltages quantize to the same PPS RDO");
     assert_eq!(
         contract.classify_transition(same_wire).kind,
         ContractTransitionKind::IdenticalRefresh,

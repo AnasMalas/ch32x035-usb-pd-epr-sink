@@ -10,9 +10,8 @@ use pd_sink::{
 use pd_sink::{
     encode_control_event_packet, CapabilitiesKind, ContractOperatingPoint, ContractTransition, ContractTransitionKind,
     ControlEprEvent, ControlEventKind, ControlIntegrationError, ControlLifecycleEvent, ControllerError,
-    CurrentConfidence, EprEntryRefusal, EprExitRefusal, LimitReason, PdoValidity, PlannedOperating, PlannedVoltage,
-    PpsStatus, RequestMessage, RequestPlan, RequestResult, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery,
-    StatusQueryFailure, SupplyKind,
+    EprEntryRefusal, EprExitRefusal, PdoValidity, PortMode, PpsStatus, RequestContext, RequestFlags, RequestPlanner,
+    RequestResult, SinkLimits, SourceAlert, SourceCapabilities, SourceStatus, StatusQuery, StatusQueryFailure,
 };
 
 fn decode_one(bytes: &[u8]) -> pd_sink::ControlFrame {
@@ -327,22 +326,36 @@ fn event_encoder_accepts_the_exact_frame_size() {
 #[test]
 #[cfg(feature = "rich-telemetry")]
 fn packet_event_encoder_keeps_protocol_v1_payloads() {
-    let plan = RequestPlan {
-        object_position: 10,
-        supply: SupplyKind::Fixed,
-        message: RequestMessage::EprRequest,
-        rdo: 0xa144_8d23,
-        pdo_copy: Some(0x001f_01f4),
-        voltage: PlannedVoltage::Fixed(Millivolts(48_000)),
-        operating: PlannedOperating::Current {
-            requested: None,
-            source_limit: Milliamps(5_000),
-            operating: Milliamps(2_910),
-            confidence: CurrentConfidence::Advertised,
-            limited_by: LimitReason::SinkPower,
-        },
-        capability_mismatch: false,
-    };
+    let capabilities = SourceCapabilities::new(
+        CapabilitiesKind::Epr,
+        &[
+            0x0a91_912c,
+            0x0012_d12c,
+            0x0013_c12c,
+            0x0014_b12c,
+            0x0016_41f4,
+            0xc9a4_3264,
+            0,
+            0x0018_c1f4,
+            0x001b_41f4,
+            0x001f_01f4,
+            0xd7c0_96f0,
+        ],
+    )
+    .unwrap();
+    let plan = RequestPlanner::new()
+        .for_pdo(
+            &capabilities,
+            PortMode::Epr,
+            10,
+            Demand::Maximum,
+            RequestContext {
+                flags: RequestFlags { epr_capable: true, ..RequestFlags::default() },
+                limits: SinkLimits { max_power: Some(Milliwatts(140_000)), ..SinkLimits::default() },
+                source_present_pdp: None,
+            },
+        )
+        .unwrap();
 
     let events: &[(ControlEvent, ControlEventKind, &[u8])] = &[
         (

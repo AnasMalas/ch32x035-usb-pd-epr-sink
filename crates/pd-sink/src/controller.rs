@@ -403,10 +403,10 @@ impl SinkController {
         let capabilities =
             self.epr_capabilities.as_ref().ok_or(ControllerError::NoCapabilities(CapabilitiesKind::Epr))?;
         let active_is_spr = active.is_some_and(|plan| {
-            plan.message == RequestMessage::EprRequest
-                && plan.object_position <= 7
-                && matches!(plan.supply, SupplyKind::Fixed | SupplyKind::Pps | SupplyKind::SprAvs)
-                && self.continuity_request_at(capabilities, plan, plan.object_position, PortMode::Epr).is_some()
+            plan.message() == RequestMessage::EprRequest
+                && plan.object_position() <= 7
+                && matches!(plan.supply(), SupplyKind::Fixed | SupplyKind::Pps | SupplyKind::SprAvs)
+                && self.continuity_request_at(capabilities, plan, plan.object_position(), PortMode::Epr).is_some()
         });
 
         let (plan, request, fallback, preserves_voltage) = match policy {
@@ -430,7 +430,7 @@ impl SinkController {
             EprExitPolicy::Safe5V => {
                 if active_is_spr
                     && active.is_some_and(|plan| {
-                        plan.supply == SupplyKind::Fixed && plan.encoded_voltage() == Millivolts(5_000)
+                        plan.supply() == SupplyKind::Fixed && plan.encoded_voltage() == Millivolts(5_000)
                     })
                 {
                     self.start_direct_epr_exit();
@@ -600,7 +600,7 @@ impl SinkController {
     ) -> Option<(RequestPlan, UserRequest)> {
         let request = UserRequest::Voltage {
             voltage: active.encoded_voltage(),
-            current: active.operating_current(),
+            current: Some(active.operating_current()),
             preference: Preference::Position(position),
         };
         let plan = self.plan(request, capabilities, mode).ok()?;
