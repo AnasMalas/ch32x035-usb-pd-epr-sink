@@ -210,7 +210,7 @@ fn pd_sink_recovery_intent_drives_the_complete_soft_reset_request_and_output_seq
     assert!(runtime.events.iter().any(|event| matches!(
         event,
         SinkEvent::RecoverySucceeded { attempt: 1, plan, output_restored: true }
-            if plan.object_position == 2 && plan.operating_current() == Milliamps(2_000)
+            if plan.object_position() == 2 && plan.operating_current() == Milliamps(2_000)
     )));
     assert!(runtime.events.contains(&SinkEvent::Detached));
 }
