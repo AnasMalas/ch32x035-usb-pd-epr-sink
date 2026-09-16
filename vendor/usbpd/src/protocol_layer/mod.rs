@@ -33,7 +33,9 @@ use usbpd_traits::{Driver, DriverRxError, DriverTxError};
 use crate::PowerRole;
 use crate::counters::{Counter, CounterType, Error as CounterError};
 use crate::protocol_layer::message::data::epr_mode::EprModeDataObject;
+#[cfg(any(feature = "source", test))]
 use crate::protocol_layer::message::extended::Extended;
+use crate::protocol_layer::message::extended::ExtendedHeader;
 use crate::protocol_layer::message::extended::sink_capabilities_extended::SinkCapabilitiesExtended;
 use crate::protocol_layer::message::{ParseError, Payload};
 use crate::timers::{Timer, TimerType};
@@ -82,6 +84,7 @@ pub(crate) enum SinkPayload {
 ///
 /// Selecting the wire representation before creating the transmit future keeps
 /// every policy state on one async transmit path.
+#[derive(Debug)]
 pub(crate) enum SinkTransmit {
     Control(ControlMessageType),
     ExtendedControl(ExtendedControlMessageType),
@@ -90,6 +93,23 @@ pub(crate) enum SinkTransmit {
     EprSinkCapabilities(message::data::sink_capabilities::SinkCapabilities),
     SinkCapabilitiesExtended(SinkCapabilitiesExtended),
     EprMode(message::data::epr_mode::Action, u8),
+}
+
+trait OutgoingMessage: core::fmt::Debug {
+    fn validate(&self) -> Result<(), TxValidationError>;
+
+    fn encode(&self, default_header: Header, counter: Counter, buffer: &mut [u8]) -> usize;
+}
+
+impl OutgoingMessage for Message {
+    fn validate(&self) -> Result<(), TxValidationError> {
+        assert_ne!(self.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        validate_outgoing_message(self)
+    }
+
+    fn encode(&self, _default_header: Header, _counter: Counter, buffer: &mut [u8]) -> usize {
+        self.to_bytes(buffer)
+    }
 }
 
 /// Errors that can occur in the protocol layer.
@@ -175,6 +195,156 @@ pub enum TxValidationError {
     /// state machine, which is not implemented yet.
     #[error("extended payload requires multi-chunk transmission")]
     ExtendedMessageChunkingRequired,
+}
+
+fn validate_power_source(power_source: &request::PowerSource) -> Result<(), TxValidationError> {
+    match power_source {
+        request::PowerSource::FixedVariableSupply(rdo) => {
+            if rdo.unchunked_extended_messages_supported() {
+                return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
+            }
+        }
+        request::PowerSource::Pps(rdo) => {
+            if rdo.unchunked_extended_messages_supported() {
+                return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
+            }
+        }
+        request::PowerSource::Avs(rdo) => {
+            if rdo.unchunked_extended_messages_supported() {
+                return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
+            }
+            if rdo.raw_output_voltage() & 0x3 != 0 {
+                return Err(TxValidationError::AvsVoltageAlignmentInvalid);
+            }
+        }
+        request::PowerSource::EprRequest(epr) => {
+            if (epr.rdo >> 23) & 1 == 1 {
+                return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
+            }
+
+            let apdo_type = (epr.pdo >> 28) & 0x3;
+            let is_avs = (epr.pdo >> 30) & 0x3 == 0x3 && matches!(apdo_type, 0x1 | 0x2);
+            if is_avs && ((epr.rdo >> 9) as u16) & 0x3 != 0 {
+                return Err(TxValidationError::AvsVoltageAlignmentInvalid);
+            }
+        }
+        _ => {}
+    }
+    Ok(())
+}
+
+fn validate_outgoing_message(message: &Message) -> Result<(), TxValidationError> {
+    if let Some(Payload::Extended(extended)) = &message.payload
+        && extended.data_size() > 26
+    {
+        return Err(TxValidationError::ExtendedMessageChunkingRequired);
+    }
+
+    if let Some(Payload::Data(Data::Request(power_source))) = &message.payload {
+        validate_power_source(power_source)?;
+    }
+    Ok(())
+}
+
+fn encode_extended_headers(
+    default_header: Header,
+    counter: Counter,
+    message_type: ExtendedMessageType,
+    payload_size: usize,
+    buffer: &mut [u8],
+) -> (usize, usize) {
+    let body_size = EXT_HEADER_SIZE + payload_size;
+    let num_objects = body_size.div_ceil(4);
+    let frame_size = MSG_HEADER_SIZE + num_objects * 4;
+    let header = Header::new_extended(default_header, counter, message_type, num_objects as u8);
+    let offset = header.to_bytes(buffer);
+    let extended_header = ExtendedHeader::new(payload_size as u16).with_chunked(true).with_chunk_number(0);
+    let offset = offset + extended_header.to_bytes(&mut buffer[offset..]);
+    (offset, frame_size)
+}
+
+impl OutgoingMessage for SinkTransmit {
+    fn validate(&self) -> Result<(), TxValidationError> {
+        match self {
+            Self::Request(power_source) => validate_power_source(power_source),
+            Self::EprSinkCapabilities(capabilities) if capabilities.0.len() * 4 > 26 => {
+                Err(TxValidationError::ExtendedMessageChunkingRequired)
+            }
+            Self::SinkCapabilitiesExtended(_) if SinkCapabilitiesExtended::DATA_SIZE > 26 => {
+                Err(TxValidationError::ExtendedMessageChunkingRequired)
+            }
+            _ => Ok(()),
+        }
+    }
+
+    fn encode(&self, default_header: Header, counter: Counter, buffer: &mut [u8]) -> usize {
+        match self {
+            Self::Control(message_type) => Header::new_control(default_header, counter, *message_type).to_bytes(buffer),
+            Self::ExtendedControl(message_type) => {
+                let (offset, frame_size) =
+                    encode_extended_headers(default_header, counter, ExtendedMessageType::ExtendedControl, 2, buffer);
+                ExtendedControl::default().with_message_type(*message_type).to_bytes(&mut buffer[offset..]);
+                frame_size
+            }
+            Self::Request(power_source) => {
+                let header =
+                    Header::new_data(default_header, counter, power_source.message_type(), power_source.num_objects());
+                let offset = header.to_bytes(buffer);
+                let written = match power_source {
+                    request::PowerSource::FixedVariableSupply(rdo) => rdo.to_bytes(&mut buffer[offset..]),
+                    request::PowerSource::Pps(rdo) => rdo.to_bytes(&mut buffer[offset..]),
+                    request::PowerSource::Avs(rdo) => rdo.to_bytes(&mut buffer[offset..]),
+                    request::PowerSource::EprRequest(epr) => {
+                        LittleEndian::write_u32(&mut buffer[offset..], epr.rdo);
+                        LittleEndian::write_u32(&mut buffer[offset + 4..], epr.pdo);
+                        8
+                    }
+                    _ => unimplemented!(),
+                };
+                offset + written
+            }
+            Self::SinkCapabilities(capabilities) => {
+                let header = Header::new_data(
+                    default_header,
+                    counter,
+                    DataMessageType::SinkCapabilities,
+                    capabilities.num_objects(),
+                );
+                let offset = header.to_bytes(buffer);
+                offset + capabilities.to_bytes(&mut buffer[offset..])
+            }
+            Self::EprSinkCapabilities(capabilities) => {
+                let payload_size = capabilities.0.len() * 4;
+                let (offset, frame_size) = encode_extended_headers(
+                    default_header,
+                    counter,
+                    ExtendedMessageType::EprSinkCapabilities,
+                    payload_size,
+                    buffer,
+                );
+                capabilities.to_bytes(&mut buffer[offset..]);
+                frame_size
+            }
+            Self::SinkCapabilitiesExtended(capabilities) => {
+                let (offset, frame_size) = encode_extended_headers(
+                    default_header,
+                    counter,
+                    ExtendedMessageType::SinkCapabilitiesExtended,
+                    SinkCapabilitiesExtended::DATA_SIZE,
+                    buffer,
+                );
+                capabilities.to_bytes(&mut buffer[offset..]);
+                frame_size
+            }
+            Self::EprMode(action, data) => {
+                let header = Header::new_data(default_header, counter, DataMessageType::EprMode, 1);
+                let offset = header.to_bytes(buffer);
+                let object = EprModeDataObject::default().with_action(*action).with_data(*data);
+                LittleEndian::write_u32(&mut buffer[offset..], object.0);
+                offset + 4
+            }
+        }
+    }
 }
 
 #[cfg(feature = "numeric-trace")]
@@ -412,69 +582,6 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         }
     }
 
-    /// Validate an outgoing message for spec compliance.
-    ///
-    /// This catches common mistakes when constructing messages:
-    /// - unchunked_extended_messages_supported should always be false
-    /// - AVS voltage LSB 2 bits should be zero (per USB PD 3.2 Table 6.26)
-    ///
-    /// Only validates outgoing messages - never called when parsing received data.
-    /// Returns an error if validation fails, allowing the caller to handle it appropriately.
-    fn validate_outgoing_message(message: &Message) -> Result<(), TxValidationError> {
-        if let Some(Payload::Extended(extended)) = &message.payload
-            && extended.data_size() > 26
-        {
-            return Err(TxValidationError::ExtendedMessageChunkingRequired);
-        }
-
-        if let Some(Payload::Data(message::data::Data::Request(power_source))) = &message.payload {
-            use message::data::request::PowerSource;
-            match power_source {
-                PowerSource::FixedVariableSupply(rdo) => {
-                    if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
-                    }
-                }
-                PowerSource::Pps(rdo) => {
-                    if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
-                    }
-                }
-                PowerSource::Avs(rdo) => {
-                    if rdo.unchunked_extended_messages_supported() {
-                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
-                    }
-                    if rdo.raw_output_voltage() & 0x3 != 0 {
-                        return Err(TxValidationError::AvsVoltageAlignmentInvalid);
-                    }
-                }
-                PowerSource::EprRequest(epr) => {
-                    // Check the raw RDO for validation
-                    let rdo_bits = epr.rdo;
-                    let unchunked = (rdo_bits >> 23) & 1 == 1;
-                    if unchunked {
-                        return Err(TxValidationError::UnchunkedExtendedMessagesNotSupported);
-                    }
-
-                    // The selected PDO, not the RDO's object-position bits,
-                    // determines the RDO format. APDO type 01 is EPR AVS and
-                    // type 10 is SPR AVS.
-                    let raw_pdo = epr.pdo;
-                    let apdo_type = (raw_pdo >> 28) & 0x3;
-                    let is_avs = (raw_pdo >> 30) & 0x3 == 0x3 && matches!(apdo_type, 0x1 | 0x2);
-                    if is_avs {
-                        let voltage = (rdo_bits >> 9) & 0xFFF;
-                        if (voltage as u16) & 0x3 != 0 {
-                            return Err(TxValidationError::AvsVoltageAlignmentInvalid);
-                        }
-                    }
-                }
-                _ => {}
-            }
-        }
-        Ok(())
-    }
-
     async fn transmit_inner(&mut self, buffer: &[u8]) -> Result<(), TxError> {
         match self.driver.transmit(buffer).await {
             Ok(_) => Ok(()),
@@ -488,15 +595,18 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     ///
     // GoodCrc message transmission is handled separately.
     // See `transmit_good_crc()` instead.
+    #[cfg(any(feature = "source", test))]
     pub async fn transmit(&mut self, message: Message) -> Result<(), ProtocolError> {
-        assert_ne!(message.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        self.transmit_outgoing(message).await
+    }
 
+    async fn transmit_outgoing<M: OutgoingMessage>(&mut self, message: M) -> Result<(), ProtocolError> {
         // Validate outgoing message for spec compliance before entering the driver path.
         #[cfg(not(feature = "numeric-trace"))]
-        Self::validate_outgoing_message(&message)?;
+        message.validate()?;
         #[cfg(feature = "numeric-trace")]
         {
-            if let Err(validation) = Self::validate_outgoing_message(&message) {
+            if let Err(validation) = message.validate() {
                 let error = ProtocolError::TxValidation(validation);
                 emit_protocol_error(&error);
                 return Err(error);
@@ -506,7 +616,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         trace!("Transmit message: {:?}", message);
 
         let mut buffer = Self::get_message_buffer();
-        let size = message.to_bytes(&mut buffer);
+        let size = message.encode(self.default_header, self.counters.tx_message, &mut buffer);
 
         if DRIVER::HAS_AUTO_RETRY {
             // Hardware handles retries and verifies GoodCRC reception.
@@ -1670,73 +1780,7 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
         &mut self,
         operation: SinkTransmit,
     ) -> impl Future<Output = Result<(), ProtocolError>> + '_ {
-        let message = match operation {
-            SinkTransmit::Control(message_type) => {
-                Message::new(Header::new_control(self.default_header, self.counters.tx_message, message_type))
-            }
-            SinkTransmit::ExtendedControl(message_type) => {
-                let header = Header::new_extended(
-                    self.default_header,
-                    self.counters.tx_message,
-                    ExtendedMessageType::ExtendedControl,
-                    1,
-                );
-                let mut message = Message::new(header);
-                message.payload = Some(Payload::Extended(Extended::ExtendedControl(
-                    ExtendedControl::default().with_message_type(message_type),
-                )));
-                message
-            }
-            SinkTransmit::Request(power_source) => {
-                let header = Header::new_data(
-                    self.default_header,
-                    self.counters.tx_message,
-                    power_source.message_type(),
-                    power_source.num_objects(),
-                );
-                Message::new_with_data(header, Data::Request(power_source))
-            }
-            SinkTransmit::SinkCapabilities(capabilities) => {
-                let header = Header::new_data(
-                    self.default_header,
-                    self.counters.tx_message,
-                    DataMessageType::SinkCapabilities,
-                    capabilities.num_objects(),
-                );
-                Message::new_with_data(header, Data::SinkCapabilities(capabilities))
-            }
-            SinkTransmit::EprSinkCapabilities(capabilities) => {
-                let pdos: Vec<_, 7> = capabilities.0.iter().cloned().collect();
-                let header = Header::new_extended(
-                    self.default_header,
-                    self.counters.tx_message,
-                    ExtendedMessageType::EprSinkCapabilities,
-                    0,
-                );
-                let mut message = Message::new(header);
-                message.payload = Some(Payload::Extended(Extended::EprSinkCapabilities(pdos)));
-                message
-            }
-            SinkTransmit::SinkCapabilitiesExtended(capabilities) => {
-                let header = Header::new_extended(
-                    self.default_header,
-                    self.counters.tx_message,
-                    ExtendedMessageType::SinkCapabilitiesExtended,
-                    0,
-                );
-                let mut message = Message::new(header);
-                message.payload = Some(Payload::Extended(Extended::SinkCapabilitiesExtended(capabilities)));
-                message
-            }
-            SinkTransmit::EprMode(action, data) => {
-                let header =
-                    Header::new_data(self.default_header, self.counters.tx_message, DataMessageType::EprMode, 1);
-                let object = EprModeDataObject::default().with_action(action).with_data(data);
-                Message::new_with_data(header, Data::EprMode(object))
-            }
-        };
-
-        self.0.transmit(message)
+        self.0.transmit_outgoing(operation)
     }
 
     pub(crate) async fn receive_message_type_with_timeout(
@@ -1863,7 +1907,9 @@ mod tests {
     use super::message::header::{
         ControlMessageType, DataMessageType, ExtendedMessageType, Header, SpecificationRevision,
     };
-    use super::{ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, SinkTransmit, TxValidationError};
+    use super::{
+        OutgoingMessage, ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, SinkTransmit, TxValidationError,
+    };
     use crate::counters::{Counter, CounterType};
     use crate::dummy::{
         DUMMY_CAPABILITIES, DummyDriver, DummyTimer, MAX_DATA_MESSAGE_SIZE, get_dummy_source_capabilities,
@@ -1950,6 +1996,103 @@ mod tests {
 
     fn source_header() -> Header {
         Header::new_template(crate::DataRole::Dfp, crate::PowerRole::Source, SpecificationRevision::R3_X)
+    }
+
+    fn general_sink_message(default_header: Header, counter: Counter, operation: &SinkTransmit) -> Message {
+        match operation {
+            SinkTransmit::Control(message_type) => {
+                Message::new(Header::new_control(default_header, counter, *message_type))
+            }
+            SinkTransmit::ExtendedControl(message_type) => {
+                let header = Header::new_extended(default_header, counter, ExtendedMessageType::ExtendedControl, 1);
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::ExtendedControl(
+                    super::message::extended::extended_control::ExtendedControl::default()
+                        .with_message_type(*message_type),
+                )));
+                message
+            }
+            SinkTransmit::Request(power_source) => {
+                let header =
+                    Header::new_data(default_header, counter, power_source.message_type(), power_source.num_objects());
+                Message::new_with_data(header, Data::Request(*power_source))
+            }
+            SinkTransmit::SinkCapabilities(capabilities) => {
+                let header = Header::new_data(
+                    default_header,
+                    counter,
+                    DataMessageType::SinkCapabilities,
+                    capabilities.num_objects(),
+                );
+                Message::new_with_data(header, Data::SinkCapabilities(capabilities.clone()))
+            }
+            SinkTransmit::EprSinkCapabilities(capabilities) => {
+                let pdos = capabilities.0.iter().copied().collect();
+                let header = Header::new_extended(default_header, counter, ExtendedMessageType::EprSinkCapabilities, 0);
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::EprSinkCapabilities(pdos)));
+                message
+            }
+            SinkTransmit::SinkCapabilitiesExtended(capabilities) => {
+                let header =
+                    Header::new_extended(default_header, counter, ExtendedMessageType::SinkCapabilitiesExtended, 0);
+                let mut message = Message::new(header);
+                message.payload = Some(Payload::Extended(Extended::SinkCapabilitiesExtended(*capabilities)));
+                message
+            }
+            SinkTransmit::EprMode(action, data) => {
+                let header = Header::new_data(default_header, counter, DataMessageType::EprMode, 1);
+                let object =
+                    super::message::data::epr_mode::EprModeDataObject::default().with_action(*action).with_data(*data);
+                Message::new_with_data(header, Data::EprMode(object))
+            }
+        }
+    }
+
+    #[test]
+    fn compact_sink_encoder_matches_general_encoder_for_every_operation() {
+        use super::message::data::epr_mode::Action;
+        use super::message::data::request::{Avs, EprRequestDataObject, Pps};
+        use super::message::data::sink_capabilities::{FixedSupply, SinkCapabilities, SinkPowerDataObject};
+        use super::message::extended::extended_control::ExtendedControlMessageType;
+        use super::message::extended::sink_capabilities_extended::SinkCapabilitiesExtended;
+
+        let mut sink_pdos = heapless::Vec::new();
+        sink_pdos.push(SinkPowerDataObject::FixedSupply(FixedSupply::new_vsafe5v(300))).unwrap();
+        sink_pdos.push(SinkPowerDataObject::FixedSupply(FixedSupply::new(400, 500))).unwrap();
+        let sink_capabilities = SinkCapabilities::new(sink_pdos);
+        let operations = [
+            SinkTransmit::Control(ControlMessageType::GetSourceCap),
+            SinkTransmit::ExtendedControl(ExtendedControlMessageType::EprKeepAlive),
+            SinkTransmit::Request(PowerSource::FixedVariableSupply(FixedVariableSupply(0x2144_b12c))),
+            SinkTransmit::Request(PowerSource::Pps(Pps(0x6148_3464))),
+            SinkTransmit::Request(PowerSource::Avs(Avs(0xb14f_0064))),
+            SinkTransmit::Request(PowerSource::EprRequest(EprRequestDataObject { rdo: 0xa147_d1f4, pdo: 0x001f_01f4 })),
+            SinkTransmit::SinkCapabilities(sink_capabilities.clone()),
+            SinkTransmit::EprSinkCapabilities(sink_capabilities),
+            SinkTransmit::SinkCapabilitiesExtended(SinkCapabilitiesExtended::default()),
+            SinkTransmit::EprMode(Action::Enter, 240),
+            SinkTransmit::EprMode(Action::Exit, 0),
+        ];
+        let default_header =
+            Header::new_template(crate::DataRole::Ufp, crate::PowerRole::Sink, SpecificationRevision::R3_X);
+        let counter = Counter::new_from_value(CounterType::MessageId, 5);
+
+        for operation in &operations {
+            let general = general_sink_message(default_header, counter, operation);
+            assert_eq!(operation.validate(), super::validate_outgoing_message(&general));
+
+            let mut compact_bytes = [0; MAX_DATA_MESSAGE_SIZE];
+            let compact_size = operation.encode(default_header, counter, &mut compact_bytes);
+            let mut general_bytes = [0; MAX_DATA_MESSAGE_SIZE];
+            let general_size = general.to_bytes(&mut general_bytes);
+            assert_eq!(compact_size, general_size, "size differed for {operation:?}");
+            assert_eq!(
+                &compact_bytes[..compact_size],
+                &general_bytes[..general_size],
+                "wire bytes differed for {operation:?}"
+            );
+        }
     }
 
     fn data_frame(message_type: DataMessageType, payload: &[u8]) -> ([u8; MAX_DATA_MESSAGE_SIZE], usize) {
