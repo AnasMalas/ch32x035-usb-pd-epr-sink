@@ -606,7 +606,7 @@ impl<R: SinkRuntime> SinkDevice<R> {
         self.runtime.on_recovery_cancelled(reason, recovery.attempts, recovery.intent.maximum_attempts);
     }
 
-    fn recovery_plan(&mut self, capabilities: crate::SourceCapabilities) -> Option<RequestPlan> {
+    fn recovery_plan(&mut self) -> Option<RequestPlan> {
         let recovery = self.recovery?;
         if self.runtime.recovery_cancel_requested() {
             self.cancel_recovery(RecoveryCancellationReason::ApplicationRequested, true);
@@ -614,8 +614,8 @@ impl<R: SinkRuntime> SinkDevice<R> {
         }
 
         let mode_matches = matches!(
-            (recovery.intent.mode, capabilities.kind()),
-            (PortMode::Spr, crate::CapabilitiesKind::Spr) | (PortMode::Epr, crate::CapabilitiesKind::Epr)
+            (recovery.intent.mode, self.controller.epr_state()),
+            (PortMode::Spr, EprState::Spr) | (PortMode::Epr, EprState::Epr)
         );
         if !mode_matches {
             self.cancel_recovery(RecoveryCancellationReason::ModeChanged, true);
@@ -785,14 +785,12 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
         }
     }
 
-    fn request(&mut self, source_capabilities: &StackSourceCapabilities) -> PowerSource {
-        let capabilities =
-            self.capabilities_or_report(source_capabilities).expect("policy engine must bound Source PDO count");
-        let plan = match self.recovery_plan(capabilities) {
+    fn request(&mut self, _source_capabilities: &StackSourceCapabilities) -> PowerSource {
+        let plan = match self.recovery_plan() {
             Some(plan) => plan,
             None => self
                 .controller
-                .request_for_capabilities_with_contract(capabilities, self.contract.active_plan())
+                .request_for_current_capabilities_with_contract(self.contract.active_plan())
                 .expect("every accepted source must advertise a valid fixed 5 V PDO"),
         };
         if let Some(error) = self.controller.take_pending_error() {

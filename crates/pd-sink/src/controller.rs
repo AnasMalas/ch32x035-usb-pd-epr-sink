@@ -221,6 +221,18 @@ impl SinkController {
         active: Option<RequestPlan>,
     ) -> Result<RequestPlan, ControllerError> {
         self.observe_capabilities(capabilities);
+        self.request_for_current_capabilities_with_contract(active)
+    }
+
+    pub(crate) fn request_for_current_capabilities_with_contract(
+        &mut self,
+        active: Option<RequestPlan>,
+    ) -> Result<RequestPlan, ControllerError> {
+        let kind = match self.epr_state {
+            EprState::Spr => CapabilitiesKind::Spr,
+            EprState::Entering | EprState::Epr | EprState::Exiting => CapabilitiesKind::Epr,
+        };
+        let capabilities = *self.capabilities(kind).ok_or(ControllerError::NoCapabilities(kind))?;
         let mode = match capabilities.kind() {
             CapabilitiesKind::Spr => PortMode::Spr,
             CapabilitiesKind::Epr => PortMode::Epr,
