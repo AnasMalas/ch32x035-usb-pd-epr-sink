@@ -1180,7 +1180,9 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
-    async fn update_state(&mut self) -> Result<(), Error> {
+    /// Advance states that perform no asynchronous I/O outside the policy
+    /// future, keeping only wire and timer waits in its generated poll code.
+    fn advance_sync_state(&mut self) -> Result<bool, Error> {
         let new_state = match &self.state {
             State::Startup => {
                 self.contract = Default::default();
@@ -1192,14 +1194,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.epr_keep_alive_deadline_tick = None;
                 self.protocol_layer.reset();
                 self.mode = Mode::Spr;
-
                 State::Discovery
-            }
-            State::Discovery => {
-                self.protocol_layer.wait_for_vbus().await;
-                self.source_capabilities = None;
-
-                State::WaitForCapabilities
             }
             State::WaitForCapabilities => {
                 let recovery_ms = self.hard_reset_recovery_ms.take();
@@ -1214,29 +1209,128 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             State::EvaluateCapabilities => {
                 self.pending_sink_ams = None;
                 self.wait_retry_pending = false;
-                // Sink now knows that it is attached.
                 let capabilities =
                     self.source_capabilities.as_ref().expect("capabilities were cached before evaluation");
                 self.device_policy_manager.inform(capabilities);
-
                 self.hard_reset_counter.reset();
-
                 let request = self.device_policy_manager.request(capabilities);
-
                 if (self.mode == Mode::Epr) != matches!(request, PowerSource::EprRequest(_)) {
                     return Err(Error::InvalidRequestForMode);
                 }
-
                 self.proposed_power_source = Some(request);
                 State::SelectCapability
             }
             State::SelectCapability => {
-                // Any power request now being attempted supersedes an older
-                // scheduled retry. A new Wait response below arms it again.
                 self.wait_retry_pending = false;
                 State::Transmit(TransmitOperation::SelectCapability)
             }
             State::TransitionSink => State::Receive(ReceiveOperation::PowerTransition(self.mode)),
+            State::SendNotSupported => State::Transmit(TransmitOperation::SendNotSupported),
+            state @ (State::SendSoftReset | State::SoftReset) => {
+                let operation = if matches!(state, State::SendSoftReset) {
+                    TransmitOperation::SendSoftReset
+                } else {
+                    TransmitOperation::AcceptSoftReset
+                };
+                self.pending_sink_ams = None;
+                self.proposed_power_source = None;
+                self.wait_retry_pending = false;
+                self.protocol_layer.reset();
+                State::Transmit(operation)
+            }
+            State::TransitionToDefault => {
+                self.proposed_power_source = None;
+                self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
+
+                #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
+                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis_for(
+                    self.hard_reset_origin,
+                    Self::reported_hard_reset_reason(self.hard_reset_reason),
+                );
+                #[cfg(not(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons")))]
+                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis();
+                self.hard_reset_recovery_ms = (recovery_ms != 0).then_some(recovery_ms);
+
+                #[cfg(feature = "hard-reset-reasons")]
+                self.device_policy_manager
+                    .hard_reset(self.hard_reset_origin, Self::reported_hard_reset_reason(self.hard_reset_reason));
+                #[cfg(not(feature = "hard-reset-reasons"))]
+                self.device_policy_manager.hard_reset(self.hard_reset_origin);
+
+                self.protocol_layer.reset();
+                self.mode = Mode::Spr;
+                self.contract = Contract::Safe5V;
+                self.active_power_source = None;
+                self.source_capabilities = None;
+                State::Startup
+            }
+            State::GiveSinkCap(mode) => State::Transmit(TransmitOperation::GiveSinkCap(*mode)),
+            State::GiveSinkCapExtended => State::Transmit(TransmitOperation::GiveSinkCapExtended),
+            State::GetSourceCap(mode) => {
+                self.get_source_cap_pending = true;
+                State::Transmit(TransmitOperation::GetSourceCap(*mode))
+            }
+            State::GetSourceInfo => State::Transmit(TransmitOperation::GetSourceInfo),
+            State::GetStatus(query) => State::Transmit(TransmitOperation::GetStatus(*query)),
+            State::EprModeEntry(operational_pdp) => {
+                let Some(pdp_watts) = operational_pdp.as_watts_floor() else {
+                    return Err(Error::InvalidEprOperationalPdp);
+                };
+                if !(1..=240).contains(&pdp_watts) {
+                    return Err(Error::InvalidEprOperationalPdp);
+                }
+                State::Transmit(TransmitOperation::EnterEprMode(pdp_watts))
+            }
+            State::EprEntryWaitForResponse => State::Receive(ReceiveOperation::EprEntryResult),
+            State::EprWaitForCapabilities => {
+                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::EprEntry))
+            }
+            State::EprSendExit => State::Transmit(TransmitOperation::ExitEprMode),
+            State::EprExitReceived => {
+                self.pending_sink_ams = None;
+                self.wait_retry_pending = false;
+                self.pps_refresh_deadline_tick = None;
+                self.epr_keep_alive_deadline_tick = None;
+                self.mode = Mode::Spr;
+                if matches!(self.active_power_source(), PowerSource::EprRequest(epr) if epr.object_position() >= 8) {
+                    hard_reset_state!(HardResetReason::EprProtocolError)
+                } else {
+                    State::WaitForCapabilities
+                }
+            }
+            State::EprKeepAlive => {
+                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                    crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
+                    crate::numeric_trace::NumericTraceEprKeepAlivePhase::Request as u8,
+                    crate::numeric_trace::UNAVAILABLE_U8,
+                    crate::numeric_trace::UNAVAILABLE_U8,
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                    crate::numeric_trace::UNAVAILABLE_U16,
+                ));
+                State::Transmit(TransmitOperation::EprKeepAlive)
+            }
+            State::Discovery | State::Ready | State::Transmit(_) | State::Receive(_) => return Ok(false),
+            #[cfg(feature = "hard-reset-reasons")]
+            State::HardReset(_) => return Ok(false),
+            #[cfg(not(feature = "hard-reset-reasons"))]
+            State::HardReset => return Ok(false),
+        };
+        self.state = new_state;
+        Ok(true)
+    }
+
+    async fn update_state(&mut self) -> Result<(), Error> {
+        if self.advance_sync_state()? {
+            return Ok(());
+        }
+        let new_state = match &self.state {
+            State::Discovery => {
+                self.protocol_layer.wait_for_vbus().await;
+                self.source_capabilities = None;
+                State::WaitForCapabilities
+            }
             State::Ready => {
                 let active_power_source = self.active_power_source();
                 self.ensure_periodic_deadlines(active_power_source);
@@ -1308,21 +1402,6 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                         }
                     }
                 }
-            }
-            State::SendNotSupported => State::Transmit(TransmitOperation::SendNotSupported),
-            State::SendSoftReset => {
-                self.pending_sink_ams = None;
-                self.proposed_power_source = None;
-                self.wait_retry_pending = false;
-                self.protocol_layer.reset();
-                State::Transmit(TransmitOperation::SendSoftReset)
-            }
-            State::SoftReset => {
-                self.pending_sink_ams = None;
-                self.proposed_power_source = None;
-                self.wait_retry_pending = false;
-                self.protocol_layer.reset();
-                State::Transmit(TransmitOperation::AcceptSoftReset)
             }
             hard_reset_pattern!(reason) => {
                 self.pending_sink_ams = None;
@@ -1398,165 +1477,6 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
 
                 State::TransitionToDefault
             }
-            State::TransitionToDefault => {
-                self.pending_sink_ams = None;
-                self.proposed_power_source = None;
-                self.wait_retry_pending = false;
-                self.pps_refresh_deadline_tick = None;
-                self.epr_keep_alive_deadline_tick = None;
-                // Per USB PD Spec R3.2 Section 8.3.3.3.9 (PE_SNK_Transition_to_default):
-                // This state is entered when:
-                // - Hard Reset Signaling is detected (received or transmitted)
-                // - From PE_SNK_Hard_Reset after hard reset is complete
-                //
-                // On entry:
-                // - Indicate to DPM that Sink shall transition to default
-                // - Request reset of local hardware
-                // - Request DPM that Port Data Role is set to UFP
-                //
-                // Transition to PE_SNK_Startup when:
-                // - DPM indicates Sink has reached default level
-
-                // Arm the product-selected recovery receive window before
-                // notifying the DPM. The DPM must return promptly so the PHY
-                // is listening while the Source returns to default power.
-                #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]
-                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis_for(
-                    self.hard_reset_origin,
-                    Self::reported_hard_reset_reason(self.hard_reset_reason),
-                );
-                #[cfg(not(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons")))]
-                let recovery_ms = self.device_policy_manager.hard_reset_recovery_millis();
-                self.hard_reset_recovery_ms = (recovery_ms != 0).then_some(recovery_ms);
-
-                // Notify DPM about hard reset (DPM should transition to default power level).
-                #[cfg(feature = "hard-reset-reasons")]
-                {
-                    self.device_policy_manager
-                        .hard_reset(self.hard_reset_origin, Self::reported_hard_reset_reason(self.hard_reset_reason));
-                }
-                #[cfg(not(feature = "hard-reset-reasons"))]
-                {
-                    self.device_policy_manager.hard_reset(self.hard_reset_origin);
-                }
-
-                // Reset protocol layer (per spec 6.8.3: "Protocol Layers shall be reset as for Soft Reset")
-                self.protocol_layer.reset();
-
-                // Reset EPR mode (per spec 6.8.3.2: "Hard Reset shall cause EPR Mode to be exited")
-                self.mode = Mode::Spr;
-
-                // Reset contract to default
-                self.contract = Contract::Safe5V;
-                self.active_power_source = None;
-
-                // Clear cached source capabilities
-                self.source_capabilities = None;
-
-                State::Startup
-            }
-            State::GiveSinkCap(response_mode) => {
-                // Per USB PD Spec R3.2 Section 8.3.3.3.10:
-                // - Send Sink_Capabilities when Get_Sink_Cap was received
-                // - Send EPR_Sink_Capabilities when EPR_Get_Sink_Cap was received
-                State::Transmit(TransmitOperation::GiveSinkCap(*response_mode))
-            }
-            State::GiveSinkCapExtended => State::Transmit(TransmitOperation::GiveSinkCapExtended),
-            State::GetSourceCap(requested_mode) => {
-                // Per USB PD Spec R3.2 Section 8.3.3.3.12 (PE_SNK_Get_Source_Cap):
-                // - Send Get_Source_Cap (SPR) or EPR_Get_Source_Cap (EPR)
-                // - Start SenderResponseTimer
-                // - On timeout or mode mismatch → Ready
-                // - On matching capabilities received → EvaluateCapabilities
-                //
-                // Set flag before sending to track that we requested source capabilities.
-                // Per spec 8.3.3.3.8, in EPR mode, receiving an unrequested
-                // Source_Capabilities message triggers a Hard Reset.
-                self.get_source_cap_pending = true;
-                State::Transmit(TransmitOperation::GetSourceCap(*requested_mode))
-            }
-            State::GetSourceInfo => State::Transmit(TransmitOperation::GetSourceInfo),
-            State::GetStatus(query) => State::Transmit(TransmitOperation::GetStatus(*query)),
-            State::EprModeEntry(operational_pdp) => {
-                // Request entry into EPR mode.
-                // Per spec 8.3.3.26.2.1 (PE_SNK_Send_EPR_Mode_Entry), sink sends EPR_Mode (Enter)
-                // and starts SenderResponseTimer and SinkEPREnterTimer.
-                //
-                // Per spec 6.4.10, the Data field shall be set to the EPR Sink Operational PDP.
-                //
-                // Note: The spec says SinkEPREnterTimer (500ms) should run continuously across
-                // both EprModeEntry and EprEntryWaitForResponse states until stopped or timeout.
-                // Our implementation uses SenderResponseTimer (30ms) here and a fresh
-                // SinkEPREnterTimer (500ms) in EprEntryWaitForResponse. This means the total
-                // timeout could be ~530ms instead of 500ms in edge cases. However, this is
-                // within the spec's allowed range (tEnterEPR max = 550ms per Table 6.71).
-                let Some(pdp_watts) = operational_pdp.as_watts_floor() else {
-                    return Err(Error::InvalidEprOperationalPdp);
-                };
-                if !(1..=240).contains(&pdp_watts) {
-                    return Err(Error::InvalidEprOperationalPdp);
-                }
-                State::Transmit(TransmitOperation::EnterEprMode(pdp_watts))
-            }
-            State::EprEntryWaitForResponse => {
-                // Wait for EnterSucceeded after receiving EnterAcknowledged.
-                // Per spec 8.3.3.26.2.2 (PE_SNK_EPR_Mode_Wait_For_Response), use SinkEPREnterTimer
-                // for the overall timeout while source performs cable discovery.
-                State::Receive(ReceiveOperation::EprEntryResult)
-            }
-            State::EprWaitForCapabilities => {
-                // After successful EPR mode entry, source automatically sends EPR_Source_Capabilities.
-                // This may be a chunked extended message that requires assembly.
-                // Wait for the capabilities and evaluate them.
-                State::Receive(ReceiveOperation::SourceCapabilities(CapabilityWait::EprEntry))
-            }
-            State::EprSendExit => {
-                // Inform partner we are exiting EPR.
-                State::Transmit(TransmitOperation::ExitEprMode)
-            }
-            State::EprExitReceived => {
-                // Per USB PD Spec R3.2 Section 8.3.3.26.4.2 (PE_SNK_EPR_Mode_Exit_Received):
-                // - If in an Explicit Contract with an SPR (A)PDO → WaitForCapabilities
-                // - If NOT in an Explicit Contract with an SPR (A)PDO → HardReset
-                //
-                // SPR PDOs are in object positions 1-7, EPR PDOs are in positions 8+.
-                // In EPR mode, requests use EprRequest which contains the RDO with object position.
-                self.pending_sink_ams = None;
-                self.wait_retry_pending = false;
-                self.pps_refresh_deadline_tick = None;
-                self.epr_keep_alive_deadline_tick = None;
-                self.mode = Mode::Spr;
-
-                let is_epr_pdo_contract = match self.active_power_source() {
-                    PowerSource::EprRequest(epr) => {
-                        // Extract object position from RDO (bits 28-31)
-                        epr.object_position() >= 8
-                    }
-                    // Non-EprRequest variants are only used in SPR mode, so always SPR PDOs
-                    _ => false,
-                };
-
-                if is_epr_pdo_contract {
-                    hard_reset_state!(HardResetReason::EprProtocolError)
-                } else {
-                    State::WaitForCapabilities
-                }
-            }
-            State::EprKeepAlive => {
-                // Per spec 8.3.3.3.11 (PE_SNK_EPR_Keep_Alive):
-                // - Entry: Send EPR_KeepAlive message, start SenderResponseTimer
-                // - On EPR_KeepAlive_Ack: transition to Ready (which restarts SinkEPRKeepAliveTimer)
-                // - On timeout: transition to HardReset
-                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                    crate::numeric_trace::NumericTraceEventKind::EprKeepAlive,
-                    crate::numeric_trace::NumericTraceEprKeepAlivePhase::Request as u8,
-                    crate::numeric_trace::UNAVAILABLE_U8,
-                    crate::numeric_trace::UNAVAILABLE_U8,
-                    crate::numeric_trace::UNAVAILABLE_U16,
-                    crate::numeric_trace::UNAVAILABLE_U16,
-                ));
-                State::Transmit(TransmitOperation::EprKeepAlive)
-            }
             State::Transmit(operation) => {
                 let operation = *operation;
                 let message = match operation {
@@ -1627,6 +1547,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     self.protocol_layer.receive_message_type_with_timeout(message_types, timer, timeout_ms).await;
                 self.finish_receive(operation, result)?
             }
+            _ => unreachable!(),
         };
 
         self.state = new_state;
