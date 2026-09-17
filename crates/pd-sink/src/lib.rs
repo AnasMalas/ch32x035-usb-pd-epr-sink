@@ -32,6 +32,8 @@ compile_error!(
      ch32x035c8t6, ch32x035f7p6, ch32x035f8u6, ch32x035g8r6, ch32x035g8u6, or ch32x035r8t6"
 );
 
+#[cfg(feature = "black-box")]
+pub mod black_box;
 pub mod capabilities;
 #[cfg(any(
     feature = "ch32x035c8t6",

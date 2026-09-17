@@ -43,6 +43,7 @@ dependency for peripheral setup, aligned with the
 | `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
 | `initial-capabilities-fallback` | Lets product policy replace repeated initial capability-timeout resets with one bounded `Get_Source_Cap` probe or passive default-power listening |
+| `black-box` | Adds the storage-independent 12-byte record, 16-entry ring, CRC page codec, and A/B generation selection used by persistent incident recorders |
 | `numeric-trace` | Adds the formatter-free numeric protocol trace hook described below |
 | `driver-boundary-trace` | Adds a separate temporary CH32 USBPD RX/ISR/DMA trace callback |
 | `rich-telemetry` | Adds compact-control raw capabilities, plan previews, Source_Info, Alert, Source Status, and PPS Status commands/events |
@@ -98,6 +99,21 @@ the target to provide a `critical-section` implementation; the CH32
 integration already does so. With both features disabled, their modules,
 callback storage, trace calls, and dependencies are absent from the compiled
 library.
+
+### Persistent black-box records
+
+The default-off `black-box` feature exposes `pd_sink::black_box`. It defines a
+fixed 12-byte timestamped record, a 16-entry overwrite-oldest ring, a
+CRC-protected 256-byte page format, and wrap-safe A/B generation selection.
+It deliberately performs no flash access and owns no interrupt, voltage
+threshold, GPIO, or transport. An application may use another nonvolatile
+memory or a board-specific power-fail writer without changing the record ABI.
+
+The G8U6 reference firmware demonstrates one concrete backend in its
+`usb-epr-black-box` and `usb-epr-deep-black-box` profiles. See the
+[hardware debugging guide](../../docs/debugging.md#persistent-reference-black-box)
+before copying that backend: its 4.0 V PVD threshold and hold-up assumptions
+are specific to a 5 V-powered board, even though the core page codec is not.
 
 ## Flash use
 
