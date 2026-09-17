@@ -71,6 +71,8 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 | `usb-epr` | compact USB control, PB10 default off | G8U6 rev0, standard EPR through 48 V |
 | `usb-epr-uninterrupted` | compact USB control, PB10 held across contract transitions | G8U6 rev0, standard EPR through 48 V |
 | `usb-epr-diagnostic` | compatibility alias of `usb-epr` | G8U6 rev0, standard EPR through 48 V |
+| `usb-epr-black-box` | compact USB control plus persistent high-level incident history | G8U6 rev0 with 5 V VDD, standard EPR through 48 V |
+| `usb-epr-deep-black-box` | compact USB control plus a persistent 16-record numeric Hard Reset trace | G8U6 rev0 with 5 V VDD, standard EPR through 48 V |
 | `usb-epr-50v` | compact USB control, PB10 default off | G8U6 rev0, explicit non-standard 50 V compatibility |
 | `usb-epr-text` | explicit ASCII troubleshooting console, PB10 default off | G8U6 rev0, standard EPR through 48 V |
 
@@ -142,6 +144,8 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-uninterrupted
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-black-box
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-deep-black-box
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
@@ -159,7 +163,22 @@ regulated or dip-free output while the Source changes VBUS, and must be used
 only when the complete downstream path and load tolerate every requested
 voltage. Detector loss, detach, Hard Reset, protocol loss, and terminal faults
 remain unconditional shutoffs.
-`usb-epr-diagnostic` remains as a compatibility alias. The opt-in
+`usb-epr-diagnostic` remains as a compatibility alias. The black-box profiles
+retain compact protocol v1 and add an independent three-byte `BB<page>` query
+understood by `scripts/query-black-box.ps1`. `usb-epr-black-box` stores only
+unusual high-level session events; `usb-epr-deep-black-box` also captures the
+most recent formatter-free numeric PD events in a 16-record ring, appends the
+final cause summary when available, and then freezes that same ring. Ordinary
+detach is not an incident. Both profiles reserve the
+final two 256-byte flash pages, so their linker-owned application limit is
+62,976 bytes rather than 63,488. They erase only the inactive page at boot,
+then the 4.0 V PVD handler first clears and latches off active-high PB10 and programs the
+already-erased page from SRAM. This backend is restricted to the validated
+rev0 board's 5 V VDD and hold-up behavior; do not copy its threshold into a
+3.3 V design. See the
+[persistent black-box guide](../../docs/debugging.md#persistent-reference-black-box).
+
+The opt-in
 `usb-epr-50v` image raises only the configured sink ceiling; normal AVS
 selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
 console only for explicit troubleshooting; compact control remains the
@@ -245,6 +264,20 @@ stopping those Requests would allow the Source to drop the PPS contract.
 USB logging is non-blocking with respect to the PD task. A disconnected or
 slow host may lose diagnostic lines, but it cannot stop negotiation or the
 load supervisor.
+
+### Read a persistent black box
+
+After a suspected fault and reboot, reconnect the diagnostic image and run:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\query-black-box.ps1
+```
+
+Pass `-Port COM7` when automatic port discovery is ambiguous. The script
+decodes the restored flash generation or current RAM snapshot, including Hard
+Reset causes and, for the deep profile, PD headers, GoodCRC/retry state,
+protocol errors, and EPR keepalive phases. Retrieval shares the existing CDC
+sender queue but does not change compact control protocol v1.
 
 ## Development and maintenance
 

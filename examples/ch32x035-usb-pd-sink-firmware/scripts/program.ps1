@@ -8,6 +8,8 @@ param(
         'usb-epr',
         'usb-epr-uninterrupted',
         'usb-epr-diagnostic',
+        'usb-epr-black-box',
+        'usb-epr-deep-black-box',
         'usb-epr-50v',
         'usb-epr-text'
     )]
@@ -33,6 +35,8 @@ $rev0Profiles = @(
     'usb-epr',
     'usb-epr-uninterrupted',
     'usb-epr-diagnostic',
+    'usb-epr-black-box',
+    'usb-epr-deep-black-box',
     'usb-epr-50v',
     'usb-epr-text'
 )

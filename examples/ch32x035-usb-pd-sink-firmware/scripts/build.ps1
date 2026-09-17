@@ -8,6 +8,8 @@ param(
         'usb-epr',
         'usb-epr-uninterrupted',
         'usb-epr-diagnostic',
+        'usb-epr-black-box',
+        'usb-epr-deep-black-box',
         'usb-epr-50v',
         'usb-epr-text'
     )]
@@ -46,6 +48,8 @@ $rev0Profiles = @(
     'usb-epr',
     'usb-epr-uninterrupted',
     'usb-epr-diagnostic',
+    'usb-epr-black-box',
+    'usb-epr-deep-black-box',
     'usb-epr-50v',
     'usb-epr-text'
 )
@@ -67,6 +71,8 @@ try {
         'usb-epr' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board' }
         'usb-epr-uninterrupted' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,uninterrupted-load-transitions,rev0-board' }
         'usb-epr-diagnostic' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board' }
+        'usb-epr-black-box' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board,persistent-black-box' }
+        'usb-epr-deep-black-box' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board,deep-black-box' }
         'usb-epr-50v' { 'usb-control,rich-telemetry,epr-50v-compatible-hardware,output-default-off,rev0-board' }
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware,output-default-off,rev0-board' }
     }
@@ -91,8 +97,13 @@ try {
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
     $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Chip-$Profile.elf"
     Copy-Item -LiteralPath $builtFirmware -Destination $profileArtifact -Force
-    $applicationFlashKiB = if ($Chip -eq 'ch32x035f7p6') { 48 } else { 62 }
-    & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashKiB $applicationFlashKiB
+    if ($Profile -in @('usb-epr-black-box', 'usb-epr-deep-black-box')) {
+        & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashBytes 0xF600
+    }
+    else {
+        $applicationFlashKiB = if ($Chip -eq 'ch32x035f7p6') { 48 } else { 62 }
+        & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashKiB $applicationFlashKiB
+    }
     Write-Host "Built profile '$Profile' for '$Chip': $profileArtifact"
     Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile -Chip $Chip"
     if ($Profile -eq 'safe-5v' -and $Chip -eq 'ch32x035f8u6') {

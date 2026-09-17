@@ -23,7 +23,7 @@ The crate is under API review and is not published to crates.io.
 | Build and flash a CH32X035 sink | [Reference firmware: first safe run](examples/ch32x035-usb-pd-sink-firmware/README.md#first-safe-run-on-windows) |
 | Add the sink to another firmware | [Library crate guide](crates/pd-sink/README.md) |
 | Control an already-flashed board | [Browser control client](examples/browser-usb-pd-control-client/README.md#start) |
-| Isolate a real hardware failure | [Hardware debugging guide](docs/debugging.md) |
+| Isolate or persist a real hardware failure | [Hardware debugging and black-box guide](docs/debugging.md) |
 | Characterize the experimental CC wake interrupt | [No-load CC wake probe](examples/ch32x035-usbpd-cc-wake-probe/README.md) |
 | Understand or change the internals | [Documentation index](docs/README.md) and [contributing guide](CONTRIBUTING.md) |
 

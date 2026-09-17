@@ -10,6 +10,7 @@ Run these PowerShell scripts from the repository root:
 | `flash.ps1` | Program an existing ELF after displaying its path, timestamp, and SHA-256 |
 | `program.ps1` | Build and then flash the same selected profile |
 | `console.ps1` | List serial ports or open an ASCII pass-through terminal for `dev-text-console` firmware |
+| `query-black-box.ps1` | Retrieve and decode the high-level or deep persistent PD black box from its opt-in diagnostic profile |
 
 Profiles are hardware assertions, not merely UI presets. Start with
 `usb-safe-5v` on unverified hardware and read the parent

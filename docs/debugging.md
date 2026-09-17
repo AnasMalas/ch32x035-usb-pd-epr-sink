@@ -156,6 +156,49 @@ Ordinary detach and successful periodic keepalives generally do not belong in
 a persistent flash exception log. Store unusual reset/protocol summaries and
 the trace-loss counters; keep high-rate success records in bounded RAM.
 
+## Persistent reference black box
+
+The G8U6 reference firmware provides two default-off diagnostic profiles:
+
+| Profile | Retained evidence |
+|---|---|
+| `usb-epr-black-box` | Up to 16 high-level exceptional session records: Hard Reset, PHY reset/instability, partner timeout, protocol recovery, terminal policy failure, and EPR-entry failure |
+| `usb-epr-deep-black-box` | A 16-record rolling incident trace of formatter-free numeric PD events; when the runtime callback is reached, its final Hard Reset cause/summary occupies the newest slot and freezes the ring |
+
+Both use the storage-neutral `pd_sink::black_box` ABI: 12-byte records, an
+overwrite-oldest ring, a CRC-protected 256-byte page, and wrap-safe A/B
+generation selection. The crate owns no flash or detector. The reference
+firmware supplies a board-specific backend that reserves code-flash pages
+`0xF600` and `0xF700`; its linker region ends at `0xF600`, so application code
+cannot overlap the journal.
+
+At boot the firmware reads both pages, accepts only a valid CRC/ABI, selects
+the newest generation, and erases only the inactive page before PD and USB
+start. On a falling 5 V MCU rail, the 4.0 V PVD interrupt immediately clears
+and latches off the active-high PB10 load request, then programs the already-erased page
+while executing the flash routine from SRAM. It never erases during power
+failure. This exact PVD threshold and hold-up assumption is validated only for
+the public 5 V-powered rev0 board; a 3.3 V or differently decoupled product
+must supply its own backend and prove that a complete page program finishes.
+
+The black-box transport is separate from compact protocol v1. An exact
+three-byte `BB<page>` CDC packet returns a small `PDBB` response through the
+existing USB task. Query and decode it with:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\query-black-box.ps1
+```
+
+The summary identifies whether data is current/restored, dirty, frozen, or
+overwritten and reports both black-box and numeric-trace ABI versions. Normal
+detach is excluded by design. A Hard Reset that leaves MCU power alive is
+immediately visible from the RAM snapshot; if VDD subsequently falls, the PVD
+journal makes that snapshot available after reboot. If power falls before the
+runtime callback, the earlier protocol-layer Hard Reset snapshot can retain all
+16 numeric records without the final application summary. The deep incident
+remains frozen until reboot once that callback runs, so subsequent recovery
+traffic cannot erase the evidence.
+
 ## Numeric event decoding
 
 ABI version 1 is defined in

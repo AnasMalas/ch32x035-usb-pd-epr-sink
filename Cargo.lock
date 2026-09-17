@@ -143,6 +143,7 @@ version = "0.1.0"
 dependencies = [
  "ch32-hal",
  "ch32x035-usb-pd-epr-sink",
+ "critical-section",
  "embassy-executor",
  "embassy-futures",
  "embassy-sync",

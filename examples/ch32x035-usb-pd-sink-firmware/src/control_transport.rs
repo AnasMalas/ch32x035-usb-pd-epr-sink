@@ -28,6 +28,13 @@ impl ControlPacket {
     fn as_bytes(&self) -> &[u8] {
         &self.bytes[..usize::from(self.len)]
     }
+
+    #[cfg(feature = "persistent-black-box")]
+    fn raw(bytes: &[u8]) -> Self {
+        let mut packet = [0; CONTROL_MAX_FRAME_LEN];
+        packet[..bytes.len()].copy_from_slice(bytes);
+        Self { bytes: packet, len: bytes.len() as u8 }
+    }
 }
 
 static CONTROL_PACKETS: Channel<CriticalSectionRawMutex, ControlPacket, CONTROL_QUEUE_DEPTH> = Channel::new();
@@ -71,6 +78,14 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
                 Ok(count) => count,
                 Err(_) => break,
             };
+
+            #[cfg(feature = "persistent-black-box")]
+            if count == 3 && packet[..2] == crate::black_box::REQUEST_MAGIC {
+                decoder.reset();
+                let response = crate::black_box::response(packet[2]);
+                CONTROL_PACKETS.send(ControlPacket::raw(response.as_bytes())).await;
+                continue;
+            }
 
             for &byte in &packet[..count] {
                 let Some(decoded) = decoder.push(byte) else {

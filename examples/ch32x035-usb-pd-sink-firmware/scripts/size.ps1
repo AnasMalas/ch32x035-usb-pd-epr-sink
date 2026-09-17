@@ -3,6 +3,8 @@ param(
     [string]$Firmware = 'ch32x035-usb-pd-epr-sink-reference.elf',
     [ValidateRange(1, 1024)]
     [int]$FlashKiB = 62,
+    [ValidateRange(0, 1048576)]
+    [int]$FlashBytes = 0,
     [ValidateRange(1, 1024)]
     [int]$RamKiB = 20
 )
@@ -64,7 +66,7 @@ for ($index = 0; $index -lt $sectionCount; $index++) {
     }
 }
 
-$flashLimit = [uint64]$FlashKiB * 1024
+$flashLimit = if ($FlashBytes -gt 0) { [uint64]$FlashBytes } else { [uint64]$FlashKiB * 1024 }
 $ramLimit = [uint64]$RamKiB * 1024
 $flashFree = [int64]$flashLimit - [int64]$flashUsed
 $ramFree = [int64]$ramLimit - [int64]$staticRam

@@ -19,6 +19,8 @@ usb-control = ["pd-sink/hard-reset-reasons"]
 rich-telemetry = ["pd-sink/rich-telemetry"]
 numeric-trace = ["pd-sink/numeric-trace"]
 driver-boundary-trace = ["pd-sink/driver-boundary-trace"]
+persistent-black-box = ["usb-control", "pd-sink/black-box", "dep:critical-section"]
+deep-black-box = ["persistent-black-box", "numeric-trace"]
 dev-text-console = ["rich-telemetry"]
 output-default-off = []
 uninterrupted-load-transitions = []
@@ -44,3 +46,4 @@ embassy-time = "0.5.1"
 panic-halt = "1.0"
 qingke = "0.7"
 qingke-rt = "0.7"
+critical-section = { version = "1.2.0", optional = true }

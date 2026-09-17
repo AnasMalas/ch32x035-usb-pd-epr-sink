@@ -1,11 +1,16 @@
 #![no_std]
 #![no_main]
-#![forbid(unsafe_code)]
+#![deny(unsafe_code)]
 
 use core::cell::Cell;
 #[cfg(feature = "dev-text-console")]
 use core::fmt::{self, Write};
 
+#[cfg(feature = "persistent-black-box")]
+mod black_box;
+#[cfg(feature = "persistent-black-box")]
+#[allow(unsafe_code)]
+mod black_box_flash;
 #[cfg(feature = "usb-control")]
 mod control_transport;
 #[cfg(feature = "rev0-board")]
@@ -32,6 +37,8 @@ use embassy_sync::channel::Channel;
 use embassy_sync::signal::Signal;
 use embassy_time::{Instant, Timer};
 use panic_halt as _;
+#[cfg(feature = "persistent-black-box")]
+use pd_sink::black_box::application_event_kind;
 #[cfg(all(feature = "rich-telemetry", not(feature = "dev-text-console")))]
 use pd_sink::CapabilityPlan;
 use pd_sink::PlanError;
@@ -64,6 +71,10 @@ compile_error!("rev0-board requires output-default-off");
 compile_error!("rev0-validation requires dev-text-console diagnostics");
 #[cfg(all(feature = "rev0-validation", any(feature = "pps-capable-hardware", feature = "epr-capable-hardware")))]
 compile_error!("rev0-validation is a fixed-5-V validation profile; do not enable PPS or EPR hardware features");
+#[cfg(all(feature = "persistent-black-box", not(feature = "rev0-board")))]
+compile_error!("persistent-black-box requires the G8U6 rev0 board's 5 V VDD and PB10 load binding");
+#[cfg(all(feature = "persistent-black-box", not(feature = "output-default-off")))]
+compile_error!("persistent-black-box requires output-default-off");
 
 static COMMANDS: Channel<CriticalSectionRawMutex, Command, 4> = Channel::new();
 
@@ -142,6 +153,17 @@ static USER_OUTPUT_REQUEST: Signal<CriticalSectionRawMutex, bool> = Signal::new(
 
 fn vbus_is_present() -> bool {
     VBUS_PRESENT.lock(Cell::get)
+}
+
+fn power_fail_allows_load() -> bool {
+    #[cfg(feature = "persistent-black-box")]
+    {
+        !black_box::power_fail_latched()
+    }
+    #[cfg(not(feature = "persistent-black-box"))]
+    {
+        true
+    }
 }
 
 fn publish_vbus_state(present: bool) {
@@ -456,7 +478,8 @@ async fn port_supervisor_task(
                     #[cfg(feature = "rev0-board")]
                     {
                         let pd_allows_load = control.pd_allows_load();
-                        let can_arm = pd_allows_load && vbus_present.is_high() && vbus_is_present();
+                        let can_arm =
+                            pd_allows_load && vbus_present.is_high() && vbus_is_present() && power_fail_allows_load();
                         user_output_enabled = enabled && can_arm;
                         logln!(
                             "Rev0 user permission: requested={} accepted={} managed={} pd={}",
@@ -471,11 +494,20 @@ async fn port_supervisor_task(
             };
 
         let pd_allows_load = !pd_policy_active || pd_load_permitted || uninterrupted_transition;
-        if pd_allows_load && user_output_enabled && vbus_present.is_high() && vbus_is_present() {
+        if pd_allows_load
+            && user_output_enabled
+            && vbus_present.is_high()
+            && vbus_is_present()
+            && power_fail_allows_load()
+        {
             load_enable.set_high();
             // Close the edge race where VBUS fell just before the output
             // instruction and its EXTI future has not run yet.
-            if vbus_present.is_low() {
+            if !power_fail_allows_load() {
+                load_enable.set_low();
+                user_output_enabled = false;
+                USER_OUTPUT_REQUEST.reset();
+            } else if vbus_present.is_low() {
                 load_enable.set_low();
                 reset_pd_load_control();
                 publish_vbus_state(false);
@@ -518,9 +550,18 @@ bind_interrupts!(
     }
 );
 
-#[cfg(any(feature = "usb-control", feature = "dev-text-console"))]
+#[cfg(all(any(feature = "usb-control", feature = "dev-text-console"), not(feature = "persistent-black-box")))]
 bind_interrupts!(
     struct Irq {
+        USBPD => InterruptHandler<peripherals::USBPD>;
+        USBFS => UsbFsInterruptHandler;
+    }
+);
+
+#[cfg(feature = "persistent-black-box")]
+bind_interrupts!(
+    struct Irq {
+        PVD => black_box_flash::PvdInterruptHandler;
         USBPD => InterruptHandler<peripherals::USBPD>;
         USBFS => UsbFsInterruptHandler;
     }
@@ -915,6 +956,8 @@ impl Ch32x035Port for FirmwarePort {
     fn observe_session(&self, event: SinkSessionEvent) {
         match event {
             SinkSessionEvent::PhyResetFailed { retry_ms } => {
+                #[cfg(feature = "persistent-black-box")]
+                black_box::record_application(application_event_kind::PHY_RESET_FAILED, 0, retry_ms);
                 control_event!(ControlEvent::Lifecycle {
                     event: ControlLifecycleEvent::PdResetFailed,
                     detail: retry_ms,
@@ -941,6 +984,8 @@ impl Ch32x035Port for FirmwarePort {
                     logln!("PD stopped: detach; retry={}ms", retry_ms);
                 }
                 SinkSessionRecovery::PhyUnstable => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::PHY_UNSTABLE, 0, retry_ms);
                     control_event!(ControlEvent::Lifecycle {
                         event: ControlLifecycleEvent::PdStoppedPhy,
                         detail: retry_ms,
@@ -949,6 +994,8 @@ impl Ch32x035Port for FirmwarePort {
                     logln!("PD stopped: PHY; retry={}ms", retry_ms);
                 }
                 SinkSessionRecovery::PortPartnerUnresponsive => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::PARTNER_TIMEOUT, 0, retry_ms);
                     set_pd_load_unmanaged();
                     control_event!(ControlEvent::Lifecycle {
                         event: ControlLifecycleEvent::PdStoppedTimeout,
@@ -958,6 +1005,8 @@ impl Ch32x035Port for FirmwarePort {
                     logln!("PD stopped: timeout; passive retry={}ms", retry_ms);
                 }
                 SinkSessionRecovery::Protocol => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::PROTOCOL_RECOVERY, 0, retry_ms);
                     control_event!(ControlEvent::Lifecycle {
                         event: ControlLifecycleEvent::PdStoppedProtocol,
                         detail: retry_ms,
@@ -965,10 +1014,16 @@ impl Ch32x035Port for FirmwarePort {
                     });
                     logln!("PD stopped: protocol; retry={}ms", retry_ms);
                 }
-                _ => logln!("PD stopped: recovery; retry={}ms", retry_ms),
+                _ => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::PROTOCOL_RECOVERY, u8::MAX, retry_ms);
+                    logln!("PD stopped: recovery; retry={}ms", retry_ms)
+                }
             },
             SinkSessionEvent::Terminal(error) => match error {
                 SinkSessionTerminalError::UnexpectedStop => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::TERMINAL, 0, 0);
                     control_event!(ControlEvent::Lifecycle {
                         event: ControlLifecycleEvent::PdStopped,
                         detail: 0,
@@ -977,6 +1032,8 @@ impl Ch32x035Port for FirmwarePort {
                     logln!("PD stopped unexpectedly; off");
                 }
                 SinkSessionTerminalError::LocalPolicy(_) => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::TERMINAL, 1, 0);
                     control_event!(ControlEvent::Lifecycle {
                         event: ControlLifecycleEvent::PdStoppedPolicy,
                         detail: 0,
@@ -984,7 +1041,11 @@ impl Ch32x035Port for FirmwarePort {
                     });
                     logln!("PD stopped: local policy error; off");
                 }
-                _ => logln!("PD stopped: terminal error; off"),
+                _ => {
+                    #[cfg(feature = "persistent-black-box")]
+                    black_box::record_application(application_event_kind::TERMINAL, u8::MAX, 0);
+                    logln!("PD stopped: terminal error; off")
+                }
             },
             _ => logln!("PD session lifecycle event"),
         }
@@ -1164,6 +1225,13 @@ impl SinkRuntime for FirmwareRuntime {
 
     #[cfg(feature = "usb-control")]
     fn on_hard_reset(&mut self, direction: HardResetDirection, _cause: HardResetCause, recovery_ms: u64) {
+        #[cfg(feature = "persistent-black-box")]
+        black_box::record_hard_reset(
+            matches!(direction, HardResetDirection::Sent),
+            _cause as u8,
+            recovery_ms,
+            vbus_is_present(),
+        );
         control_event!(ControlEvent::HardReset {
             direction,
             cause: _cause,
@@ -1208,6 +1276,8 @@ impl SinkRuntime for FirmwareRuntime {
     }
 
     fn on_epr_entry_failed(&mut self, reason: u8) {
+        #[cfg(feature = "persistent-black-box")]
+        black_box::record_application(application_event_kind::EPR_ENTRY_FAILED, reason, 0);
         control_event!(ControlEvent::Epr { event: ControlEprEvent::EntryFailed, detail: reason, extra: 0 });
         logln!("EPR failed={}; auto off", reason);
     }
@@ -1273,6 +1343,16 @@ async fn main(_spawner: Spawner) {
     };
     let peripherals = hal::init(config);
 
+    #[cfg(feature = "persistent-black-box")]
+    let _black_box_flash = peripherals.FLASH;
+    #[cfg(feature = "persistent-black-box")]
+    {
+        // Restore the newest CRC-valid page, then erase only its inactive
+        // partner while no protocol or USB interrupt can execute from flash.
+        black_box::initialize();
+        black_box::prepare_inactive_page();
+    }
+
     #[cfg(not(feature = "rev0-board"))]
     let vbus_present = ExtiInput::new(peripherals.PA6, peripherals.EXTI6, Pull::Down);
     #[cfg(not(feature = "rev0-board"))]
@@ -1292,6 +1372,11 @@ async fn main(_spawner: Spawner) {
         peripherals.PB1,
         peripherals.EXTI1,
     );
+
+    #[cfg(feature = "persistent-black-box")]
+    black_box::enable_power_fail_capture();
+    #[cfg(feature = "deep-black-box")]
+    black_box::enable_numeric_trace();
 
     _spawner.spawn(
         port_supervisor_task(vbus_present, load_enable, detector_ready)

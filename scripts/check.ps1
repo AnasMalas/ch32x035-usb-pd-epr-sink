@@ -74,6 +74,8 @@ $rev0UsbEprFeatures = "$rev0Chip,usb-control,rich-telemetry,epr-capable-hardware
 $rev0LeanUsbEprFeatures = "$rev0Chip,usb-control,epr-capable-hardware,output-default-off,rev0-board"
 $rev0UsbEprTraceFeatures = "$rev0UsbEprFeatures,numeric-trace"
 $rev0UsbEprDriverTraceFeatures = "$rev0UsbEprFeatures,driver-boundary-trace"
+$rev0UsbEprBlackBoxFeatures = "$rev0UsbEprFeatures,persistent-black-box"
+$rev0UsbEprDeepBlackBoxFeatures = "$rev0UsbEprFeatures,deep-black-box"
 $rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control,rich-telemetry",
@@ -87,6 +89,8 @@ $firmwareFeatureSets = @(
     $rev0UsbEprFeatures,
     $rev0LeanUsbEprFeatures,
     $rev0UsbEprDriverTraceFeatures,
+    $rev0UsbEprBlackBoxFeatures,
+    $rev0UsbEprDeepBlackBoxFeatures,
     $rev0ValidationFeatures
 )
 
@@ -158,6 +162,9 @@ try {
     cargo clippy -p ch32x035-usb-pd-epr-sink --all-targets --target $HostTarget --locked --no-default-features --features initial-capabilities-fallback,hard-reset-reasons -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "public initial-capabilities fallback clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p ch32x035-usb-pd-epr-sink --all-targets --target $HostTarget --locked --no-default-features --features black-box,numeric-trace,hard-reset-reasons -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "public black-box clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $usbControlEprFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "USB-control EPR firmware clippy failed with exit code $LASTEXITCODE" }
 
@@ -178,6 +185,12 @@ try {
 
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprDriverTraceFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 driver-boundary-trace EPR firmware clippy failed with exit code $LASTEXITCODE" }
+
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprBlackBoxFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 persistent black-box firmware clippy failed with exit code $LASTEXITCODE" }
+
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprDeepBlackBoxFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 deep black-box firmware clippy failed with exit code $LASTEXITCODE" }
 
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
@@ -202,6 +215,9 @@ try {
 
     cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features numeric-trace,hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "public numeric-trace tests failed with exit code $LASTEXITCODE" }
+
+    cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features black-box,numeric-trace,hard-reset-reasons
+    if ($LASTEXITCODE -ne 0) { throw "public black-box tests failed with exit code $LASTEXITCODE" }
 
     cargo test -p ch32x035-usb-pd-epr-sink --target $HostTarget --locked --no-default-features --features initial-capabilities-fallback,hard-reset-reasons
     if ($LASTEXITCODE -ne 0) { throw "public initial-capabilities fallback tests failed with exit code $LASTEXITCODE" }
@@ -237,11 +253,12 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
-        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0UsbEprDriverTraceFeatures, $rev0ValidationFeatures)) {
+        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0UsbEprDriverTraceFeatures, $rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures, $rev0ValidationFeatures)) {
             $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
+            $applicationFlashBytes = if ($feature -in @($rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures)) { 0xF600 } else { 62 * 1024 }
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $firmwareElf `
-                -ApplicationFlashBytes (62 * 1024)
+                -ApplicationFlashBytes $applicationFlashBytes
         }
     }
 
@@ -254,6 +271,8 @@ try {
             'usb-epr',
             'usb-epr-uninterrupted',
             'usb-epr-diagnostic',
+            'usb-epr-black-box',
+            'usb-epr-deep-black-box',
             'usb-epr-50v',
             'usb-epr-text'
         )) {
@@ -274,9 +293,10 @@ try {
             if (-not (Test-Path -LiteralPath $profileArtifact -PathType Leaf)) {
                 throw "$profile did not stage $profileArtifact"
             }
+            $applicationFlashBytes = if ($profile -in @('usb-epr-black-box', 'usb-epr-deep-black-box')) { 0xF600 } else { 62 * 1024 }
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $profileArtifact `
-                -ApplicationFlashBytes (62 * 1024)
+                -ApplicationFlashBytes $applicationFlashBytes
         }
     }
 
