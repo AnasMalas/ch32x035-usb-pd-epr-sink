@@ -109,8 +109,10 @@ The sink decodes all eleven SPR/EPR PDO positions; requests fixed, PPS, SPR
 AVS, and EPR AVS supplies; starts every attachment at fixed 5 V; maintains
 adjustable/EPR contracts; exposes source telemetry and usable-current limits;
 and performs bounded protocol recovery. Explicit compatible ranges cover
-advertised PPS endpoints from 3.3 V and bounded EPR AVS through nominal 50 V.
-Battery and variable PDOs remain visible but are not requestable.
+advertised PPS endpoints from 3.3 V and bounded lower-range EPR AVS extensions.
+The maximum nominal request is 48 V; actual VBUS may be higher within the
+Source's positive tolerance. Battery and variable PDOs remain visible but are
+not requestable.
 
 ### Hardware safety boundary
 

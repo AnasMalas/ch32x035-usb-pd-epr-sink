@@ -239,16 +239,8 @@ fn set_user_output_enabled(enabled: bool) {
 
 fn board_limits() -> SinkLimits {
     let epr_capable = cfg!(feature = "epr-capable-hardware");
-    let epr_50v_compatible = cfg!(feature = "epr-50v-compatible-hardware");
     let pps_capable = cfg!(feature = "pps-capable-hardware");
-    if epr_50v_compatible {
-        SinkLimits {
-            max_voltage: Some(Millivolts(50_000)),
-            board_max_current: Some(Milliamps(5_000)),
-            cable_max_current: Some(Milliamps(5_000)),
-            max_power: Some(Milliwatts(240_000)),
-        }
-    } else if epr_capable {
+    if epr_capable {
         SinkLimits {
             max_voltage: Some(Millivolts(48_000)),
             board_max_current: Some(Milliamps(5_000)),

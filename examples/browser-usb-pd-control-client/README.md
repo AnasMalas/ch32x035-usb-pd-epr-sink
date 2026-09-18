@@ -47,7 +47,7 @@ The application exposes the stable firmware command surface:
 
 - automatic, fixed, PPS, SPR AVS, and standards-valid EPR AVS voltage requests;
 - an explicit EPR AVS compatibility preference for a source-advertised range
-  outside 15-48 V, bounded to 5-50 V;
+  extending below 15 V, always capped at a 48 V nominal request;
 - an optional requested current and the confirmed usable-current report;
 - direct PDO maximum, current, and adjustable requests;
 - complete capability and dry-run plan queries;
@@ -81,11 +81,11 @@ The firmware reports the CH32X035's programmed 8-byte factory UID, matching the
 identifier exposed by WCH's USB bootloader. The nominal third ESIG word is
 unprogrammed (`0xffffffff`) on observed X035 silicon and is deliberately not
 used as the short board label or cache key. The browser keeps a local 5 V,
-28 V, 48 V, or 50 V compatibility GUI request ceiling for each valid UID; an
-unknown board always begins at 5 V. The 50 V choice remains disabled unless
-compact firmware reports a 50 V device limit. This is an accidental-command
-guard, not a substitute for firmware limits or correctly rated hardware. The
-identity and setting remain local to this browser profile.
+28 V, or 48 V GUI request ceiling for each valid UID; an unknown board always
+begins at 5 V. This is an accidental-command guard, not a substitute for
+firmware limits or correctly rated hardware. A 48 V nominal request can produce
+a higher measured VBUS within the Source's positive tolerance. The identity and
+setting remain local to this browser profile.
 
 The diagnostics terminal remains visible below the primary workspace, and its
 command and line-format references stay collapsed until needed. Decoded lines
@@ -132,9 +132,9 @@ and parses MCU ASCII directly, applying the same PDO and Status decoder where
 the firmware emits raw words.
 
 The G8U6 rev0 `usb-safe-5v`, `usb-pps`, `usb-epr`,
-`usb-epr-uninterrupted`, and opt-in `usb-epr-50v` profiles use compact control
-by default. `usb-epr-text` is an explicit troubleshooting profile for
-ordinary serial terminals.
+and `usb-epr-uninterrupted` profiles use compact control by default.
+`usb-epr-text` is an explicit troubleshooting profile for ordinary serial
+terminals.
 
 ## Reading diagnostic values
 

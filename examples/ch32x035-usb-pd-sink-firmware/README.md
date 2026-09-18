@@ -73,7 +73,6 @@ PPS or EPR profile merely because the safe firmware negotiates correctly.
 | `usb-epr-diagnostic` | compatibility alias of `usb-epr` | G8U6 rev0, standard EPR through 48 V |
 | `usb-epr-black-box` | compact USB control plus persistent high-level incident history | G8U6 rev0 with 5 V VDD, standard EPR through 48 V |
 | `usb-epr-deep-black-box` | compact USB control plus a persistent 16-record numeric Hard Reset trace | G8U6 rev0 with 5 V VDD, standard EPR through 48 V |
-| `usb-epr-50v` | compact USB control, PB10 default off | G8U6 rev0, explicit non-standard 50 V compatibility |
 | `usb-epr-text` | explicit ASCII troubleshooting console, PB10 default off | G8U6 rev0, standard EPR through 48 V |
 
 These profiles are board assertions, not software-only unlocks. Do not select
@@ -147,7 +146,6 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-black-box
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-deep-black-box
-.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-50v
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-text
 ```
 
@@ -185,11 +183,10 @@ rev0 board's 5 V VDD and hold-up behavior; do not copy its threshold into a
 3.3 V design. See the
 [persistent black-box guide](../../docs/debugging.md#persistent-reference-black-box).
 
-The opt-in
-`usb-epr-50v` image raises only the configured sink ceiling; normal AVS
-selection remains within 15-48 V. `usb-epr-text` retains the direct ASCII
-console only for explicit troubleshooting; compact control remains the
-default. Build output reports the current flash and static-RAM
+`usb-epr-text` retains the direct ASCII console only for explicit
+troubleshooting; compact control remains the default. The maximum nominal
+request is 48 V, although Source tolerance can produce a higher measured VBUS.
+Build output reports the current flash and static-RAM
 usage; the [crate guide](../../crates/pd-sink/README.md#flash-use)
 shows representative linked costs for common integration paths.
 
@@ -207,10 +204,6 @@ Build and flash an explicit profile:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile usb-epr
 ```
-
-For an explicitly qualified 50 V compatibility path, substitute
-`usb-epr-50v` in both commands. The normal profile is deliberately capped at
-48 V.
 
 `flash.ps1` selects an already-built artifact and never rebuilds it. To build
 and immediately program the same explicit profile in one command, use:
@@ -343,7 +336,7 @@ Treat either as a deliberate source change:
 1. change the exact version/revision or dated toolchain;
 2. update `Cargo.lock` if needed;
 3. run `scripts/check.ps1`;
-4. compare flash use for `usb-epr`, `usb-epr-50v`, and `usb-epr-text`;
+4. compare flash use for `usb-epr`, `usb-epr-deep-black-box`, and `usb-epr-text`;
 5. commit the lockfile/toolchain change with the code that required it.
 
 Do not point the project at moving Git branches or an unpinned nightly.

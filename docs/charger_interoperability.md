@@ -10,7 +10,7 @@ source-reported telemetry.
 | Observed behavior | Firmware rule |
 |---|---|
 | Commercial PPS sources advertise bounded but noncanonical ranges, including 3.3/3.6/4.5 V minima and fields above 5 A | Preserve a complete offer only when it remains within 3.3-21 V and has nonzero current. Label it `compatible`, cap every request to 5 A and configured board limits, and never invent an endpoint |
-| Some EPR AVS offers extend below 15 V or to nominal 50 V | Normal selection uses only the 15-48 V standards-valid intersection. The complete 5-50 V bounded range requires explicit compatibility selection and a matching board limit |
+| Some EPR AVS offers extend below 15 V | Normal selection uses only the 15-48 V standards-valid intersection. Explicit compatibility selection may use the advertised lower range, but no request may exceed 48 V; an advertised maximum above 48 V is malformed |
 | Multi-port sources replace their capability table when another port or load changes | Discard an encoded pending request, retain user intent only if the new table can satisfy it, otherwise clear intent and request fixed 5 V |
 | Sources may initially advertise only 5 V, interrupt EPR entry with fresh SPR capabilities, or defer Sink traffic with SinkTxNG | Treat new capabilities as current truth, re-plan from them, preserve deferred commands, and bound automatic EPR attempts |
 | Optional Source_Info, Status, and PPS_Status fields are frequently unsupported or inconsistent | Display them as source-reported telemetry. Refusal, timeout, or malformed optional data must not invalidate an otherwise healthy contract |

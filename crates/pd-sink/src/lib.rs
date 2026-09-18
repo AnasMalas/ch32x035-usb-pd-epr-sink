@@ -69,7 +69,7 @@ pub mod units;
 
 pub use capabilities::{
     AdvertisedPdo, CapabilitiesKind, CapabilityListError, PdoError, PdoValidity, SourceCapabilities, SourceSupply,
-    SupplyKind, EPR_AVS_COMPATIBLE_MAX_VOLTAGE, EPR_AVS_STANDARD_MAX_VOLTAGE, EPR_AVS_STANDARD_MIN_VOLTAGE,
+    SupplyKind, EPR_AVS_STANDARD_MAX_VOLTAGE, EPR_AVS_STANDARD_MIN_VOLTAGE,
 };
 #[cfg(all(
     feature = "driver-boundary-trace",

@@ -101,12 +101,10 @@ external comparator or power supervisor.
 The switch, FETs, connector, protection, discharge path, measurement network,
 spacing, and passives must be rated for the worst supported EPR condition and
 fault energy. Standard operation is nominally capped at 48 V, which can reach
-50.4 V at the standard positive tolerance. The opt-in `usb-epr-50v`
-compatibility profile can request a genuinely advertised nominal 50 V; because
-that extension is non-standard, do not assume the standard 48 V tolerance is
-its worst case. Give the complete path explicit margin above 50 V and qualify
-the actual sources used. A successful firmware negotiation does not establish
-those ratings.
+50.4 V at the standard positive tolerance. Give the complete path suitable
+margin and qualify the actual sources used; the firmware never requests a
+nominal voltage above 48 V. A successful negotiation does not establish those
+ratings.
 
 ## Firmware behavior
 
@@ -151,9 +149,8 @@ those ratings.
 8. Repeat detach/reconnect and hard-reset tests before enabling PPS/EPR.
 9. Test low, middle, and high points of each advertised PPS/AVS range, then
    fixed 48 V on a current-limited protected bench setup.
-10. If the product intentionally supports a nominal 50 V compatibility offer,
-    repeat the protected test with `usb-epr-50v` only after establishing the
-    source's actual maximum and the complete path's voltage margin.
+10. At a 48 V request, verify the complete path remains within its ratings at
+    the Source's positive voltage tolerance and relevant fault conditions.
 
 The detailed checklist and expected diagnostic transcript are in
 `first_board_verification.md`.

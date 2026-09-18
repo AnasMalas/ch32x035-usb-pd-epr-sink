@@ -94,7 +94,7 @@ and CH32 repairs. For a dependency or Rust-toolchain change:
 2. update `Cargo.lock` and the relevant `vendor/*/UPSTREAM.md`;
 3. preserve upstream licensing and provenance;
 4. run the full repository check;
-5. compare flash use for `usb-epr`, `usb-epr-50v`, and `usb-epr-text`; and
+5. compare flash use for `usb-epr`, `usb-epr-deep-black-box`, and `usb-epr-text`; and
 6. commit the lockfile or toolchain change with the code that requires it.
 
 Do not point a reproducible build at a moving Git branch or unpinned nightly.

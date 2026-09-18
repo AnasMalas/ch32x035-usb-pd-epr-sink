@@ -83,7 +83,6 @@ $firmwareFeatureSets = @(
     "$referenceChip,usb-control,rich-telemetry,pps-capable-hardware",
     $usbControlEprFeatures,
     $diagnosticEprFeatures,
-    "$referenceChip,usb-control,rich-telemetry,epr-50v-compatible-hardware",
     $textConsoleEprFeatures,
     $rev0UsbSafeFeatures,
     $rev0UsbPpsFeatures,
@@ -278,7 +277,6 @@ try {
             'usb-epr-diagnostic',
             'usb-epr-black-box',
             'usb-epr-deep-black-box',
-            'usb-epr-50v',
             'usb-epr-text'
         )) {
             $wrongChipRejected = $false

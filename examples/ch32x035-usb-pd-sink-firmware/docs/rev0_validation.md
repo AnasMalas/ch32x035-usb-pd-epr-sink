@@ -202,8 +202,8 @@ Then test standard compact EPR, still with PB10 off:
 Capture the automatic EPR entry outcome, `epr-caps`, and `plans` before making
 an EPR request. Exercise only the source's advertised low, middle, and high
 standard EPR points, never above nominal 48 V with this profile. Finish with
-`exit-epr` and confirm fixed 5 V. `usb-epr-50v` remains a separate nonstandard
-opt-in and is not part of this regression.
+`exit-epr` and confirm fixed 5 V. No profile requests a nominal voltage above
+48 V.
 
 At nominal 21 V, 48 V, and the standard 50.4 V positive limit, the divider
 node is approximately 1.94 V, 4.44 V, and 4.66 V respectively. Qualify

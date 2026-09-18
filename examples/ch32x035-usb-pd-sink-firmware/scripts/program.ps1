@@ -10,7 +10,6 @@ param(
         'usb-epr-diagnostic',
         'usb-epr-black-box',
         'usb-epr-deep-black-box',
-        'usb-epr-50v',
         'usb-epr-text'
     )]
     [string]$Profile = 'usb-safe-5v',
@@ -39,7 +38,6 @@ $rev0Profiles = @(
     'usb-epr-diagnostic',
     'usb-epr-black-box',
     'usb-epr-deep-black-box',
-    'usb-epr-50v',
     'usb-epr-text'
 )
 

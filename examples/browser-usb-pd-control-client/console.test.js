@@ -49,7 +49,6 @@ for (const required of [
   "Condense stream: On",
   "Raw stream: Off",
   "epr-avs-nonstandard",
-  "name=\"voltage-ceiling\" value=\"50000\"",
   "Inspect black box",
   "Start PPS telemetry",
   "Expand graphs",

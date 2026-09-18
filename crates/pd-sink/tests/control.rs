@@ -384,11 +384,11 @@ fn packet_event_encoder_keeps_protocol_v1_payloads() {
         ),
         (
             ControlEvent::ControllerError(ControllerError::Plan(pd_sink::PlanError::VoltageAboveSinkLimit {
-                requested: Millivolts(50_000),
+                requested: Millivolts(48_100),
                 maximum: Millivolts(48_000),
             })),
             ControlEventKind::ControllerError,
-            &[22, 0x50, 0xc3, 0, 0, 0x80, 0xbb, 0, 0],
+            &[22, 0xe4, 0xbb, 0, 0, 0x80, 0xbb, 0, 0],
         ),
         (
             ControlEvent::ControllerError(ControllerError::EprExitRefused(EprExitRefusal::NoSuitableSprContract)),

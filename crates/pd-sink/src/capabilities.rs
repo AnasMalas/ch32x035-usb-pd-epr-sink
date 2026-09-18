@@ -3,8 +3,6 @@ use crate::units::{Milliamps, Millivolts, Milliwatts};
 pub const MAX_SOURCE_PDOS: usize = 11;
 pub const EPR_AVS_STANDARD_MIN_VOLTAGE: Millivolts = Millivolts(15_000);
 pub const EPR_AVS_STANDARD_MAX_VOLTAGE: Millivolts = Millivolts(48_000);
-/// Deliberate interoperability ceiling for bounded, non-standard source APDOs.
-pub const EPR_AVS_COMPATIBLE_MAX_VOLTAGE: Millivolts = Millivolts(50_000);
 const EPR_AVS_COMPATIBLE_MIN_VOLTAGE: Millivolts = Millivolts(5_000);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -395,17 +393,16 @@ fn parse_augmented(kind: CapabilitiesKind, position: u8, raw: u32) -> Advertised
             let validity = if position < 8 || !matches!(kind, CapabilitiesKind::Epr) {
                 PdoValidity::Malformed(PdoError::InvalidPosition)
             } else if supply.min_voltage < EPR_AVS_COMPATIBLE_MIN_VOLTAGE
-                || supply.max_voltage > EPR_AVS_COMPATIBLE_MAX_VOLTAGE
+                || supply.max_voltage > EPR_AVS_STANDARD_MAX_VOLTAGE
                 || supply.min_voltage > supply.max_voltage
             {
                 PdoValidity::Malformed(PdoError::InvalidVoltageRange)
             } else if supply.pdp == Milliwatts(0) || supply.pdp > Milliwatts(240_000) {
                 PdoValidity::Malformed(PdoError::InvalidPower)
-            } else if supply.min_voltage < EPR_AVS_STANDARD_MIN_VOLTAGE
-                || supply.max_voltage > EPR_AVS_STANDARD_MAX_VOLTAGE
-            {
-                // Preserve bounded source extensions for an explicit opt-in,
-                // while normal planning remains inside 15-48 V.
+            } else if supply.min_voltage < EPR_AVS_STANDARD_MIN_VOLTAGE {
+                // Preserve bounded lower-range source extensions for an
+                // explicit opt-in, while normal planning remains at 15 V or
+                // above. The maximum nominal EPR request is always 48 V.
                 PdoValidity::Compatible
             } else {
                 PdoValidity::Valid

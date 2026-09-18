@@ -1,13 +1,11 @@
 use pd_sink::capabilities::CapabilityListError;
 use pd_sink::request::PlanError;
 use pd_sink::{
-    capabilities_from_stack, request_to_stack, CapabilitiesKind, ContractState, ContractTracker,
-    ContractTransitionKind, CurrentConfidence, Demand, LimitReason, Milliamps, Millivolts, Milliwatts, PdoError,
-    PdoValidity, PlannedOperating, PlannedVoltage, PortInputs, PortMode, PortState, PortSupervisor, Preference,
-    RequestContext, RequestMessage, RequestPlanner, SafetyTimings, SinkLimits, SourceCapabilities, SourceSupply,
-    SupplyKind,
+    capabilities_from_stack, CapabilitiesKind, ContractState, ContractTracker, ContractTransitionKind,
+    CurrentConfidence, Demand, LimitReason, Milliamps, Millivolts, Milliwatts, PdoError, PdoValidity, PlannedOperating,
+    PlannedVoltage, PortInputs, PortMode, PortState, PortSupervisor, Preference, RequestContext, RequestMessage,
+    RequestPlanner, SafetyTimings, SinkLimits, SourceCapabilities, SourceSupply, SupplyKind,
 };
-use usbpd::protocol_layer::message::data::request::PowerSource;
 use usbpd::protocol_layer::message::data::source_capabilities::SourceCapabilities as StackSourceCapabilities;
 
 fn fixed(voltage_mv: u32, current_ma: u32, epr_capable: bool) -> u32 {
@@ -296,74 +294,28 @@ fn aohi_five_to_twenty_eight_volt_epr_avs_is_compatible_and_opt_in_below_fifteen
 
 #[test]
 fn unsafe_epr_avs_extensions_remain_malformed() {
-    for raw in [epr_avs_range(4_900, 28_000, 140_000), epr_avs_range(15_000, 50_100, 140_000)] {
+    for raw in [epr_avs_range(4_900, 28_000, 140_000), epr_avs_range(15_000, 48_100, 140_000)] {
         let capabilities = epr_capabilities(0, raw);
         assert_eq!(capabilities.pdo(8).unwrap().validity, PdoValidity::Malformed(PdoError::InvalidVoltageRange));
     }
 }
 
 #[test]
-fn advertised_fifty_volt_epr_avs_is_compatible_and_explicit() {
-    let capabilities = epr_capabilities(0, epr_avs_range(15_000, 50_000, 140_000));
-    let pdo = capabilities.pdo(8).unwrap();
-    assert_eq!(pdo.validity, PdoValidity::Compatible);
-    assert_eq!(pdo.voltage_range(), Some((Millivolts(15_000), Millivolts(50_000))));
-    assert_eq!(pdo.standard_voltage_range(), Some((Millivolts(15_000), Millivolts(48_000))));
-
-    let planner = RequestPlanner::new();
+fn configured_sink_limit_cannot_raise_the_nominal_epr_ceiling() {
+    let capabilities = epr_capabilities(0, epr_avs_range(15_000, 48_000, 240_000));
     assert_eq!(
-        planner.for_voltage(
+        RequestPlanner::new().for_pdo(
             &capabilities,
             PortMode::Epr,
-            Millivolts(50_000),
-            None,
-            Preference::EprAvs,
+            8,
+            Demand::Adjustable { voltage: Millivolts(48_100), current: None },
             RequestContext {
-                limits: SinkLimits { max_voltage: Some(Millivolts(50_000)), ..SinkLimits::default() },
+                limits: SinkLimits { max_voltage: Some(Millivolts(49_000)), ..SinkLimits::default() },
                 ..RequestContext::default()
             },
         ),
-        Err(PlanError::VoltageUnavailable(Millivolts(50_000)))
+        Err(PlanError::VoltageAboveSinkLimit { requested: Millivolts(48_100), maximum: Millivolts(48_000) })
     );
-    assert_eq!(
-        planner.for_voltage(
-            &capabilities,
-            PortMode::Epr,
-            Millivolts(50_000),
-            None,
-            Preference::EprAvsNonstandard,
-            RequestContext::default(),
-        ),
-        Err(PlanError::VoltageAboveSinkLimit { requested: Millivolts(50_000), maximum: Millivolts(48_000) })
-    );
-
-    let plan = planner
-        .for_voltage(
-            &capabilities,
-            PortMode::Epr,
-            Millivolts(50_000),
-            None,
-            Preference::EprAvsNonstandard,
-            RequestContext {
-                limits: SinkLimits { max_voltage: Some(Millivolts(50_000)), ..SinkLimits::default() },
-                ..RequestContext::default()
-            },
-        )
-        .unwrap();
-    assert_eq!(
-        plan.voltage(),
-        PlannedVoltage::Adjustable { requested: Millivolts(50_000), encoded: Millivolts(50_000), step_mv: 100 }
-    );
-    assert_eq!((plan.rdo() >> 9) & 0xfff, 2_000);
-    assert_eq!(plan.rdo() & 0x7f, 56, "140 W at 50 V is limited to 2.8 A");
-
-    match request_to_stack(plan).unwrap() {
-        PowerSource::EprRequest(request) => {
-            assert_eq!(request.rdo, plan.rdo());
-            assert_eq!(request.pdo, epr_avs_range(15_000, 50_000, 140_000));
-        }
-        _ => panic!("50 V AVS must remain a two-object EPR Request"),
-    }
 }
 
 #[test]

@@ -5,10 +5,10 @@ require("./protocol.js");
 
 const protocol = globalThis.PdControlProtocol;
 
-assert.equal(protocol.boundedVoltageCeiling(50000), 48000);
-assert.equal(protocol.boundedVoltageCeiling(50000, 50000), 50000);
+assert.equal(protocol.boundedVoltageCeiling(48000), 48000);
+assert.equal(protocol.boundedVoltageCeiling(48000, 49000), 48000);
 assert.equal(protocol.boundedVoltageCeiling(48000, 28000), 28000);
-assert.equal(protocol.boundedVoltageCeiling(21000, 50000), 21000);
+assert.equal(protocol.boundedVoltageCeiling(21000, 48000), 21000);
 assert.equal(protocol.boundedVoltageCeiling(28000, 21000), 21000);
 
 function u32(value) {
@@ -86,11 +86,9 @@ assert.equal(
 );
 
 assert.equal(
-  protocol.pdoLine(1, 8, 0xd3e8968c),
-  "PDO8 EPR-AVS 15000-50000mV standard=15000-48000mV PDP=140000mW peak=0 compatible raw=0xd3e8968c",
+  protocol.pdoLine(1, 8, 0xd3c2968c),
+  "PDO8 EPR-AVS 15000-48100mV standard=15000-48000mV PDP=140000mW peak=0 malformed raw=0xd3c2968c",
 );
-
-assert.match(protocol.pdoLine(1, 8, 0xd3ea968c), /malformed/);
 
 {
   const payload = [

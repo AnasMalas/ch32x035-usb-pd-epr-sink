@@ -28,7 +28,6 @@ rev0-board = []
 rev0-validation = ["rev0-board"]
 pps-capable-hardware = []
 epr-capable-hardware = []
-epr-50v-compatible-hardware = ["epr-capable-hardware"]
 
 [dependencies]
 pd-sink = { package = "ch32x035-usb-pd-epr-sink", path = "../../crates/pd-sink", default-features = false }

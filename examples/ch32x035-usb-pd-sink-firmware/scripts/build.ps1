@@ -10,7 +10,6 @@ param(
         'usb-epr-diagnostic',
         'usb-epr-black-box',
         'usb-epr-deep-black-box',
-        'usb-epr-50v',
         'usb-epr-text'
     )]
     [string]$Profile = 'usb-safe-5v',
@@ -52,7 +51,6 @@ $rev0Profiles = @(
     'usb-epr-diagnostic',
     'usb-epr-black-box',
     'usb-epr-deep-black-box',
-    'usb-epr-50v',
     'usb-epr-text'
 )
 
@@ -79,7 +77,6 @@ try {
         'usb-epr-diagnostic' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board' }
         'usb-epr-black-box' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board,persistent-black-box' }
         'usb-epr-deep-black-box' { 'usb-control,rich-telemetry,epr-capable-hardware,output-default-off,rev0-board,deep-black-box' }
-        'usb-epr-50v' { 'usb-control,rich-telemetry,epr-50v-compatible-hardware,output-default-off,rev0-board' }
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware,output-default-off,rev0-board' }
     }
     $selectedFeatures = "$Chip,$profileFeatures"

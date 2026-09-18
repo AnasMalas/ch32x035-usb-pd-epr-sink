@@ -1875,7 +1875,7 @@ for (const input of ui.voltageCeilingInputs) {
 ui.voltageForm.addEventListener("submit", async (event) => {
   event.preventDefault();
   try {
-    const voltage = toMilli(ui.voltageInput.value, "Voltage", { maximum: 50 });
+    const voltage = toMilli(ui.voltageInput.value, "Voltage", { maximum: 48 });
     const current = toMilli(ui.currentInput.value, "Current", { optional: true, maximum: 5 });
     const preference = ui.preferenceInput.value;
     await sendCommand(`request ${voltage} ${current === null ? "max" : current} ${preference}`);
@@ -1908,7 +1908,7 @@ ui.pdoForm.addEventListener("submit", async (event) => {
       const current = toMilli(ui.pdoCurrent.value, "Current", { maximum: 5 });
       command = `pdo ${position} current ${current}`;
     } else if (demand === "adjust") {
-      const voltage = toMilli(ui.pdoVoltage.value, "Voltage", { maximum: 50 });
+      const voltage = toMilli(ui.pdoVoltage.value, "Voltage", { maximum: 48 });
       const current = toMilli(ui.pdoCurrent.value, "Current", { optional: true, maximum: 5 });
       command = `pdo ${position} adjust ${voltage} ${current === null ? "max" : current}`;
     }
