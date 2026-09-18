@@ -332,6 +332,10 @@ try {
     }
 
     if ($nodeAvailable) {
+        node --check examples/browser-usb-pd-control-client/app.js
+        if ($LASTEXITCODE -ne 0) { throw "browser application syntax check failed with exit code $LASTEXITCODE" }
+        node examples/browser-usb-pd-control-client/console.test.js
+        if ($LASTEXITCODE -ne 0) { throw "browser console structure tests failed with exit code $LASTEXITCODE" }
         node examples/browser-usb-pd-control-client/protocol.test.js
         if ($LASTEXITCODE -ne 0) { throw "browser protocol tests failed with exit code $LASTEXITCODE" }
     }
