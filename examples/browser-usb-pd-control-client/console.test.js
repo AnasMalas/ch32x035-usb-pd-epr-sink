@@ -50,6 +50,7 @@ for (const required of [
   "name=\"voltage-ceiling\" value=\"50000\"",
   "Inspect black box",
   "Start PPS telemetry",
+  "Expand graphs",
   "Voltage unavailable",
 ]) {
   assert.ok(html.includes(required) || app.includes(required), `missing console behavior: ${required}`);
@@ -64,5 +65,7 @@ assert.match(css, /@media \(max-width: 760px\)/);
 assert.match(css, /:focus-visible/);
 assert.match(css, /\.capability-table \{ min-width: 560px/);
 assert.match(css, /\.capability-table \.empty-row td \{[^}]*text-align: center/);
+assert.match(css, /\.telemetry-chart \{[^}]*width: 100%;[^}]*height: 100%/);
+assert.match(css, /\.telemetry-chart-shell\.is-expanded \{ height: 360px/);
 
 console.log("Browser console structure tests passed");

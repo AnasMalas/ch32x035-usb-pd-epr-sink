@@ -159,14 +159,15 @@ table { width: 100%; border-spacing: 0; border-collapse: collapse; }
 .mode-indicator { width: 9px; height: 32px; background: #38444b; border-radius: 999px; }
 .mode-indicator.is-cv { background: var(--green); box-shadow: 0 0 15px rgb(82 211 145 / 35%); }
 .mode-indicator.is-cl { background: var(--amber); box-shadow: 0 0 15px rgb(242 180 87 / 35%); }
-.telemetry-chart-shell { position: relative; height: 78px; margin-top: 6px; overflow: hidden; background: #090f12; border: 1px solid var(--line); border-radius: 7px; }
+.telemetry-chart-shell { position: relative; height: 78px; margin-top: 6px; overflow: hidden; background: linear-gradient(180deg, #0a0f13, #0c1216); border: 1px solid var(--line); border-radius: 7px; transition: height .18s ease; }
+.telemetry-chart-shell.is-expanded { height: 360px; }
 .telemetry-chart-shell.is-unavailable { background: #101518; }
 .telemetry-chart-legend { position: absolute; z-index: 1; top: 4px; right: 7px; left: 7px; display: flex; gap: 12px; justify-content: flex-end; pointer-events: none; }
 .telemetry-chart-legend span { font: .56rem/1.2 "Cascadia Code", Consolas, monospace; }
 .telemetry-chart-legend .voltage-series { color: var(--cyan); }
 .telemetry-chart-legend .current-series { color: var(--green); }
 .telemetry-chart-legend .is-unavailable { color: #657178; }
-.telemetry-chart { position: absolute; right: 0; bottom: 0; left: 0; display: block; width: 100%; height: 58px; opacity: .95; }
+.telemetry-chart { display: block; width: 100%; height: 100%; background: transparent; opacity: .95; }
 .telemetry-note { margin: 7px 2px 0; color: var(--muted); font-size: .62rem; line-height: 1.4; }
 
 .actions-panel { align-self: stretch; }
@@ -236,6 +237,7 @@ footer { display: flex; width: min(1720px, calc(100% - 20px)); margin: 0 auto 14
   .telemetry-actions, .terminal-tools { justify-content: flex-start; }
   .control-availability { text-align: left; }
   .telemetry-grid { grid-template-columns: 1fr; }
+  .telemetry-chart-shell.is-expanded { height: 300px; }
   .action-group { grid-template-columns: 1fr; }
   .advanced-request form { grid-template-columns: 1fr 1fr; }
   .advanced-request .request-submit { grid-column: 1 / -1; }

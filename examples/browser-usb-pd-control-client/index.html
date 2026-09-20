@@ -135,6 +135,7 @@
                 <label class="live-toggle"><input id="live-pps" type="checkbox" disabled> 1 s refresh</label>
                 <button class="button button-quiet command-button" data-command="pps-status" type="button" disabled>PPS status</button>
                 <button class="button button-quiet command-button" data-command="source-status" type="button" disabled>Source status</button>
+                <button id="telemetry-chart-toggle" class="button button-quiet button-toggle" type="button" aria-pressed="false" aria-controls="telemetry-chart-shell">Expand graphs</button>
               </div>
             </div>
             <p id="telemetry-availability" class="control-availability">Connect a device to enable PPS telemetry.</p>
@@ -154,7 +155,7 @@
                 <span id="voltage-chart-label" class="voltage-series is-unavailable">Voltage unavailable</span>
                 <span id="current-chart-label" class="current-series is-unavailable">Current unavailable</span>
               </div>
-              <canvas id="telemetry-chart" height="58" role="img" aria-label="Source-reported PPS voltage and current history. Both values are unavailable."></canvas>
+              <canvas id="telemetry-chart" class="telemetry-chart" role="img" aria-label="Source-reported PPS voltage and current history. Both values are unavailable."></canvas>
             </div>
             <p id="telemetry-note" class="telemetry-note">A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.</p>
           </section>

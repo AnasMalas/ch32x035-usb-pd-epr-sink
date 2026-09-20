@@ -55,7 +55,8 @@ The application exposes the stable firmware command surface:
   and EPR exit;
 - manual or one-second PPS telemetry with at most one query in flight, plus a
   thin voltage/current history chart that marks unavailable source values and
-  never derives power;
+  never derives power; the chart can expand into BCv2-style stacked voltage
+  and current plots with scales, grid lines, and a 60-second time axis;
 - terminal-toolbar inspection of persistent high-level or deep numeric
   black-box firmware profiles, detected from the recorder summary and decoded
   directly into the session log;

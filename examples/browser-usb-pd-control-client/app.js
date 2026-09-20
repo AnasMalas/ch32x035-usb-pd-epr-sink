@@ -36,6 +36,7 @@ const ui = {
   ppsMaintenanceState: $("#pps-maintenance-state"),
   telemetryChartShell: $("#telemetry-chart-shell"),
   telemetryChart: $("#telemetry-chart"),
+  telemetryChartToggle: $("#telemetry-chart-toggle"),
   voltageChartLabel: $("#voltage-chart-label"),
   currentChartLabel: $("#current-chart-label"),
   voltageForm: $("#voltage-form"),
@@ -112,6 +113,7 @@ const state = {
   maxVoltageMillivolts: 5000,
   telemetrySamples: [],
   telemetryAvailable: { voltage: false, current: false },
+  telemetryChartExpanded: false,
   blackBoxPending: null,
   blackBoxBusy: false,
   reconnectTimer: null,
@@ -234,25 +236,28 @@ function latestTelemetryValue(key) {
   return null;
 }
 
-function drawTelemetryChart() {
-  const canvas = ui.telemetryChart;
-  const context = canvas.getContext("2d");
-  if (!context) return;
-  const ratio = Math.max(1, window.devicePixelRatio || 1);
-  const width = Math.max(260, Math.floor(canvas.clientWidth || canvas.parentElement?.clientWidth || 520));
-  const height = 58;
-  if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
-    canvas.width = Math.floor(width * ratio);
-    canvas.height = Math.floor(height * ratio);
-  }
-  context.setTransform(ratio, 0, 0, ratio, 0, 0);
-  context.clearRect(0, 0, width, height);
+function niceTelemetryMaximum(value) {
+  if (!Number.isFinite(value) || value <= 0) return 1;
+  const scale = 10 ** Math.floor(Math.log10(value));
+  const normalized = value / scale;
+  return (normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10) * scale;
+}
+
+function telemetryTimeLabel(seconds) {
+  if (seconds <= 0) return "now";
+  return `−${Math.round(seconds)}s`;
+}
+
+function drawCompactTelemetry(context, width, height) {
+  const top = 20;
+  const bottom = 5;
   context.strokeStyle = "#253038";
   context.lineWidth = 1;
-  for (const y of [14.5, 29.5, 44.5]) {
+  for (let line = 0; line <= 3; line += 1) {
+    const y = top + (height - top - bottom) * line / 3;
     context.beginPath();
-    context.moveTo(0, y);
-    context.lineTo(width, y);
+    context.moveTo(0, y + .5);
+    context.lineTo(width, y + .5);
     context.stroke();
   }
 
@@ -277,7 +282,7 @@ function drawTelemetryChart() {
         return;
       }
       const x = values.length <= 1 ? width - 1 : (index / (values.length - 1)) * (width - 1);
-      const y = 52 - ((value - minimum) / (maximum - minimum)) * 46;
+      const y = height - bottom - ((value - minimum) / (maximum - minimum)) * (height - top - bottom);
       if (!drawing) context.moveTo(x, y);
       else context.lineTo(x, y);
       drawing = true;
@@ -287,6 +292,108 @@ function drawTelemetryChart() {
 
   drawSeries("voltage", "#5fc9e8", state.telemetryAvailable.voltage);
   drawSeries("current", "#52d391", state.telemetryAvailable.current);
+}
+
+function drawExpandedTelemetry(context, width, height) {
+  const left = 58;
+  const right = 10;
+  const top = 25;
+  const bottom = 20;
+  const gap = 8;
+  const bandHeight = Math.max(30, (height - top - bottom - gap) / 2);
+  const end = state.telemetrySamples.at(-1)?.time ?? Date.now();
+  const windowMs = 60_000;
+  const start = end - windowMs;
+  const series = [
+    { key: "voltage", label: "Voltage", unit: "V", divisor: 1000, color: "#5fc9e8", fill: "rgba(95,201,232,.035)", available: state.telemetryAvailable.voltage, digits: 1 },
+    { key: "current", label: "Current", unit: "A", divisor: 1000, color: "#52d391", fill: "rgba(82,211,145,.070)", available: state.telemetryAvailable.current, digits: 2 },
+  ];
+
+  context.font = '11px "Cascadia Code", Consolas, monospace';
+  context.lineWidth = 1;
+  context.textBaseline = "middle";
+  series.forEach((meta, band) => {
+    const y = top + band * (bandHeight + gap);
+    const values = state.telemetrySamples
+      .map((sample) => Number.isFinite(sample[meta.key]) ? sample[meta.key] / meta.divisor : null)
+      .filter(Number.isFinite);
+    const maximum = niceTelemetryMaximum(Math.max(...values, 0));
+    context.fillStyle = meta.available ? meta.fill : "rgba(90,101,108,.08)";
+    context.fillRect(left, y, width - left - right, bandHeight);
+    context.strokeStyle = meta.available ? `${meta.color}55` : "#3b454b";
+    context.strokeRect(left + .5, y + .5, width - left - right - 1, bandHeight - 1);
+
+    for (let line = 0; line <= 8; line += 1) {
+      const gridY = y + bandHeight * line / 8;
+      context.strokeStyle = line % 2 === 0 ? "#2b373e" : "#1d272c";
+      context.beginPath();
+      context.moveTo(left, gridY);
+      context.lineTo(width - right, gridY);
+      context.stroke();
+      if (line % 2 === 0) {
+        const value = maximum * (8 - line) / 8;
+        context.fillStyle = meta.available ? meta.color : "#66737a";
+        context.textAlign = "right";
+        context.fillText(`${value.toFixed(meta.digits)} ${meta.unit}`, left - 6, Math.max(y + 6, Math.min(y + bandHeight - 6, gridY)));
+      }
+    }
+    for (let line = 0; line <= 10; line += 1) {
+      const gridX = left + (width - left - right) * line / 10;
+      context.strokeStyle = line % 2 === 0 ? "#29343b" : "#1d272c";
+      context.beginPath();
+      context.moveTo(gridX, y);
+      context.lineTo(gridX, y + bandHeight);
+      context.stroke();
+    }
+
+    const points = state.telemetrySamples.filter((sample) => Number.isFinite(sample[meta.key]));
+    if (points.length > 0) {
+      context.strokeStyle = meta.available ? meta.color : "#66737a";
+      context.lineWidth = 1.7;
+      context.beginPath();
+      points.forEach((sample, index) => {
+        const x = left + Math.max(0, (sample.time - start) / windowMs) * (width - left - right);
+        const pointY = y + bandHeight - Math.min(1, (sample[meta.key] / meta.divisor) / maximum) * bandHeight;
+        if (index === 0) context.moveTo(x, pointY);
+        else context.lineTo(x, pointY);
+      });
+      context.stroke();
+    }
+    if (!meta.available) {
+      context.fillStyle = "#7a878e";
+      context.textAlign = "center";
+      context.fillText(`${meta.label} unavailable`, left + (width - left - right) / 2, y + bandHeight / 2);
+    }
+  });
+
+  context.fillStyle = "#73828a";
+  context.textBaseline = "alphabetic";
+  for (let tick = 0; tick <= 10; tick += 2) {
+    const x = left + (width - left - right) * tick / 10;
+    context.textAlign = tick === 0 ? "left" : tick === 10 ? "right" : "center";
+    context.fillText(telemetryTimeLabel(60 * (10 - tick) / 10), x, height - 3);
+  }
+}
+
+function drawTelemetryChart() {
+  const canvas = ui.telemetryChart;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const bounds = canvas.getBoundingClientRect();
+  const ratio = Math.min(Math.max(1, window.devicePixelRatio || 1), 2);
+  const width = Math.max(1, Math.round(bounds.width));
+  const height = Math.max(1, Math.round(bounds.height));
+  const pixelWidth = Math.round(width * ratio);
+  const pixelHeight = Math.round(height * ratio);
+  if (canvas.width !== pixelWidth || canvas.height !== pixelHeight) {
+    canvas.width = pixelWidth;
+    canvas.height = pixelHeight;
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.fillStyle = "#0a1014";
+  context.fillRect(0, 0, width, height);
+  if (state.telemetryChartExpanded) drawExpandedTelemetry(context, width, height);
+  else drawCompactTelemetry(context, width, height);
 
   const voltage = latestTelemetryValue("voltage");
   const current = latestTelemetryValue("current");
@@ -1702,6 +1809,13 @@ ui.telemetryToggle.addEventListener("click", () => {
     ? "Live PPS telemetry started; only one source query can be in flight."
     : "Live PPS telemetry stopped. Mandatory PPS contract maintenance remains active.");
 });
+ui.telemetryChartToggle.addEventListener("click", () => {
+  state.telemetryChartExpanded = !state.telemetryChartExpanded;
+  ui.telemetryChartShell.classList.toggle("is-expanded", state.telemetryChartExpanded);
+  ui.telemetryChartToggle.setAttribute("aria-pressed", String(state.telemetryChartExpanded));
+  ui.telemetryChartToggle.textContent = state.telemetryChartExpanded ? "Collapse graphs" : "Expand graphs";
+  requestAnimationFrame(drawTelemetryChart);
+});
 ui.condenseLog.addEventListener("click", () => {
   state.condenseConsole = !state.condenseConsole;
   ui.condenseLog.setAttribute("aria-pressed", String(state.condenseConsole));
@@ -1841,7 +1955,11 @@ ui.terminal.addEventListener("copy", (event) => {
   event.clipboardData.setData("text/plain", lines.join("\n"));
   event.preventDefault();
 });
-window.addEventListener("resize", drawTelemetryChart);
+if ("ResizeObserver" in window) {
+  new ResizeObserver(drawTelemetryChart).observe(ui.telemetryChartShell);
+} else {
+  window.addEventListener("resize", drawTelemetryChart);
+}
 
 const androidRequiresHttps = IS_ANDROID && location.protocol !== "https:";
 if (androidRequiresHttps) {
