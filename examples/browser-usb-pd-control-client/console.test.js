@@ -52,6 +52,8 @@ for (const required of [
   "Start PPS telemetry",
   "Expand graphs",
   "Voltage unavailable",
+  "RAM snapshot newer than flash",
+  "power-fail capture armed",
 ]) {
   assert.ok(html.includes(required) || app.includes(required), `missing console behavior: ${required}`);
 }

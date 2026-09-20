@@ -978,6 +978,8 @@ async function inspectBlackBox() {
     }
     const flags = [
       summary.restored ? "restored" : null,
+      summary.dirty ? "RAM snapshot newer than flash" : null,
+      summary.preparedPage <= 1 ? "power-fail capture armed" : "power-fail capture not armed",
       summary.frozen ? "frozen" : null,
       summary.hardReset ? "hard reset captured" : null,
       summary.overwritten ? "old records overwritten" : null,
