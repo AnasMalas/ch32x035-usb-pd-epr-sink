@@ -612,12 +612,14 @@ pub fn encode_event_packet(event: ControlEvent, sequence: u8, output: &mut [u8; 
             writer.u8(match query {
                 StatusQuery::General => 0,
                 StatusQuery::Pps => 1,
+                StatusQuery::SourceInfo => 2,
             });
             writer.u8(match failure {
                 StatusQueryFailure::NotSupported => 0,
                 StatusQueryFailure::Rejected => 1,
                 StatusQueryFailure::Deferred => 2,
                 StatusQueryFailure::Timeout => 3,
+                StatusQueryFailure::UnsupportedRevision => 4,
             });
             EventKind::StatusQueryFailed
         }

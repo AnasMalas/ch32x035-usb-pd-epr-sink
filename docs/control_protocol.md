@@ -77,6 +77,12 @@ label its cause as unspecified. The cause codes are:
 | 7 | epr-protocol-error |
 | 8 | epr-keepalive-failed |
 
+The `StatusQueryFailed` event has a two-byte payload. Query codes are 0 general
+Source Status, 1 PPS Status, and 2 Source Info. Failure codes are 0 not
+supported by the partner, 1 rejected, 2 deferred, 3 timed out, and 4
+unavailable in the negotiated PD revision. Code 4 is a local refusal: the
+query was not placed on the wire and the existing contract remains valid.
+
 Reference implementations are kept with the examples:
 
 - [`examples/ch32x035-usb-pd-sink-firmware/src/control_transport.rs`](../examples/ch32x035-usb-pd-sink-firmware/src/control_transport.rs)

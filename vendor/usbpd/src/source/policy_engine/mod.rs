@@ -359,7 +359,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: SourceDpm> Source<DRIVER, TIMER, DPM> {
             State::Startup { role_swap } => {
                 self.contract = Default::default();
                 self.mode = Default::default();
-                self.protocol_layer.reset();
+                if *role_swap {
+                    self.protocol_layer.reset();
+                } else {
+                    self.protocol_layer.reset_connection();
+                }
                 self.caps_counter.reset();
 
                 if *role_swap {

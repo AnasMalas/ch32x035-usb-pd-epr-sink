@@ -135,9 +135,10 @@ impl Header {
 }
 
 /// Specification revieions.
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 #[allow(non_camel_case_types)]
+#[repr(u8)]
 pub enum SpecificationRevision {
     /// Version 1.0.
     R1_0,

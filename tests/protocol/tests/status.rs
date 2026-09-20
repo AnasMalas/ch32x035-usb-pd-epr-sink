@@ -138,12 +138,14 @@ impl DevicePolicyManager for StatusDpm {
         let query = match query {
             StatusQueryKind::General => 0,
             StatusQueryKind::Pps => 10,
+            StatusQueryKind::SourceInfo => 20,
         };
         let failure = match failure {
             StatusQueryFailure::NotSupported => 1,
             StatusQueryFailure::Rejected => 2,
             StatusQueryFailure::Deferred => 3,
             StatusQueryFailure::Timeout => 4,
+            StatusQueryFailure::UnsupportedRevision => 5,
         };
         self.status_failure.store(query + failure, Ordering::SeqCst);
     }

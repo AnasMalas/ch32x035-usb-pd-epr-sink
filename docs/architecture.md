@@ -89,7 +89,7 @@ Every attachment starts with no retained user intent. The sequence for an
 EPR-capable profile is:
 
 ```text
-SPR capabilities -> request 5 V -> PS_RDY -> Source_Info
+SPR capabilities -> request 5 V -> PS_RDY -> Source_Info (PD 3.x only)
                  -> EPR entry attempt -> EPR capabilities
                  -> EPR request for fixed 5 V -> PS_RDY -> await user command
 ```

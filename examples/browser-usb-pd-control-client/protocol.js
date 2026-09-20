@@ -338,8 +338,8 @@
 
   function statusQueryFailureLine(payload) {
     expectLength(payload, 2);
-    const query = ["Source_Status", "PPS_Status"][payload[0]] ?? `status-${payload[0]}`;
-    const reason = ["unsupported", "rejected", "deferred", "timeout"][payload[1]] ?? `reason-${payload[1]}`;
+    const query = ["Source_Status", "PPS_Status", "Source_Info"][payload[0]] ?? `status-${payload[0]}`;
+    const reason = ["unsupported", "rejected", "deferred", "timeout", "unavailable-for-PD-revision"][payload[1]] ?? `reason-${payload[1]}`;
     return `${query} query failed: ${reason}`;
   }
 

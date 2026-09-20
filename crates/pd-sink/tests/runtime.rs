@@ -9,7 +9,7 @@ use pd_sink::{
     CapabilitiesKind, Command, ContractState, ContractTransitionKind, ControllerConfig, HardResetCause,
     HardResetDirection, Milliamps, Millivolts, Milliwatts, PortMode, Preference, RecoveryCancellationReason,
     RecoveryInitError, RecoveryIntent, RequestContext, RequestFlags, SinkConfig, SinkConfigError, SinkDevice,
-    SinkEvent, SinkPowerDescriptor, SinkRuntime, TransitionLoadPolicy, UserRequest,
+    SinkEvent, SinkPowerDescriptor, SinkRuntime, StatusQuery, StatusQueryFailure, TransitionLoadPolicy, UserRequest,
 };
 use usbpd::protocol_layer::message::data::alert::AlertDataObject;
 use usbpd::protocol_layer::message::data::request::PowerSource;
@@ -17,6 +17,7 @@ use usbpd::protocol_layer::message::data::source_capabilities::{
     Augmented, FixedSupply, PowerDataObject, SourceCapabilities, SprProgrammablePowerSupply,
 };
 use usbpd::protocol_layer::message::extended::pps_status::PpsStatus as StackPpsStatus;
+use usbpd::protocol_layer::message::header::SpecificationRevision;
 use usbpd::sink::device_policy_manager::{
     DevicePolicyManager, Event, HardResetOrigin, HardResetReason, SinkStartup, SoftResetMode,
 };
@@ -626,6 +627,46 @@ fn ready_epr_source_starts_one_bounded_automatic_entry() {
     assert!(matches!(block_on(device.get_event(&source)), Event::RequestSourceInfo));
     assert!(matches!(block_on(device.get_event(&source)), Event::EnterEprMode(_)));
     assert!(device.runtime_mut().events.contains(&SinkEvent::EprDiscoveryStarted { attempt: 1, maximum_attempts: 2 }));
+}
+
+#[test]
+fn pd2_runtime_reports_and_skips_automatic_and_manual_pd3_queries() {
+    let source = SourceCapabilities::new_vsafe5v_only(300);
+    let mut device = SinkDevice::new(safe_5v_config(), TestRuntime::default()).unwrap();
+    device.inform(&source);
+    let request = device.request(&source);
+    device.transition_power(&request);
+    device.runtime_mut().commands.push_back(Command::RequestSourceInfo);
+    device.runtime_mut().commands.push_back(Command::RequestSourceStatus);
+    device.runtime_mut().commands.push_back(Command::RequestPpsStatus);
+    device
+        .runtime_mut()
+        .commands
+        .push_back(Command::Request(UserRequest::Pdo { position: 1, demand: pd_sink::Demand::Maximum }));
+
+    assert!(matches!(
+        block_on(DevicePolicyManager::get_event_for_revision(&mut device, &source, SpecificationRevision::R2_0,)),
+        Event::RequestPower(_)
+    ));
+
+    let failures: Vec<_> = device
+        .runtime_mut()
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            SinkEvent::StatusQueryFailed { query, failure } => Some((*query, *failure)),
+            _ => None,
+        })
+        .collect();
+    assert_eq!(
+        failures,
+        [
+            (StatusQuery::SourceInfo, StatusQueryFailure::UnsupportedRevision),
+            (StatusQuery::SourceInfo, StatusQueryFailure::UnsupportedRevision),
+            (StatusQuery::General, StatusQueryFailure::UnsupportedRevision),
+            (StatusQuery::Pps, StatusQueryFailure::UnsupportedRevision),
+        ]
+    );
 }
 
 #[test]

@@ -85,6 +85,7 @@ pub enum SinkSessionTransmitError {
     UnchunkedExtendedMessagesNotSupported,
     AvsVoltageAlignmentInvalid,
     ExtendedMessageChunkingRequired,
+    MessageUnavailableInRevision { message_type: u8, revision: u8 },
 }
 
 /// Terminal result returned by a managed session.
@@ -179,6 +180,9 @@ pub(crate) fn classify_sink_error(error: StackSinkError) -> Result<SinkSessionRe
                 TxValidationError::ExtendedMessageChunkingRequired => {
                     SinkSessionTransmitError::ExtendedMessageChunkingRequired
                 }
+                TxValidationError::MessageUnavailableInRevision { message_type, revision } => {
+                    SinkSessionTransmitError::MessageUnavailableInRevision { message_type, revision }
+                }
             };
             return Err(SinkSessionTerminalError::LocalPolicy(SinkSessionLocalError::InvalidTransmitMessage(error)));
         }
@@ -226,6 +230,16 @@ mod tests {
                 SinkSessionLocalError::InvalidTransmitMessage(
                     SinkSessionTransmitError::ExtendedMessageChunkingRequired,
                 ),
+            ),
+            (
+                StackSinkError::InvalidTransmitMessage(TxValidationError::MessageUnavailableInRevision {
+                    message_type: 23,
+                    revision: 1,
+                }),
+                SinkSessionLocalError::InvalidTransmitMessage(SinkSessionTransmitError::MessageUnavailableInRevision {
+                    message_type: 23,
+                    revision: 1,
+                }),
             ),
         ];
 

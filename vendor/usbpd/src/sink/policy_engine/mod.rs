@@ -205,18 +205,24 @@ const SOURCE_CAPABILITY_TYPES: &[MessageType] = &[
 ];
 const SOURCE_INFO_RESPONSE_TYPES: &[MessageType] = &[
     MessageType::Data(DataMessageType::SourceInfo),
+    MessageType::Data(DataMessageType::SourceCapabilities),
+    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
     MessageType::Control(ControlMessageType::NotSupported),
     MessageType::Control(ControlMessageType::Reject),
     MessageType::Control(ControlMessageType::Wait),
 ];
 const STATUS_RESPONSE_TYPES: &[MessageType] = &[
     MessageType::Extended(ExtendedMessageType::Status),
+    MessageType::Data(DataMessageType::SourceCapabilities),
+    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
     MessageType::Control(ControlMessageType::NotSupported),
     MessageType::Control(ControlMessageType::Reject),
     MessageType::Control(ControlMessageType::Wait),
 ];
 const PPS_STATUS_RESPONSE_TYPES: &[MessageType] = &[
     MessageType::Extended(ExtendedMessageType::PpsStatus),
+    MessageType::Data(DataMessageType::SourceCapabilities),
+    MessageType::Extended(ExtendedMessageType::EprSourceCapabilities),
     MessageType::Control(ControlMessageType::NotSupported),
     MessageType::Control(ControlMessageType::Reject),
     MessageType::Control(ControlMessageType::Wait),
@@ -259,6 +265,7 @@ impl ReceiveOperation {
             Self::GetSourceInfo => (SOURCE_INFO_RESPONSE_TYPES, TimerType::SenderResponse, None),
             Self::GetStatus(query) => (
                 match query {
+                    StatusQueryKind::SourceInfo => SOURCE_INFO_RESPONSE_TYPES,
                     StatusQueryKind::General => STATUS_RESPONSE_TYPES,
                     StatusQueryKind::Pps => PPS_STATUS_RESPONSE_TYPES,
                 },
@@ -407,7 +414,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
     /// Reset all state associated with a previous attachment while retaining
     /// the driver and device-policy manager.
     pub fn restart(&mut self) {
-        self.protocol_layer.reset();
+        self.protocol_layer.reset_connection();
         self.state = State::Discovery;
         self.contract = Contract::Safe5V;
         self.active_power_source = None;
@@ -686,6 +693,18 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
     }
 
     fn begin_or_defer_sink_ams(&mut self, ams: SinkInitiatedAms) -> State {
+        let optional_query = match ams {
+            SinkInitiatedAms::GetSourceInfo => Some(StatusQueryKind::SourceInfo),
+            SinkInitiatedAms::GetStatus(query) => Some(query),
+            _ => None,
+        };
+        if self.protocol_layer.specification_revision() < SpecificationRevision::R3_X
+            && let Some(query) = optional_query
+        {
+            self.device_policy_manager.status_query_failed(query, StatusQueryFailure::UnsupportedRevision);
+            return State::Ready;
+        }
+
         if self.protocol_layer.sink_tx_ok() {
             self.state_for_sink_ams(ams)
         } else {
@@ -1039,10 +1058,38 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             ReceiveOperation::GetSourceInfo => {
                 match result {
-                    Ok(message) => {
-                        if let SinkPayload::SourceInfo(source_info) = message.payload {
+                    Ok(message)
+                        if matches!(
+                            message.header.message_type(),
+                            MessageType::Data(DataMessageType::SourceCapabilities)
+                                | MessageType::Extended(ExtendedMessageType::EprSourceCapabilities)
+                        ) =>
+                    {
+                        return Ok(self.handle_ready_message(message));
+                    }
+                    Ok(message) => match message.payload {
+                        SinkPayload::SourceInfo(source_info) => {
                             self.device_policy_manager.inform_source_info(&source_info);
                         }
+                        SinkPayload::None => {
+                            let failure = match message.header.message_type() {
+                                MessageType::Control(ControlMessageType::NotSupported) => {
+                                    Some(StatusQueryFailure::NotSupported)
+                                }
+                                MessageType::Control(ControlMessageType::Reject) => Some(StatusQueryFailure::Rejected),
+                                MessageType::Control(ControlMessageType::Wait) => Some(StatusQueryFailure::Deferred),
+                                _ => None,
+                            };
+                            let Some(failure) = failure else {
+                                return Err(Error::Protocol(ProtocolError::UnexpectedMessage));
+                            };
+                            self.device_policy_manager.status_query_failed(StatusQueryKind::SourceInfo, failure);
+                        }
+                        _ => return Err(Error::Protocol(ProtocolError::UnexpectedMessage)),
+                    },
+                    Err(ProtocolError::RxError(RxError::ReceiveTimeout)) => {
+                        self.device_policy_manager
+                            .status_query_failed(StatusQueryKind::SourceInfo, StatusQueryFailure::Timeout);
                     }
                     Err(
                         error @ ProtocolError::RxError(RxError::Detached | RxError::HardReset | RxError::SoftReset),
@@ -1050,12 +1097,21 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     | Err(error @ ProtocolError::TxError(TxError::Detached | TxError::HardReset)) => {
                         return Err(error.into());
                     }
-                    Err(_) => {}
+                    Err(error) => return Err(error.into()),
                 }
                 Ok(State::Ready)
             }
             ReceiveOperation::GetStatus(query) => {
                 match result {
+                    Ok(message)
+                        if matches!(
+                            message.header.message_type(),
+                            MessageType::Data(DataMessageType::SourceCapabilities)
+                                | MessageType::Extended(ExtendedMessageType::EprSourceCapabilities)
+                        ) =>
+                    {
+                        return Ok(self.handle_ready_message(message));
+                    }
                     Ok(message) => match (query, message.payload) {
                         (StatusQueryKind::General, SinkPayload::Status(status)) => {
                             self.device_policy_manager.inform_status(&status);
@@ -1192,7 +1248,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 self.wait_retry_pending = false;
                 self.pps_refresh_deadline_tick = None;
                 self.epr_keep_alive_deadline_tick = None;
-                self.protocol_layer.reset();
+                self.protocol_layer.reset_connection();
                 self.mode = Mode::Spr;
                 State::Discovery
             }
@@ -1360,8 +1416,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     }
                 } else {
                     let timeout = self.next_ready_timeout();
+                    let revision = self.protocol_layer.specification_revision();
                     let receive_fut = self.protocol_layer.receive_message();
-                    let event_fut = self.device_policy_manager.get_event(self.source_capabilities.as_ref().unwrap());
+                    let event_fut = self
+                        .device_policy_manager
+                        .get_event_for_revision(self.source_capabilities.as_ref().unwrap(), revision);
                     // Per spec 8.3.3.3.7: SinkRequestTimer runs concurrently when re-entering
                     // Ready after a Wait response. On timeout, transition to SelectCapability.
                     // Per spec 6.6.4.1: Ensures minimum tSinkRequest (100ms) delay before re-request.

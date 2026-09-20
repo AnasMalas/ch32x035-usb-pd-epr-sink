@@ -238,6 +238,17 @@ fn status_commands_and_events_use_compact_stable_payloads() {
     )
     .unwrap();
     assert_eq!(decode_one(&bytes[..len]).payload(), &[1, 3]);
+
+    let len = encode_control_event(
+        ControlEvent::StatusQueryFailed {
+            query: StatusQuery::SourceInfo,
+            failure: StatusQueryFailure::UnsupportedRevision,
+        },
+        7,
+        &mut bytes,
+    )
+    .unwrap();
+    assert_eq!(decode_one(&bytes[..len]).payload(), &[2, 4]);
 }
 
 #[test]

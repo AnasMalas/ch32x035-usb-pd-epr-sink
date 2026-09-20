@@ -11,7 +11,7 @@ use crate::protocol_layer::message::data::request::{FixedVariableSupply, PowerSo
 use crate::protocol_layer::message::data::source_capabilities::PowerDataObject;
 use crate::protocol_layer::message::extended::Extended;
 use crate::protocol_layer::message::header::{
-    ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType,
+    ControlMessageType, DataMessageType, ExtendedMessageType, Header, MessageType, SpecificationRevision,
 };
 use crate::protocol_layer::message::{Message, Payload};
 use crate::protocol_layer::{ProtocolError, TxError, TxValidationError};
@@ -23,7 +23,7 @@ use crate::sink::device_policy_manager::{
 #[cfg(feature = "hard-reset-reasons")]
 use crate::sink::device_policy_manager::{HardResetOrigin, HardResetReason};
 use crate::sink::policy_engine::{
-    Contract, ReadyTimeout, ReadyTimeoutKind, ReceiveOperation, State, TransmitOperation,
+    Contract, ReadyTimeout, ReadyTimeoutKind, ReceiveOperation, SinkInitiatedAms, State, TransmitOperation,
 };
 use crate::timers::Timer;
 #[cfg(feature = "hard-reset-reasons")]
@@ -263,6 +263,10 @@ fn every_local_tx_validation_error_is_a_terminal_sink_error() {
         TxValidationError::UnchunkedExtendedMessagesNotSupported,
         TxValidationError::AvsVoltageAlignmentInvalid,
         TxValidationError::ExtendedMessageChunkingRequired,
+        TxValidationError::MessageUnavailableInRevision {
+            message_type: ControlMessageType::GetSourceInfo as u8,
+            revision: SpecificationRevision::R2_0 as u8,
+        },
     ] {
         let error = super::Error::from(ProtocolError::from(expected));
         let super::Error::InvalidTransmitMessage(actual) = error else {
@@ -363,10 +367,12 @@ impl DevicePolicyManager for StatusQueryDpm {
 
     fn status_query_failed(&mut self, query: StatusQueryKind, failure: StatusQueryFailure) {
         let query = match query {
+            StatusQueryKind::SourceInfo => 3,
             StatusQueryKind::General => 1,
             StatusQueryKind::Pps => 2,
         };
         let failure = match failure {
+            StatusQueryFailure::UnsupportedRevision => 5,
             StatusQueryFailure::NotSupported => 1,
             StatusQueryFailure::Rejected => 2,
             StatusQueryFailure::Deferred => 3,
@@ -395,6 +401,59 @@ fn status_query_fixture() -> StatusQueryFixture {
     let mut policy_engine = Sink::new(DummyDriver::new(), dpm);
     policy_engine.active_power_source = Some(crate::dummy::get_source_capability_request());
     StatusQueryFixture { policy_engine, general_status, pps_status, failure }
+}
+
+#[test]
+fn pd2_policy_rejects_every_pd3_optional_query_without_starting_an_ams() {
+    for (ams, expected_failure) in [
+        (SinkInitiatedAms::GetSourceInfo, 35),
+        (SinkInitiatedAms::GetStatus(StatusQueryKind::General), 15),
+        (SinkInitiatedAms::GetStatus(StatusQueryKind::Pps), 25),
+    ] {
+        let StatusQueryFixture { mut policy_engine, failure, .. } = status_query_fixture();
+        let r2_message = Header::new_control(
+            *policy_engine.protocol_layer.header(),
+            Counter::new_from_value(CounterType::MessageId, 0),
+            ControlMessageType::GetSourceCap,
+        )
+        .with_spec_revision(SpecificationRevision::R2_0);
+        policy_engine.protocol_layer.observe_partner_revision(r2_message).unwrap();
+
+        assert!(matches!(policy_engine.begin_or_defer_sink_ams(ams), State::Ready));
+        assert_eq!(failure.load(Ordering::SeqCst), expected_failure);
+        assert!(!policy_engine.protocol_layer.driver().has_transmitted_data());
+    }
+}
+
+#[tokio::test]
+async fn source_capabilities_during_optional_queries_are_reevaluated_and_requested() {
+    for query_state in
+        [State::GetSourceInfo, State::GetStatus(StatusQueryKind::General), State::GetStatus(StatusQueryKind::Pps)]
+    {
+        let mut policy_engine = get_policy_engine();
+        policy_engine.active_power_source = Some(crate::dummy::get_source_capability_request());
+        policy_engine.state = query_state;
+        simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 0);
+        policy_engine.protocol_layer.driver().inject_received_data(&DUMMY_CAPABILITIES);
+
+        policy_engine.run_step().await.unwrap();
+        assert!(matches!(policy_engine.state, State::EvaluateCapabilities));
+
+        policy_engine.run_step().await.unwrap();
+        assert!(matches!(policy_engine.state, State::SelectCapability));
+        simulate_source_control_message(&mut policy_engine, ControlMessageType::GoodCRC, 1);
+        simulate_source_control_message(&mut policy_engine, ControlMessageType::Accept, 1);
+        policy_engine.run_step().await.unwrap();
+
+        let mut saw_request = false;
+        while policy_engine.protocol_layer.driver().has_transmitted_data() {
+            let transmitted =
+                Message::from_bytes(&policy_engine.protocol_layer.driver().probe_transmitted_data()).unwrap();
+            saw_request |= transmitted.header.message_type() == MessageType::Data(DataMessageType::Request);
+        }
+        assert!(saw_request, "updated capabilities must lead to a fresh Request");
+        assert!(matches!(policy_engine.state, State::TransitionSink));
+    }
 }
 
 #[tokio::test]

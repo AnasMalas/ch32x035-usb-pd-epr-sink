@@ -10,6 +10,7 @@ use crate::protocol_layer::message::data::{
 use crate::protocol_layer::message::extended::{
     pps_status, sink_capabilities_extended::SinkCapabilitiesExtended, status,
 };
+use crate::protocol_layer::message::header::SpecificationRevision;
 use crate::units::Power;
 
 /// USB PD mode retained by a Port Partner across a warm sink restart.
@@ -98,10 +99,12 @@ pub enum RequestRejection {
     Wait,
 }
 
-/// Optional status inquiry that did not return its expected Data Block.
+/// Optional source inquiry that did not return its expected Data Block.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StatusQueryKind {
+    /// `Get_Source_Info` / Source_Info.
+    SourceInfo,
     /// `Get_Status` / Status.
     General,
     /// `Get_PPS_Status` / PPS_Status.
@@ -112,6 +115,8 @@ pub enum StatusQueryKind {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 #[cfg_attr(feature = "defmt", derive(defmt::Format))]
 pub enum StatusQueryFailure {
+    /// The query is not defined by the negotiated PD revision and was not transmitted.
+    UnsupportedRevision,
     /// Port Partner returned `Not_Supported`.
     NotSupported,
     /// Port Partner returned the legacy `Reject` response.
@@ -345,5 +350,16 @@ pub trait DevicePolicyManager {
         _source_capabilities: &source_capabilities::SourceCapabilities,
     ) -> impl Future<Output = Event> {
         async { core::future::pending().await }
+    }
+
+    /// Revision-aware form used by the policy engine. Existing DPMs inherit
+    /// the ordinary [`Self::get_event`] behavior; implementations that issue
+    /// revision-specific optional queries can override this method.
+    fn get_event_for_revision(
+        &mut self,
+        source_capabilities: &source_capabilities::SourceCapabilities,
+        _revision: SpecificationRevision,
+    ) -> impl Future<Output = Event> {
+        self.get_event(source_capabilities)
     }
 }

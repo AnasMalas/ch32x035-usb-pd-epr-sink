@@ -178,7 +178,9 @@ traffic.
    sent once, with no reset or lost command.
 5. Repeat a user renegotiation with a PD 2.0 source advertising 1.5 A. It must
    proceed normally because PD 2.0 does not use Rp for SinkTx collision
-   avoidance.
+   avoidance. Issue `source-info`, `source-status`, and `pps-status`; each must
+   report that the query is unavailable for the negotiated revision without
+   transmitting an aliased control message or disturbing the contract.
 6. If the fixture can inject raw frames, send a truncated data frame and a
    short non-final Extended Message chunk. Verify the sink initiates Soft Reset
    recovery and remains responsive; it must not hang or re-enable the load

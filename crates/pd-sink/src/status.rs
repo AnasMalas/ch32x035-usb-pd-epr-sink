@@ -308,12 +308,13 @@ impl SourceAlert {
     }
 }
 
-/// Which optional status inquiry failed.
+/// Which optional source inquiry failed.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 #[repr(u8)]
 pub enum StatusQuery {
     General,
     Pps,
+    SourceInfo,
 }
 
 /// Non-fatal outcome of an optional status inquiry.
@@ -324,4 +325,6 @@ pub enum StatusQueryFailure {
     Rejected,
     Deferred,
     Timeout,
+    /// The query is not defined by the negotiated PD revision and was not transmitted.
+    UnsupportedRevision,
 }

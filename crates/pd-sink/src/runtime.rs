@@ -17,6 +17,7 @@ use usbpd::protocol_layer::message::extended::sink_capabilities_extended::{
     SinkCapabilitiesExtended, SINK_MODE_AVS_SUPPORTED, SINK_MODE_PPS_SUPPORTED, SINK_MODE_VBUS_POWERED,
 };
 use usbpd::protocol_layer::message::extended::{pps_status as stack_pps_status, status as stack_status};
+use usbpd::protocol_layer::message::header::SpecificationRevision;
 pub use usbpd::sink::device_policy_manager::HardResetReason as HardResetCause;
 #[cfg(feature = "initial-capabilities-fallback")]
 pub use usbpd::sink::device_policy_manager::InitialCapabilitiesTimeoutAction;
@@ -909,10 +910,12 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     fn status_query_failed(&mut self, query: StackStatusQueryKind, failure: StackStatusQueryFailure) {
         let query = match query {
+            StackStatusQueryKind::SourceInfo => StatusQuery::SourceInfo,
             StackStatusQueryKind::General => StatusQuery::General,
             StackStatusQueryKind::Pps => StatusQuery::Pps,
         };
         let failure = match failure {
+            StackStatusQueryFailure::UnsupportedRevision => StatusQueryFailure::UnsupportedRevision,
             StackStatusQueryFailure::NotSupported => StatusQueryFailure::NotSupported,
             StackStatusQueryFailure::Rejected => StatusQueryFailure::Rejected,
             StackStatusQueryFailure::Deferred => StatusQueryFailure::Deferred,
@@ -1113,6 +1116,31 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
             match action {
                 Ok(action) => return self.event_for_action(action),
                 Err(error) => self.runtime.on_controller_rejected(error),
+            }
+        }
+    }
+
+    async fn get_event_for_revision(
+        &mut self,
+        source_capabilities: &StackSourceCapabilities,
+        revision: SpecificationRevision,
+    ) -> Event {
+        loop {
+            let event = self.get_event(source_capabilities).await;
+            if revision >= SpecificationRevision::R3_X {
+                return event;
+            }
+
+            let query = match event {
+                Event::RequestSourceInfo => Some(StackStatusQueryKind::SourceInfo),
+                Event::RequestStatus => Some(StackStatusQueryKind::General),
+                Event::RequestPpsStatus => Some(StackStatusQueryKind::Pps),
+                _ => None,
+            };
+            if let Some(query) = query {
+                self.status_query_failed(query, StackStatusQueryFailure::UnsupportedRevision);
+            } else {
+                return event;
             }
         }
     }

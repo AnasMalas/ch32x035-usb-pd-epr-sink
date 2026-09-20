@@ -371,6 +371,36 @@ application scheduling alone was not the reusable fix. This is why a failure
 near a protocol deadline should be traced through policy, driver, ISR, and DMA
 before changing the deadline.
 
+## Case study: a PD 3.x query aliases a PD 2.0 command
+
+**Facts:** A commercial 65 W source completed an explicit 5 V contract, then
+GoodCRC'd the Sink's automatic `Get_Source_Info`. It answered with
+`Source_Capabilities`, not `Source_Info`, and initiated a Hard Reset about
+27 ms later. The sequence repeated. A diagnostic public-library build based on
+commit `534ab0b` changed only one behavior: it suppressed the automatic
+post-contract Source Info query. The same hardware then stopped cycling.
+
+**Cause confirmed by the discriminating test:** `Get_Source_Info` is a PD 3.x
+five-bit control-message code (`10111b`). PD 2.0 has a four-bit message-type
+field, where the same low bits (`0111b`) mean `Get_Source_Cap`. The older
+source therefore accepted a command that was valid under its interpretation,
+returned fresh capabilities, and waited for the required Request. The Sink was
+strictly awaiting `Source_Info`, discarded the capability update as an
+unexpected response, and sent no Request.
+
+**Reusable repair:** Select and lock the SOP revision from the first ordinary
+partner message, never from GoodCRC. Reject PD 3.x-only Source Info, general
+Status, and PPS Status queries locally on PD 2.0 at both the policy and
+transmit-validation boundaries. If legal Source Capabilities interrupt an
+optional query, cancel the query and route the capabilities through the normal
+Ready-state reevaluation path. Request/Accept/PS_RDY and EPR response matching
+remain strict.
+
+This was not a charger-brand exception and was not fixed by extending a timer.
+When a GoodCRC'd request receives a semantically surprising but valid reply,
+decode the raw command under the negotiated revision before blaming either
+endpoint.
+
 ## Issue-report checklist
 
 Before filing a hardware issue, include:

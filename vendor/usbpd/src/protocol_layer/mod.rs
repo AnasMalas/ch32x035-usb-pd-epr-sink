@@ -96,15 +96,16 @@ pub(crate) enum SinkTransmit {
 }
 
 trait OutgoingMessage: core::fmt::Debug {
-    fn validate(&self) -> Result<(), TxValidationError>;
+    fn validate(&self, revision: SpecificationRevision) -> Result<(), TxValidationError>;
 
     fn encode(&self, default_header: Header, counter: Counter, buffer: &mut [u8]) -> usize;
 }
 
 impl OutgoingMessage for Message {
-    fn validate(&self) -> Result<(), TxValidationError> {
+    fn validate(&self, revision: SpecificationRevision) -> Result<(), TxValidationError> {
         assert_ne!(self.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
-        validate_outgoing_message(self)
+        validate_outgoing_message(self)?;
+        validate_message_revision(self.header.message_type(), revision)
     }
 
     fn encode(&self, _default_header: Header, _counter: Counter, buffer: &mut [u8]) -> usize {
@@ -195,6 +196,37 @@ pub enum TxValidationError {
     /// state machine, which is not implemented yet.
     #[error("extended payload requires multi-chunk transmission")]
     ExtendedMessageChunkingRequired,
+    /// A PD 3.x-only optional query was requested after negotiating PD 2.0 or earlier.
+    #[error("message type `{message_type}` is unavailable in specification revision `{revision}`")]
+    MessageUnavailableInRevision {
+        /// Raw five-bit control-message type that was rejected locally.
+        message_type: u8,
+        /// Raw two-bit negotiated specification revision.
+        revision: u8,
+    },
+}
+
+fn validate_message_revision(
+    message_type: MessageType,
+    revision: SpecificationRevision,
+) -> Result<(), TxValidationError> {
+    if revision < SpecificationRevision::R3_X
+        && matches!(
+            message_type,
+            MessageType::Control(
+                ControlMessageType::GetSourceInfo | ControlMessageType::GetStatus | ControlMessageType::GetPpsStatus
+            )
+        )
+    {
+        return Err(TxValidationError::MessageUnavailableInRevision {
+            message_type: match message_type {
+                MessageType::Control(message_type) => message_type as u8,
+                _ => unreachable!(),
+            },
+            revision: revision.into(),
+        });
+    }
+    Ok(())
 }
 
 fn validate_power_source(power_source: &request::PowerSource) -> Result<(), TxValidationError> {
@@ -264,7 +296,10 @@ fn encode_extended_headers(
 }
 
 impl OutgoingMessage for SinkTransmit {
-    fn validate(&self) -> Result<(), TxValidationError> {
+    fn validate(&self, revision: SpecificationRevision) -> Result<(), TxValidationError> {
+        if let Self::Control(message_type) = self {
+            validate_message_revision(MessageType::Control(*message_type), revision)?;
+        }
         match self {
             Self::Request(power_source) => validate_power_source(power_source),
             Self::EprSinkCapabilities(capabilities) if capabilities.0.len() * 4 > 26 => {
@@ -379,6 +414,7 @@ fn emit_protocol_error(error: &ProtocolError) {
                 TxValidationError::UnchunkedExtendedMessagesNotSupported => 1,
                 TxValidationError::AvsVoltageAlignmentInvalid => 2,
                 TxValidationError::ExtendedMessageChunkingRequired => 3,
+                TxValidationError::MessageUnavailableInRevision { .. } => 4,
             };
             (NumericTraceProtocolError::TxValidation, detail)
         }
@@ -431,6 +467,8 @@ pub(crate) struct ProtocolLayer<DRIVER: Driver, TIMER: Timer> {
     driver: DRIVER,
     counters: Counters,
     default_header: Header,
+    local_revision: SpecificationRevision,
+    negotiated_revision: Option<SpecificationRevision>,
     rx_buffer: [u8; MAX_PD_FRAME_SIZE],
     sink_source_capabilities: Option<SourceCapabilities>,
     extended_rx_buffer: Vec<u8, MAX_EXTENDED_MESSAGE_SIZE>,
@@ -441,10 +479,14 @@ pub(crate) struct ProtocolLayer<DRIVER: Driver, TIMER: Timer> {
 impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Create a new protocol layer from a driver and default header.
     pub fn new(driver: DRIVER, default_header: Header) -> Self {
+        let local_revision =
+            default_header.spec_revision().expect("locally constructed header has a supported specification revision");
         Self {
             driver,
             counters: Default::default(),
             default_header,
+            local_revision,
+            negotiated_revision: None,
             rx_buffer: [0; MAX_PD_FRAME_SIZE],
             sink_source_capabilities: None,
             extended_rx_buffer: Vec::new(),
@@ -458,6 +500,35 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         self.counters = Default::default();
         self.sink_source_capabilities = None;
         self.reset_chunked_rx();
+    }
+
+    /// Reset protocol and revision state for a new physical Port Partner.
+    pub(crate) fn reset_connection(&mut self) {
+        self.reset();
+        self.negotiated_revision = None;
+        self.default_header.set_spec_revision(self.local_revision);
+    }
+
+    /// The revision selected for this SOP connection, or the local maximum
+    /// before the first non-GoodCRC partner message arrives.
+    pub(crate) fn specification_revision(&self) -> SpecificationRevision {
+        self.negotiated_revision.unwrap_or(self.local_revision)
+    }
+
+    /// Select the SOP revision once from real partner traffic. GoodCRC's
+    /// revision field carries no negotiation meaning and is deliberately
+    /// ignored. Later ordinary frames cannot silently change the selection.
+    pub(crate) fn observe_partner_revision(&mut self, header: Header) -> Result<(), ParseError> {
+        if matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC))
+            || self.negotiated_revision.is_some()
+        {
+            return Ok(());
+        }
+
+        let revision = core::cmp::min(self.local_revision, header.spec_revision()?);
+        self.negotiated_revision = Some(revision);
+        self.default_header.set_spec_revision(revision);
+        Ok(())
     }
 
     /// Access the physical transport for port-level recovery.
@@ -603,10 +674,10 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     async fn transmit_outgoing<M: OutgoingMessage>(&mut self, message: M) -> Result<(), ProtocolError> {
         // Validate outgoing message for spec compliance before entering the driver path.
         #[cfg(not(feature = "numeric-trace"))]
-        message.validate()?;
+        message.validate(self.specification_revision())?;
         #[cfg(feature = "numeric-trace")]
         {
-            if let Err(validation) = message.validate() {
+            if let Err(validation) = message.validate(self.specification_revision()) {
                 let error = ProtocolError::TxValidation(validation);
                 emit_protocol_error(&error);
                 return Err(error);
@@ -915,8 +986,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                     _ => unreachable!(),
                 };
 
-                // Update specification revision, based on the received frame.
-                self.default_header = self.default_header.with_spec_revision(header.spec_revision()?);
+                self.observe_partner_revision(header)?;
 
                 if chunked {
                     // This implementation never starts a multi-chunk TX, so a
@@ -1011,8 +1081,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             // Non-extended or unchunked extended messages.
             let message = Message::from_bytes(&self.rx_buffer[..length])?;
 
-            // Update specification revision, based on the received frame.
-            self.default_header = self.default_header.with_spec_revision(message.header.spec_revision()?);
+            self.observe_partner_revision(message.header)?;
 
             match message.header.message_type() {
                 MessageType::Control(ControlMessageType::Reserved) | MessageType::Data(DataMessageType::Reserved) => {
@@ -1155,7 +1224,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                 let chunked = ext_header.chunked();
                 let chunk_number = ext_header.chunk_number();
 
-                self.default_header = self.default_header.with_spec_revision(header.spec_revision()?);
+                self.observe_partner_revision(header)?;
 
                 if chunked {
                     if ext_header.request_chunk() {
@@ -1228,7 +1297,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
 
             let parsed = Self::parse_sink_frame(header, &self.rx_buffer[..length]);
             let (message, capabilities) = parsed?;
-            self.default_header = self.default_header.with_spec_revision(header.spec_revision()?);
+            self.observe_partner_revision(header)?;
 
             match message_type {
                 MessageType::Control(ControlMessageType::Reserved) | MessageType::Data(DataMessageType::Reserved) => {
@@ -2080,7 +2149,7 @@ mod tests {
 
         for operation in &operations {
             let general = general_sink_message(default_header, counter, operation);
-            assert_eq!(operation.validate(), super::validate_outgoing_message(&general));
+            assert_eq!(operation.validate(SpecificationRevision::R3_X), super::validate_outgoing_message(&general));
 
             let mut compact_bytes = [0; MAX_DATA_MESSAGE_SIZE];
             let compact_size = operation.encode(default_header, counter, &mut compact_bytes);
@@ -2254,11 +2323,64 @@ mod tests {
     }
 
     #[test]
+    fn sop_revision_ignores_good_crc_and_locks_to_first_partner_message() {
+        let mut protocol_layer = get_protocol_layer();
+        let counter = Counter::new_from_value(CounterType::MessageId, 0);
+        let r2_good_crc = Header::new_control(*protocol_layer.header(), counter, ControlMessageType::GoodCRC)
+            .with_spec_revision(SpecificationRevision::R2_0);
+        protocol_layer.observe_partner_revision(r2_good_crc).unwrap();
+        assert_eq!(protocol_layer.specification_revision(), SpecificationRevision::R3_X);
+
+        let r2_message = Header::new_control(*protocol_layer.header(), counter, ControlMessageType::GetSourceCap)
+            .with_spec_revision(SpecificationRevision::R2_0);
+        protocol_layer.observe_partner_revision(r2_message).unwrap();
+        assert_eq!(protocol_layer.specification_revision(), SpecificationRevision::R2_0);
+
+        let r3_message = r2_message.with_spec_revision(SpecificationRevision::R3_X);
+        protocol_layer.observe_partner_revision(r3_message).unwrap();
+        assert_eq!(protocol_layer.specification_revision(), SpecificationRevision::R2_0);
+
+        protocol_layer.reset();
+        assert_eq!(protocol_layer.specification_revision(), SpecificationRevision::R2_0);
+        protocol_layer.reset_connection();
+        assert_eq!(protocol_layer.specification_revision(), SpecificationRevision::R3_X);
+    }
+
+    #[tokio::test]
+    async fn pd3_optional_queries_cannot_reach_the_wire_on_pd2() {
+        for query in
+            [ControlMessageType::GetSourceInfo, ControlMessageType::GetStatus, ControlMessageType::GetPpsStatus]
+        {
+            let mut protocol_layer = get_protocol_layer();
+            let r2_message = Header::new_control(
+                *protocol_layer.header(),
+                Counter::new_from_value(CounterType::MessageId, 0),
+                ControlMessageType::GetSourceCap,
+            )
+            .with_spec_revision(SpecificationRevision::R2_0);
+            protocol_layer.observe_partner_revision(r2_message).unwrap();
+
+            assert!(matches!(
+                protocol_layer.transmit_sink(SinkTransmit::Control(query)).await,
+                Err(ProtocolError::TxValidation(TxValidationError::MessageUnavailableInRevision {
+                    message_type,
+                    revision,
+                })) if message_type == query as u8 && revision == SpecificationRevision::R2_0 as u8
+            ));
+            assert!(!protocol_layer.driver().has_transmitted_data());
+        }
+    }
+
+    #[test]
     fn every_local_tx_validation_error_has_a_distinct_protocol_class() {
         for expected in [
             TxValidationError::UnchunkedExtendedMessagesNotSupported,
             TxValidationError::AvsVoltageAlignmentInvalid,
             TxValidationError::ExtendedMessageChunkingRequired,
+            TxValidationError::MessageUnavailableInRevision {
+                message_type: ControlMessageType::GetSourceInfo as u8,
+                revision: SpecificationRevision::R2_0 as u8,
+            },
         ] {
             let ProtocolError::TxValidation(actual) = ProtocolError::from(expected) else {
                 panic!("local TX validation was classified as a wire error")
