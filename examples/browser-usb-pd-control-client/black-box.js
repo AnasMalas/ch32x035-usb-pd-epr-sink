@@ -43,11 +43,11 @@
     12: "hard-reset", 13: "EPR-keepalive",
   });
   const controlMessages = Object.freeze({
-    0: "GoodCRC", 1: "GotoMin", 2: "Accept", 3: "Reject", 4: "Ping", 5: "PS_RDY",
-    6: "Get_Source_Cap", 7: "Get_Sink_Cap", 8: "DR_Swap", 9: "PR_Swap", 10: "VCONN_Swap",
-    11: "Wait", 12: "Soft_Reset", 13: "Data_Reset", 14: "Data_Reset_Complete", 15: "Not_Supported",
-    16: "Get_Source_Cap_Extended", 17: "Get_Status", 18: "FR_Swap", 19: "Get_PPS_Status",
-    20: "Get_Country_Codes", 21: "Get_Sink_Cap_Extended", 22: "Get_Source_Info", 23: "Get_Revision",
+    1: "GoodCRC", 2: "GotoMin", 3: "Accept", 4: "Reject", 5: "Ping", 6: "PS_RDY",
+    7: "Get_Source_Cap", 8: "Get_Sink_Cap", 9: "DR_Swap", 10: "PR_Swap", 11: "VCONN_Swap",
+    12: "Wait", 13: "Soft_Reset", 14: "Data_Reset", 15: "Data_Reset_Complete", 16: "Not_Supported",
+    17: "Get_Source_Cap_Extended", 18: "Get_Status", 19: "FR_Swap", 20: "Get_PPS_Status",
+    21: "Get_Country_Codes", 22: "Get_Sink_Cap_Extended", 23: "Get_Source_Info", 24: "Get_Revision",
   });
   const dataMessages = Object.freeze({
     1: "Source_Capabilities", 2: "Request", 3: "BIST", 4: "Sink_Capabilities",

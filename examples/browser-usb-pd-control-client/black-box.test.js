@@ -27,4 +27,6 @@ assert.deepEqual(blackBox.decodeEvent(event, 0), {
   text: "hard-reset; phase=transmit-failure; reason=EPR-keepalive-failed",
 });
 
+assert.equal(blackBox.describeHeader(0x0b61), "GoodCRC, id=5, objects=0, header=0x0b61");
+
 console.log("Black-box browser decoder tests passed");
