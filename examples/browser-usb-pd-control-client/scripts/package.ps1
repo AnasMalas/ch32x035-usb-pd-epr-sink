@@ -14,6 +14,7 @@ if ([string]::IsNullOrWhiteSpace($Output)) {
 $index = [System.IO.File]::ReadAllText((Join-Path $source 'index.html'))
 $styles = [System.IO.File]::ReadAllText((Join-Path $source 'styles.css'))
 $protocol = [System.IO.File]::ReadAllText((Join-Path $source 'protocol.js'))
+$blackBox = [System.IO.File]::ReadAllText((Join-Path $source 'black-box.js'))
 $application = [System.IO.File]::ReadAllText((Join-Path $source 'app.js'))
 
 $externalPolicy = "default-src 'self'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'none'; object-src 'none'; base-uri 'none'; form-action 'none'"
@@ -33,14 +34,19 @@ $index = $index.Replace(
     ''
 )
 $index = $index.Replace(
+    '    <script src="black-box.js" defer></script>',
+    ''
+)
+$index = $index.Replace(
     '    <script src="app.js" defer></script>',
     ''
 )
-$inlineScripts = "    <script>`n$protocol`n    </script>`n    <script>`n$application`n    </script>`n"
+$inlineScripts = "    <script>`n$protocol`n    </script>`n    <script>`n$blackBox`n    </script>`n    <script>`n$application`n    </script>`n"
 $index = $index.Replace('  </body>', "$inlineScripts  </body>")
 
 if ($index.Contains('href="styles.css"') -or
     $index.Contains('src="protocol.js"') -or
+    $index.Contains('src="black-box.js"') -or
     $index.Contains('src="app.js"')) {
     throw 'The GUI package still contains an external application asset.'
 }

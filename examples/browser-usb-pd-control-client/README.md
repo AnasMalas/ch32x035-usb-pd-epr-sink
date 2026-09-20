@@ -53,7 +53,13 @@ The application exposes the stable firmware command surface:
 - complete capability and dry-run plan queries;
 - Source_Info, contract status, explicit EPR entry, EPR capability refresh,
   and EPR exit;
-- manual or one-second PPS telemetry with at most one query in flight;
+- manual or one-second PPS telemetry with at most one query in flight, plus a
+  thin voltage/current history chart that marks unavailable source values and
+  never derives power;
+- one-control inspection of persistent high-level or deep numeric black-box
+  firmware profiles, detected from the recorder summary;
+- optional automatic reconnect to the last previously authorized Web Serial
+  or WebUSB device, without reopening a browser permission picker;
 - independently controlled decoded-stream condensation and exact raw USB
   byte capture, a collapsed command/line-format reference, and
   copyable/downloadable session logs.
@@ -62,8 +68,10 @@ The diagnostics-first layout keeps source capabilities and request controls
 beside the live contract, source health, and lifecycle controls at wide
 desktop widths. Below 1260 px those workspaces stack, and below 760 px the
 request form, contract summary, telemetry cards, direct-PDO form, and command
-reference reflow for narrow screens. The capability table remains horizontally
-scrollable rather than dropping raw words, validity, or per-PDO actions.
+reference reflow for narrow screens. The capability table keeps raw words,
+validity, and per-PDO actions while fitting the normal desktop panel;
+horizontal scrolling begins only when the viewport is too narrow for the
+compact columns.
 Keyboard focus is visible on every interactive control, and the session
 terminal stays available without hiding the primary controls.
 
@@ -91,9 +99,16 @@ appear when it is switched On. The two switches are independent. Selecting
 rendered rows or using Copy produces one timestamp, direction marker, and
 message per clipboard line.
 
-The Start telemetry button controls optional PPS_Status polling only. PPS
-contract maintenance is required to keep a PPS contract alive and cannot be
-disabled by the GUI; its latest confirmation time is shown separately.
+The Start PPS telemetry button controls optional PPS_Status polling only and
+states why it is unavailable before a PPS contract is active. PPS contract
+maintenance is required to keep a PPS contract alive and cannot be disabled by
+the GUI; its latest confirmation time is shown separately.
+
+Automatic reconnect can reopen only a device the browser has already
+authorized. The first connection still requires a user gesture and the normal
+Web Serial or WebUSB picker. Turning the option off or deliberately pressing
+Disconnect clears the remembered target; an unexpected unplug keeps it and
+tries again when the device returns.
 
 Output On and Output Off control only the firmware application's external load
 latch. They do not request another USB-PD voltage, change the desired contract,

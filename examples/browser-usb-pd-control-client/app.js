@@ -2,6 +2,7 @@
 
 const $ = (selector) => document.querySelector(selector);
 const controlProtocol = globalThis.PdControlProtocol;
+const blackBoxProtocol = globalThis.PdBlackBox;
 
 const ui = {
   connectButton: $("#connect-button"),
@@ -10,6 +11,7 @@ const ui = {
   browserNotice: $("#browser-notice"),
   deviceDescription: $("#device-description"),
   deviceId: $("#device-id"),
+  autoReconnect: $("#auto-reconnect"),
   safeFiveButton: $("#safe-five-button"),
   portState: $("#port-state"),
   portDetail: $("#port-detail"),
@@ -30,7 +32,12 @@ const ui = {
   sourceLimits: $("#source-limits"),
   telemetryNote: $("#telemetry-note"),
   telemetryToggle: $("#telemetry-toggle"),
+  telemetryAvailability: $("#telemetry-availability"),
   ppsMaintenanceState: $("#pps-maintenance-state"),
+  telemetryChartShell: $("#telemetry-chart-shell"),
+  telemetryChart: $("#telemetry-chart"),
+  voltageChartLabel: $("#voltage-chart-label"),
+  currentChartLabel: $("#current-chart-label"),
   voltageForm: $("#voltage-form"),
   voltageInput: $("#voltage-input"),
   currentInput: $("#current-input"),
@@ -42,6 +49,10 @@ const ui = {
   eprCapsButton: $("#epr-caps-button"),
   exitEprButton: $("#exit-epr-button"),
   plansButton: $("#plans-button"),
+  inspectBlackBox: $("#inspect-black-box"),
+  blackBoxPanel: $("#black-box-panel"),
+  blackBoxSummary: $("#black-box-summary"),
+  blackBoxEvents: $("#black-box-events"),
   pdoForm: $("#pdo-form"),
   pdoPosition: $("#pdo-position"),
   pdoDemand: $("#pdo-demand"),
@@ -102,12 +113,22 @@ const state = {
   deviceMaxVoltageMillivolts: null,
   richTelemetrySupported: null,
   maxVoltageMillivolts: 5000,
+  telemetrySamples: [],
+  telemetryAvailable: { voltage: false, current: false },
+  blackBoxPending: null,
+  blackBoxBusy: false,
+  reconnectTimer: null,
+  reconnectAttempt: 0,
+  reconnectInFlight: false,
+  manualDisconnect: false,
 };
 
 const encoder = new TextEncoder();
 const MAX_LOG_LINES = 1500;
 const MAX_RAW_LOG_LINES = 1000;
 const BOARD_SETTING_PREFIX = "usb-pd-control.board.";
+const AUTO_RECONNECT_ENABLED_KEY = "usb-pd-control.auto-reconnect.enabled";
+const AUTO_RECONNECT_TARGET_KEY = "usb-pd-control.auto-reconnect.target";
 const ALLOWED_VOLTAGE_CEILINGS = new Set(controlProtocol.VOLTAGE_CEILINGS);
 const DEVELOPMENT_USB_FILTERS = Object.freeze([
   Object.freeze({ vendorId: 0x1a86, productId: 0xfe0c }),
@@ -200,9 +221,117 @@ function clearSourceTelemetry() {
   ui.sourceEvents.textContent = "None reported";
   ui.sourceLimits.textContent = "No active limits reported";
   ui.ppsMaintenanceState.textContent = "PPS contract maintenance: waiting for a PPS contract";
+  state.telemetrySamples.length = 0;
+  state.telemetryAvailable = { voltage: false, current: false };
+  drawTelemetryChart();
   ui.telemetryNote.textContent = state.richTelemetrySupported === false
     ? "This firmware keeps control, contract, and safety events but omits capability and live source telemetry to save flash."
     : "A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.";
+}
+
+function latestTelemetryValue(key) {
+  for (let index = state.telemetrySamples.length - 1; index >= 0; index -= 1) {
+    const value = state.telemetrySamples[index][key];
+    if (Number.isFinite(value)) return value;
+  }
+  return null;
+}
+
+function drawTelemetryChart() {
+  const canvas = ui.telemetryChart;
+  const context = canvas.getContext("2d");
+  if (!context) return;
+  const ratio = Math.max(1, window.devicePixelRatio || 1);
+  const width = Math.max(260, Math.floor(canvas.clientWidth || canvas.parentElement?.clientWidth || 520));
+  const height = 58;
+  if (canvas.width !== Math.floor(width * ratio) || canvas.height !== Math.floor(height * ratio)) {
+    canvas.width = Math.floor(width * ratio);
+    canvas.height = Math.floor(height * ratio);
+  }
+  context.setTransform(ratio, 0, 0, ratio, 0, 0);
+  context.clearRect(0, 0, width, height);
+  context.strokeStyle = "#253038";
+  context.lineWidth = 1;
+  for (const y of [14.5, 29.5, 44.5]) {
+    context.beginPath();
+    context.moveTo(0, y);
+    context.lineTo(width, y);
+    context.stroke();
+  }
+
+  function drawSeries(key, color, available) {
+    const values = state.telemetrySamples.map((sample) => sample[key]);
+    const finite = values.filter(Number.isFinite);
+    if (finite.length === 0) return;
+    let minimum = Math.min(...finite);
+    let maximum = Math.max(...finite);
+    if (minimum === maximum) {
+      const padding = Math.max(1, Math.abs(minimum) * 0.02);
+      minimum -= padding;
+      maximum += padding;
+    }
+    context.strokeStyle = available ? color : "#556168";
+    context.lineWidth = 1.4;
+    context.beginPath();
+    let drawing = false;
+    values.forEach((value, index) => {
+      if (!Number.isFinite(value)) {
+        drawing = false;
+        return;
+      }
+      const x = values.length <= 1 ? width - 1 : (index / (values.length - 1)) * (width - 1);
+      const y = 52 - ((value - minimum) / (maximum - minimum)) * 46;
+      if (!drawing) context.moveTo(x, y);
+      else context.lineTo(x, y);
+      drawing = true;
+    });
+    context.stroke();
+  }
+
+  drawSeries("voltage", "#5fc9e8", state.telemetryAvailable.voltage);
+  drawSeries("current", "#52d391", state.telemetryAvailable.current);
+
+  const voltage = latestTelemetryValue("voltage");
+  const current = latestTelemetryValue("current");
+  ui.voltageChartLabel.textContent = state.telemetryAvailable.voltage && voltage !== null
+    ? `Voltage ${displayMillivolts(voltage)}`
+    : "Voltage unavailable";
+  ui.currentChartLabel.textContent = state.telemetryAvailable.current && current !== null
+    ? `Current ${displayMilliamps(current)}`
+    : "Current unavailable";
+  ui.voltageChartLabel.classList.toggle("is-unavailable", !state.telemetryAvailable.voltage);
+  ui.currentChartLabel.classList.toggle("is-unavailable", !state.telemetryAvailable.current);
+  ui.telemetryChartShell.classList.toggle(
+    "is-unavailable",
+    !state.telemetryAvailable.voltage && !state.telemetryAvailable.current,
+  );
+  const availability = [
+    state.telemetryAvailable.voltage ? `voltage ${displayMillivolts(voltage)}` : "voltage unavailable",
+    state.telemetryAvailable.current ? `current ${displayMilliamps(current)}` : "current unavailable",
+  ].join("; ");
+  canvas.setAttribute("aria-label", `Source-reported PPS history: ${availability}.`);
+}
+
+function recordTelemetrySample(voltage, current) {
+  state.telemetryAvailable = {
+    voltage: Number.isFinite(voltage),
+    current: Number.isFinite(current),
+  };
+  state.telemetrySamples.push({ time: Date.now(), voltage, current });
+  if (state.telemetrySamples.length > 60) state.telemetrySamples.shift();
+  drawTelemetryChart();
+}
+
+function refreshTelemetryAvailability() {
+  let message;
+  if (!state.connected) message = "Connect a device to enable PPS telemetry.";
+  else if (state.transport === null) message = "Waiting for the device control protocol.";
+  else if (state.richTelemetrySupported === false) message = "This firmware profile omits rich source telemetry.";
+  else if (state.contractSupplyType !== "PPS") message = "Available after a PPS contract is active.";
+  else if (state.ppsRefreshTimer !== null) message = "Polling source-reported PPS voltage and current once per second.";
+  else message = "Ready to poll source-reported PPS voltage and current once per second.";
+  ui.telemetryAvailability.textContent = message;
+  ui.telemetryToggle.title = message;
 }
 
 function transportLabel() {
@@ -298,8 +427,9 @@ function configurePpsPolling() {
     && state.transport !== null
     && state.richTelemetrySupported !== false
     && state.contractSupplyType === "PPS";
-  ui.telemetryToggle.textContent = running ? "Stop telemetry" : "Start telemetry";
+  ui.telemetryToggle.textContent = running ? "Stop PPS telemetry" : "Start PPS telemetry";
   ui.telemetryToggle.setAttribute("aria-pressed", String(running));
+  refreshTelemetryAvailability();
   if (!running) return;
   void pollPpsStatus();
   state.ppsRefreshTimer = setInterval(() => void pollPpsStatus(), 1000);
@@ -332,6 +462,13 @@ function updateActionAvailability() {
       : "";
   ui.livePps.disabled = !ready || !richTelemetry || state.contractSupplyType !== "PPS";
   ui.telemetryToggle.disabled = !ready || !richTelemetry || state.contractSupplyType !== "PPS";
+  ui.inspectBlackBox.disabled = !ready || state.transport !== "usb-control" || state.blackBoxBusy;
+  ui.inspectBlackBox.title = !ready
+    ? "Connect a device first."
+    : state.transport !== "usb-control"
+      ? "Persistent black-box inspection requires a compact USB-control firmware profile."
+      : "Reads the high-level or deep recorder selected by the attached firmware.";
+  refreshTelemetryAvailability();
 }
 
 function setConnected(connected) {
@@ -341,6 +478,7 @@ function setConnected(connected) {
   ui.connectButton.textContent = connected ? "Disconnect" : "Connect device";
 
   if (!connected) {
+    cancelBlackBoxRead();
     state.connectionApi = null;
     state.usbClaimedInterfaces.length = 0;
     state.usbInEndpoint = null;
@@ -392,6 +530,45 @@ function clearDeviceState() {
 
 function formatUsbId(value) {
   return value === undefined ? "----" : value.toString(16).padStart(4, "0").toUpperCase();
+}
+
+function readAutoReconnectPreference() {
+  try {
+    return localStorage.getItem(AUTO_RECONNECT_ENABLED_KEY) !== "false";
+  } catch (_) {
+    return true;
+  }
+}
+
+function savedAutoReconnectTarget() {
+  try {
+    const target = JSON.parse(localStorage.getItem(AUTO_RECONNECT_TARGET_KEY) || "null");
+    return target && typeof target.api === "string" ? target : null;
+  } catch (_) {
+    return null;
+  }
+}
+
+function rememberAutoReconnectTarget(api, vendorId, productId) {
+  if (!ui.autoReconnect.checked) return;
+  try {
+    localStorage.setItem(AUTO_RECONNECT_TARGET_KEY, JSON.stringify({ api, vendorId, productId }));
+  } catch (_) {
+    // Browser storage can be unavailable for local files; event-based reconnect still works.
+  }
+}
+
+function forgetAutoReconnectTarget() {
+  try {
+    localStorage.removeItem(AUTO_RECONNECT_TARGET_KEY);
+  } catch (_) {
+    // Nothing else to clear when browser storage is unavailable.
+  }
+}
+
+function cancelReconnectTimer() {
+  if (state.reconnectTimer !== null) clearTimeout(state.reconnectTimer);
+  state.reconnectTimer = null;
 }
 
 function timeStamp(date = new Date()) {
@@ -607,18 +784,150 @@ function selectTransport(transport) {
   setTimeout(() => void initializeTransport(), 0);
 }
 
+function cancelBlackBoxRead(message = "Black-box read cancelled.") {
+  const pending = state.blackBoxPending;
+  if (!pending) return;
+  clearTimeout(pending.timer);
+  state.blackBoxPending = null;
+  pending.reject(new Error(message));
+}
+
+function blackBoxPrefixLength(bytes) {
+  const magic = [0x50, 0x44, 0x42, 0x42];
+  for (let length = Math.min(3, bytes.length); length > 0; length -= 1) {
+    const start = bytes.length - length;
+    if (magic.slice(0, length).every((value, index) => bytes[start + index] === value)) return length;
+  }
+  return 0;
+}
+
+function consumeBlackBoxData(chunk) {
+  const pending = state.blackBoxPending;
+  if (!pending) return chunk;
+  const bytes = [...pending.buffer, ...chunk];
+  pending.buffer.length = 0;
+  let start = -1;
+  for (let index = 0; index + 3 < bytes.length; index += 1) {
+    if (bytes[index] === 0x50 && bytes[index + 1] === 0x44 && bytes[index + 2] === 0x42 && bytes[index + 3] === 0x42) {
+      start = index;
+      break;
+    }
+  }
+  if (start < 0) {
+    const retained = blackBoxPrefixLength(bytes);
+    if (retained) pending.buffer.push(...bytes.slice(-retained));
+    return Uint8Array.from(bytes.slice(0, bytes.length - retained));
+  }
+  if (bytes.length - start < 6) {
+    pending.buffer.push(...bytes.slice(start));
+    return Uint8Array.from(bytes.slice(0, start));
+  }
+  const length = bytes[start + 5];
+  if (length > 16) {
+    cancelBlackBoxRead(`Invalid black-box response length ${length}.`);
+    return Uint8Array.from(bytes);
+  }
+  const frameLength = 6 + length;
+  if (bytes.length - start < frameLength) {
+    pending.buffer.push(...bytes.slice(start));
+    return Uint8Array.from(bytes.slice(0, start));
+  }
+  const response = blackBoxProtocol.parseResponse(Uint8Array.from(bytes.slice(start, start + frameLength)));
+  clearTimeout(pending.timer);
+  state.blackBoxPending = null;
+  pending.resolve(response);
+  return Uint8Array.from([...bytes.slice(0, start), ...bytes.slice(start + frameLength)]);
+}
+
+function requestBlackBoxPage(page) {
+  if (state.blackBoxPending) return Promise.reject(new Error("A black-box page read is already in flight."));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      if (state.blackBoxPending?.page !== page) return;
+      state.blackBoxPending = null;
+      reject(new Error(`Timed out reading black-box page ${page}. Flash a black-box firmware profile first.`));
+    }, 2000);
+    state.blackBoxPending = { page, buffer: [], resolve, reject, timer };
+    writeTransport(Uint8Array.of(0x42, 0x42, page)).catch((error) => {
+      if (state.blackBoxPending?.page !== page) return;
+      clearTimeout(timer);
+      state.blackBoxPending = null;
+      reject(error);
+    });
+  });
+}
+
+function renderBlackBox(summary, events) {
+  ui.blackBoxPanel.classList.remove("hidden");
+  const flags = [
+    summary.restored ? "restored" : null,
+    summary.frozen ? "frozen" : null,
+    summary.hardReset ? "hard reset captured" : null,
+    summary.overwritten ? "old records overwritten" : null,
+    summary.writeError ? "storage write error" : null,
+  ].filter(Boolean);
+  ui.blackBoxSummary.textContent = `${summary.profile} profile · ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"} · generation ${summary.generation}${flags.length ? ` · ${flags.join(" · ")}` : ""}`;
+  ui.blackBoxEvents.replaceChildren(...events.map((event) => {
+    const item = document.createElement("li");
+    const time = document.createElement("time");
+    time.textContent = `${event.uptime} ms`;
+    const text = document.createElement("span");
+    text.textContent = event.text;
+    item.append(time, text);
+    return item;
+  }));
+  if (events.length === 0) {
+    const item = document.createElement("li");
+    item.className = "empty-black-box";
+    item.textContent = "The recorder is valid but contains no events yet.";
+    ui.blackBoxEvents.append(item);
+  }
+}
+
+async function inspectBlackBox() {
+  if (state.transport !== "usb-control") throw new Error("Black-box inspection requires compact USB control.");
+  state.blackBoxBusy = true;
+  updateActionAvailability();
+  ui.blackBoxPanel.classList.remove("hidden");
+  ui.blackBoxSummary.textContent = "Reading recorder…";
+  ui.blackBoxEvents.replaceChildren();
+  try {
+    const summaryResponse = await requestBlackBoxPage(0);
+    if (summaryResponse.kind !== 0xb0) throw new Error("The device returned an invalid black-box summary kind.");
+    const summary = blackBoxProtocol.decodeSummary(summaryResponse.payload);
+    const events = [];
+    for (let index = 0; index < summary.eventCount; index += 1) {
+      const response = await requestBlackBoxPage(index + 1);
+      if (response.kind !== 0xb1) throw new Error(`The device returned an invalid event page ${index + 1}.`);
+      events.push(blackBoxProtocol.decodeEvent(response.payload, index));
+    }
+    renderBlackBox(summary, events);
+    addLog(`Black box read: ${summary.profile} profile, ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"}.`, "system");
+    setFeedback(`Read the ${summary.profile} black box.`);
+  } catch (error) {
+    ui.blackBoxSummary.textContent = error.message;
+    addLog(`Black-box inspection failed: ${error.message}`, "system", "error");
+    setFeedback(error.message, true);
+  } finally {
+    state.blackBoxBusy = false;
+    updateActionAvailability();
+  }
+}
+
 function appendSerialData(chunk) {
   addRawTransportLog(chunk, "incoming");
+  const applicationData = consumeBlackBoxData(chunk);
+  if (applicationData.length === 0) return;
   if (state.transport === "usb-control") {
-    appendControlData(chunk);
+    appendControlData(applicationData);
     return;
   }
   if (state.transport === "dev-text-console") {
-    appendSerialText(chunk);
+    appendSerialText(applicationData);
     return;
   }
 
-  state.detectionBuffer.push(...chunk);
+  state.detectionBuffer.push(...applicationData);
   const bytes = state.detectionBuffer;
   let controlStart = -1;
   for (let index = 0; index + 2 < bytes.length; index += 1) {
@@ -920,13 +1229,16 @@ function parseDeviceLine(line) {
   );
   if (ppsStatus) {
     state.ppsQueryPending = false;
-    const voltage = ppsStatus[1] === "unsupported"
+    const voltageMillivolts = ppsStatus[1] === "unsupported" ? null : Number.parseInt(ppsStatus[1], 10);
+    const currentMilliamps = ppsStatus[2] === "unsupported" ? null : Number.parseInt(ppsStatus[2], 10);
+    const voltage = voltageMillivolts === null
       ? "Voltage unavailable"
-      : displayMillivolts(Number.parseInt(ppsStatus[1], 10));
-    const current = ppsStatus[2] === "unsupported"
+      : displayMillivolts(voltageMillivolts);
+    const current = currentMilliamps === null
       ? "current unavailable"
-      : displayMilliamps(Number.parseInt(ppsStatus[2], 10));
+      : displayMilliamps(currentMilliamps);
     ui.ppsMeasurement.textContent = `${voltage} · ${current}`;
+    recordTelemetrySample(voltageMillivolts, currentMilliamps);
     ui.sourceTemperature.textContent = `${displayStatusToken(ppsStatus[4])} · PPS`;
     setPpsMode(ppsStatus[3], `Source PPS_Status bit · temperature ${displayStatusToken(ppsStatus[4])}`);
     ui.telemetryNote.textContent = "These values and CV/CL mode are reported by the source. Some sources omit fields or report an unreliable mode bit; use a meter when the distinction matters.";
@@ -974,6 +1286,7 @@ function parseDeviceLine(line) {
       state.ppsQueryPending = false;
       if (queryFailure[2] === "unsupported") {
         ui.livePps.checked = false;
+        recordTelemetrySample(null, null);
         configurePpsPolling();
       }
     }
@@ -1066,6 +1379,10 @@ async function sendCommand(command, { echo = true } = {}) {
 }
 
 function initializeConnectedTransport(api, id) {
+  cancelReconnectTimer();
+  state.reconnectAttempt = 0;
+  state.reconnectInFlight = false;
+  state.manualDisconnect = false;
   state.connectionApi = api;
   state.keepReading = true;
   state.transport = null;
@@ -1099,6 +1416,7 @@ function markTransportLost(message) {
   state.readTask = null;
   setConnected(false);
   clearDeviceState();
+  scheduleAutoReconnect();
 }
 
 async function readWebSerial() {
@@ -1158,19 +1476,20 @@ function findUsbInterface(configuration, classCode, subclassCode = null) {
   return null;
 }
 
-async function connectWebSerial() {
-  const port = await navigator.serial.requestPort();
+async function connectWebSerial(authorizedPort = null) {
+  const port = authorizedPort ?? await navigator.serial.requestPort();
   state.port = port;
   await port.open({ baudRate: 115200, bufferSize: 512 });
   state.writer = port.writable.getWriter();
   const info = port.getInfo();
   const id = `VID ${formatUsbId(info.usbVendorId)} · PID ${formatUsbId(info.usbProductId)}`;
   initializeConnectedTransport("web-serial", id);
+  rememberAutoReconnectTarget("web-serial", info.usbVendorId, info.usbProductId);
   state.readTask = readWebSerial();
 }
 
-async function connectWebUsb() {
-  const device = await navigator.usb.requestDevice({ filters: DEVELOPMENT_USB_FILTERS });
+async function connectWebUsb(authorizedDevice = null) {
+  const device = authorizedDevice ?? await navigator.usb.requestDevice({ filters: DEVELOPMENT_USB_FILTERS });
   state.port = device;
   await device.open();
   if (!device.configuration) await device.selectConfiguration(1);
@@ -1229,7 +1548,57 @@ async function connectWebUsb() {
   state.usbPacketSize = input.packetSize || 64;
   const id = `VID ${formatUsbId(device.vendorId)} · PID ${formatUsbId(device.productId)}`;
   initializeConnectedTransport("webusb-cdc", id);
+  rememberAutoReconnectTarget("webusb-cdc", device.vendorId, device.productId);
   state.readTask = readWebUsb();
+}
+
+function targetMatches(target, vendorId, productId) {
+  return (target.vendorId === undefined || target.vendorId === vendorId)
+    && (target.productId === undefined || target.productId === productId);
+}
+
+function scheduleAutoReconnect(delay = Math.min(8000, 500 * (2 ** state.reconnectAttempt))) {
+  if (!ui.autoReconnect.checked || state.manualDisconnect || state.connected || state.reconnectInFlight) return;
+  cancelReconnectTimer();
+  state.reconnectTimer = setTimeout(() => void tryAutoReconnect(), delay);
+}
+
+async function tryAutoReconnect() {
+  if (!ui.autoReconnect.checked || state.manualDisconnect || state.connected || state.reconnectInFlight) return;
+  const target = savedAutoReconnectTarget();
+  if (!target) return;
+  cancelReconnectTimer();
+  state.reconnectInFlight = true;
+  ui.connectionLabel.textContent = "Reconnecting…";
+  try {
+    if (target.api === "web-serial" && "serial" in navigator) {
+      const ports = await navigator.serial.getPorts();
+      const port = ports.find((candidate) => {
+        const info = candidate.getInfo();
+        return targetMatches(target, info.usbVendorId, info.usbProductId);
+      });
+      if (!port) throw new Error("The authorized serial device is not present.");
+      await connectWebSerial(port);
+    } else if (target.api === "webusb-cdc" && "usb" in navigator) {
+      const devices = await navigator.usb.getDevices();
+      const device = devices.find((candidate) => targetMatches(target, candidate.vendorId, candidate.productId));
+      if (!device) throw new Error("The authorized USB device is not present.");
+      await connectWebUsb(device);
+    } else {
+      throw new Error("The saved connection transport is unavailable in this browser.");
+    }
+    addLog("Automatically reconnected to the previously authorized device.", "system");
+    setFeedback("Device reconnected automatically.");
+  } catch (error) {
+    await closeTransport();
+    setConnected(false);
+    clearDeviceState();
+    state.reconnectAttempt += 1;
+    ui.connectionLabel.textContent = "Waiting for device";
+  } finally {
+    state.reconnectInFlight = false;
+  }
+  if (!state.connected && state.reconnectAttempt < 5) scheduleAutoReconnect();
 }
 
 async function closeTransport() {
@@ -1272,6 +1641,8 @@ async function connectPort() {
     return;
   }
 
+  state.manualDisconnect = false;
+  cancelReconnectTimer();
   try {
     if (IS_ANDROID) {
       if (!("usb" in navigator)) {
@@ -1302,6 +1673,9 @@ async function connectPort() {
 }
 
 async function disconnectPort() {
+  state.manualDisconnect = true;
+  cancelReconnectTimer();
+  forgetAutoReconnectTarget();
   await closeTransport();
   addLog("Disconnected", "system");
   setConnected(false);
@@ -1324,6 +1698,22 @@ function updatePdoFields() {
 }
 
 ui.connectButton.addEventListener("click", connectPort);
+ui.autoReconnect.addEventListener("change", () => {
+  try {
+    localStorage.setItem(AUTO_RECONNECT_ENABLED_KEY, String(ui.autoReconnect.checked));
+  } catch (_) {
+    // Keep the preference for this page lifetime when storage is unavailable.
+  }
+  if (!ui.autoReconnect.checked) {
+    cancelReconnectTimer();
+    forgetAutoReconnectTarget();
+    setFeedback("Automatic reconnect disabled.");
+  } else {
+    state.manualDisconnect = false;
+    setFeedback("Automatic reconnect enabled for previously authorized devices.");
+    if (!state.connected) void tryAutoReconnect();
+  }
+});
 ui.livePps.addEventListener("change", configurePpsPolling);
 ui.telemetryToggle.addEventListener("click", () => {
   ui.livePps.checked = state.ppsRefreshTimer === null;
@@ -1344,6 +1734,7 @@ ui.rawLog.addEventListener("click", () => {
   ui.rawLog.textContent = `Raw stream: ${state.rawStream ? "On" : "Off"}`;
   renderConsole();
 });
+ui.inspectBlackBox.addEventListener("click", () => void inspectBlackBox());
 
 ui.safeFiveButton.addEventListener("click", async () => {
   try {
@@ -1470,6 +1861,7 @@ ui.terminal.addEventListener("copy", (event) => {
   event.clipboardData.setData("text/plain", lines.join("\n"));
   event.preventDefault();
 });
+window.addEventListener("resize", drawTelemetryChart);
 
 const androidRequiresHttps = IS_ANDROID && location.protocol !== "https:";
 if (androidRequiresHttps) {
@@ -1487,6 +1879,9 @@ if (androidRequiresHttps) {
 }
 
 if ("serial" in navigator) {
+  navigator.serial.addEventListener("connect", () => {
+    if (!state.connected) void tryAutoReconnect();
+  });
   navigator.serial.addEventListener("disconnect", (event) => {
     if (
       state.connectionApi === "web-serial"
@@ -1500,6 +1895,9 @@ if ("serial" in navigator) {
 }
 
 if ("usb" in navigator) {
+  navigator.usb.addEventListener("connect", () => {
+    if (!state.connected) void tryAutoReconnect();
+  });
   navigator.usb.addEventListener("disconnect", (event) => {
     if (
       state.connectionApi === "webusb-cdc"
@@ -1512,13 +1910,16 @@ if ("usb" in navigator) {
   });
 }
 
+ui.autoReconnect.checked = readAutoReconnectPreference();
 setConnected(false);
 clearDeviceState();
 updatePdoFields();
 updateActionAvailability();
+drawTelemetryChart();
 addLog(
   IS_ANDROID
     ? "USB-PD Sink Control is ready. Android transport is WebUSB CDC."
     : "USB-PD Sink Control is ready. Desktop standalone prefers Web Serial.",
   "system",
 );
+if (ui.autoReconnect.checked && savedAutoReconnectTarget()) scheduleAutoReconnect(250);

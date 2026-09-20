@@ -9,6 +9,7 @@
     <title>CH32X035 USB-PD Console</title>
     <link rel="stylesheet" href="styles.css">
     <script src="protocol.js" defer></script>
+    <script src="black-box.js" defer></script>
     <script src="app.js" defer></script>
   </head>
   <body>
@@ -23,6 +24,7 @@
       </div>
       <p id="device-description" class="status-message">Connect USB-control or development text-console firmware to begin.</p>
       <span id="device-id" class="device-chip">No device selected</span>
+      <label class="auto-reconnect"><input id="auto-reconnect" type="checkbox" checked> Auto reconnect</label>
       <button id="connect-button" class="button button-primary button-compact" type="button">Connect device</button>
     </header>
 
@@ -129,12 +131,13 @@
                 <h3>PPS regulator and status</h3>
               </div>
               <div class="telemetry-actions">
-                <button id="telemetry-toggle" class="button button-toggle" type="button" aria-pressed="false" disabled>Start telemetry</button>
+                <button id="telemetry-toggle" class="button button-toggle" type="button" aria-pressed="false" aria-describedby="telemetry-availability" disabled>Start PPS telemetry</button>
                 <label class="live-toggle"><input id="live-pps" type="checkbox" disabled> 1 s refresh</label>
                 <button class="button button-quiet command-button" data-command="pps-status" type="button" disabled>PPS status</button>
                 <button class="button button-quiet command-button" data-command="source-status" type="button" disabled>Source status</button>
               </div>
             </div>
+            <p id="telemetry-availability" class="control-availability">Connect a device to enable PPS telemetry.</p>
             <p id="pps-maintenance-state" class="telemetry-activity">PPS contract maintenance: waiting for a PPS contract</p>
 
             <div class="telemetry-grid">
@@ -145,6 +148,13 @@
               <article class="telemetry-card"><span>Source measurement</span><strong id="pps-measurement">—</strong><small>Source-reported, not a precision power meter</small></article>
               <article class="telemetry-card"><span>Temperature / input</span><strong id="source-temperature">—</strong><small id="source-input">No general status received</small></article>
               <article class="telemetry-card"><span>Events / limits</span><strong id="source-events">None reported</strong><small id="source-limits">No active limits reported</small></article>
+            </div>
+            <div id="telemetry-chart-shell" class="telemetry-chart-shell is-unavailable">
+              <div class="telemetry-chart-legend" aria-hidden="true">
+                <span id="voltage-chart-label" class="voltage-series is-unavailable">Voltage unavailable</span>
+                <span id="current-chart-label" class="current-series is-unavailable">Current unavailable</span>
+              </div>
+              <canvas id="telemetry-chart" height="58" role="img" aria-label="Source-reported PPS voltage and current history. Both values are unavailable."></canvas>
             </div>
             <p id="telemetry-note" class="telemetry-note">A compliant PPS source sends an Alert when it changes between CV and CL; the firmware then reads general Status automatically. Optional polling helps with sources that do not send that Alert.</p>
           </section>
@@ -161,6 +171,7 @@
                   <button id="plans-button" class="button button-secondary command-button" data-command="plans" type="button" disabled>Request plans</button>
                   <button class="button button-secondary command-button" data-command="status" type="button" disabled>Contract</button>
                   <button class="button button-secondary command-button" data-command="source-info" type="button" disabled>Source_Info</button>
+                  <button id="inspect-black-box" class="button button-secondary" type="button" disabled>Inspect black box</button>
                 </div>
               </div>
               <div class="action-group">
@@ -179,6 +190,11 @@
                 </div>
               </div>
             </div>
+
+            <section id="black-box-panel" class="black-box-panel hidden" aria-live="polite" aria-labelledby="black-box-heading">
+              <div><strong id="black-box-heading">Persistent black box</strong><span id="black-box-summary">Reading recorder…</span></div>
+              <ol id="black-box-events"></ol>
+            </section>
 
             <details class="advanced-request">
               <summary>Advanced direct-PDO request</summary>

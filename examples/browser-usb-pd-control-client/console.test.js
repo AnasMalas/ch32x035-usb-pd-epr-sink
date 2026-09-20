@@ -42,10 +42,15 @@ for (const command of [
 for (const required of [
   "navigator.serial.requestPort",
   "navigator.usb.requestDevice",
+  "navigator.serial.getPorts",
+  "navigator.usb.getDevices",
   "Condense stream: On",
   "Raw stream: Off",
   "epr-avs-nonstandard",
   "name=\"voltage-ceiling\" value=\"50000\"",
+  "Inspect black box",
+  "Start PPS telemetry",
+  "Voltage unavailable",
 ]) {
   assert.ok(html.includes(required) || app.includes(required), `missing console behavior: ${required}`);
 }
@@ -56,5 +61,6 @@ assert.match(html, /aria-live="polite"/);
 assert.match(css, /@media \(max-width: 1260px\)/);
 assert.match(css, /@media \(max-width: 760px\)/);
 assert.match(css, /:focus-visible/);
+assert.match(css, /\.capability-table \{ min-width: 560px/);
 
 console.log("Browser console structure tests passed");

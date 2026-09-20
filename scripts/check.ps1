@@ -318,6 +318,7 @@ try {
         foreach ($external in @(
             'href="styles.css"',
             'src="protocol.js"',
+            'src="black-box.js"',
             'src="app.js"'
         )) {
             if ($gui.Contains($external)) {
@@ -338,6 +339,8 @@ try {
         if ($LASTEXITCODE -ne 0) { throw "browser console structure tests failed with exit code $LASTEXITCODE" }
         node examples/browser-usb-pd-control-client/protocol.test.js
         if ($LASTEXITCODE -ne 0) { throw "browser protocol tests failed with exit code $LASTEXITCODE" }
+        node examples/browser-usb-pd-control-client/black-box.test.js
+        if ($LASTEXITCODE -ne 0) { throw "browser black-box tests failed with exit code $LASTEXITCODE" }
     }
     else {
         Write-Host 'Node.js is not installed; browser protocol tests were skipped (the GUI itself does not require Node.js).'
