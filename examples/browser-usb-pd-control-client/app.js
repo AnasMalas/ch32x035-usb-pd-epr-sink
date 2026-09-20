@@ -50,9 +50,6 @@ const ui = {
   exitEprButton: $("#exit-epr-button"),
   plansButton: $("#plans-button"),
   inspectBlackBox: $("#inspect-black-box"),
-  blackBoxPanel: $("#black-box-panel"),
-  blackBoxSummary: $("#black-box-summary"),
-  blackBoxEvents: $("#black-box-events"),
   pdoForm: $("#pdo-form"),
   pdoPosition: $("#pdo-position"),
   pdoDemand: $("#pdo-demand"),
@@ -857,40 +854,11 @@ function requestBlackBoxPage(page) {
   });
 }
 
-function renderBlackBox(summary, events) {
-  ui.blackBoxPanel.classList.remove("hidden");
-  const flags = [
-    summary.restored ? "restored" : null,
-    summary.frozen ? "frozen" : null,
-    summary.hardReset ? "hard reset captured" : null,
-    summary.overwritten ? "old records overwritten" : null,
-    summary.writeError ? "storage write error" : null,
-  ].filter(Boolean);
-  ui.blackBoxSummary.textContent = `${summary.profile} profile · ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"} · generation ${summary.generation}${flags.length ? ` · ${flags.join(" · ")}` : ""}`;
-  ui.blackBoxEvents.replaceChildren(...events.map((event) => {
-    const item = document.createElement("li");
-    const time = document.createElement("time");
-    time.textContent = `${event.uptime} ms`;
-    const text = document.createElement("span");
-    text.textContent = event.text;
-    item.append(time, text);
-    return item;
-  }));
-  if (events.length === 0) {
-    const item = document.createElement("li");
-    item.className = "empty-black-box";
-    item.textContent = "The recorder is valid but contains no events yet.";
-    ui.blackBoxEvents.append(item);
-  }
-}
-
 async function inspectBlackBox() {
   if (state.transport !== "usb-control") throw new Error("Black-box inspection requires compact USB control.");
   state.blackBoxBusy = true;
   updateActionAvailability();
-  ui.blackBoxPanel.classList.remove("hidden");
-  ui.blackBoxSummary.textContent = "Reading recorder…";
-  ui.blackBoxEvents.replaceChildren();
+  addLog("Reading persistent black box…", "system");
   try {
     const summaryResponse = await requestBlackBoxPage(0);
     if (summaryResponse.kind !== 0xb0) throw new Error("The device returned an invalid black-box summary kind.");
@@ -901,11 +869,23 @@ async function inspectBlackBox() {
       if (response.kind !== 0xb1) throw new Error(`The device returned an invalid event page ${index + 1}.`);
       events.push(blackBoxProtocol.decodeEvent(response.payload, index));
     }
-    renderBlackBox(summary, events);
-    addLog(`Black box read: ${summary.profile} profile, ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"}.`, "system");
+    const flags = [
+      summary.restored ? "restored" : null,
+      summary.frozen ? "frozen" : null,
+      summary.hardReset ? "hard reset captured" : null,
+      summary.overwritten ? "old records overwritten" : null,
+      summary.writeError ? "storage write error" : null,
+    ].filter(Boolean);
+    addLog(
+      `Black box: ${summary.profile} profile; ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"}; generation ${summary.generation}${flags.length ? `; ${flags.join("; ")}` : ""}`,
+      "system",
+    );
+    if (events.length === 0) addLog("Black box contains no recorded events.", "incoming");
+    for (const event of events) {
+      addLog(`Black box ${event.index + 1}/${events.length}: t=${event.uptime}ms ${event.text}`, "incoming");
+    }
     setFeedback(`Read the ${summary.profile} black box.`);
   } catch (error) {
-    ui.blackBoxSummary.textContent = error.message;
     addLog(`Black-box inspection failed: ${error.message}`, "system", "error");
     setFeedback(error.message, true);
   } finally {

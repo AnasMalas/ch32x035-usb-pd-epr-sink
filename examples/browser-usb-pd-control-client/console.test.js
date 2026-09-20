@@ -57,10 +57,12 @@ for (const required of [
 
 assert.match(html, /<section class="panel source-panel"/);
 assert.match(html, /<section class="panel terminal-panel"/);
+assert.match(html, /class="terminal-tools"[\s\S]*id="inspect-black-box"[\s\S]*id="terminal"/);
 assert.match(html, /aria-live="polite"/);
 assert.match(css, /@media \(max-width: 1260px\)/);
 assert.match(css, /@media \(max-width: 760px\)/);
 assert.match(css, /:focus-visible/);
 assert.match(css, /\.capability-table \{ min-width: 560px/);
+assert.match(css, /\.capability-table \.empty-row td \{[^}]*text-align: center/);
 
 console.log("Browser console structure tests passed");

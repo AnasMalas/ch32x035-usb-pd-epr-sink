@@ -171,7 +171,6 @@
                   <button id="plans-button" class="button button-secondary command-button" data-command="plans" type="button" disabled>Request plans</button>
                   <button class="button button-secondary command-button" data-command="status" type="button" disabled>Contract</button>
                   <button class="button button-secondary command-button" data-command="source-info" type="button" disabled>Source_Info</button>
-                  <button id="inspect-black-box" class="button button-secondary" type="button" disabled>Inspect black box</button>
                 </div>
               </div>
               <div class="action-group">
@@ -190,11 +189,6 @@
                 </div>
               </div>
             </div>
-
-            <section id="black-box-panel" class="black-box-panel hidden" aria-live="polite" aria-labelledby="black-box-heading">
-              <div><strong id="black-box-heading">Persistent black box</strong><span id="black-box-summary">Reading recorder…</span></div>
-              <ol id="black-box-events"></ol>
-            </section>
 
             <details class="advanced-request">
               <summary>Advanced direct-PDO request</summary>
@@ -215,6 +209,7 @@
           <div><p class="eyebrow">Session record</p><h2 id="terminal-heading">Diagnostics console</h2></div>
           <div class="terminal-tools">
             <label class="auto-scroll"><input id="auto-scroll" type="checkbox" checked> Follow</label>
+            <button id="inspect-black-box" class="button button-quiet" type="button" disabled>Inspect black box</button>
             <button id="condense-log" class="button button-quiet button-toggle" type="button" aria-pressed="true">Condense stream: On</button>
             <button id="raw-log" class="button button-quiet button-toggle" type="button" aria-pressed="false">Raw stream: Off</button>
             <button id="copy-log" class="button button-quiet" type="button">Copy</button>

@@ -56,8 +56,9 @@ The application exposes the stable firmware command surface:
 - manual or one-second PPS telemetry with at most one query in flight, plus a
   thin voltage/current history chart that marks unavailable source values and
   never derives power;
-- one-control inspection of persistent high-level or deep numeric black-box
-  firmware profiles, detected from the recorder summary;
+- terminal-toolbar inspection of persistent high-level or deep numeric
+  black-box firmware profiles, detected from the recorder summary and decoded
+  directly into the session log;
 - optional automatic reconnect to the last previously authorized Web Serial
   or WebUSB device, without reopening a browser permission picker;
 - independently controlled decoded-stream condensation and exact raw USB
