@@ -43,7 +43,7 @@ dependency for peripheral setup, aligned with the
 | `ch32x035c8t6`, `ch32x035f7p6`, `ch32x035f8u6`, `ch32x035g8r6`, `ch32x035g8u6`, or `ch32x035r8t6` | Selects one CH32X035 package and adds the pin-agnostic PHY driver and `Ch32x035Port` adapter |
 | `hard-reset-reasons` | Preserves typed local Hard Reset causes from the maintained policy engine |
 | `initial-capabilities-fallback` | Lets product policy replace repeated initial capability-timeout resets with one bounded `Get_Source_Cap` probe or passive default-power listening |
-| `black-box` | Adds the storage-independent 12-byte record, 16-entry ring, CRC page codec, and A/B generation selection used by persistent incident recorders |
+| `black-box` | Adds the storage-independent 12-byte record, 16-entry ring, CRC page codec, A/B generation selection, and optional protocol/link trace filter used by persistent incident recorders |
 | `numeric-trace` | Adds the formatter-free numeric protocol trace hook described below |
 | `driver-boundary-trace` | Adds a separate temporary CH32 USBPD RX/ISR/DMA trace callback |
 | `rich-telemetry` | Adds compact-control raw capabilities, plan previews, Source_Info, Alert, Source Status, and PPS Status commands/events |
@@ -108,6 +108,10 @@ CRC-protected 256-byte page format, and wrap-safe A/B generation selection.
 It deliberately performs no flash access and owns no interrupt, voltage
 threshold, GPIO, or transport. An application may use another nonvolatile
 memory or a board-specific power-fail writer without changing the record ABI.
+When `numeric-trace` is also enabled, `TraceLevel::Protocol` omits successful
+GoodCRC and periodic EPR-keepalive ceremony so the fixed ring covers a longer
+incident window; `TraceLevel::Link` retains every numeric event for lower-level
+acknowledgement and retry diagnosis.
 
 The G8U6 reference firmware demonstrates one concrete backend in its
 `usb-epr-black-box` and `usb-epr-deep-black-box` profiles. See the

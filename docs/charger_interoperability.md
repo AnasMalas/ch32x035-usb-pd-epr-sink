@@ -18,6 +18,7 @@ source-reported telemetry.
 | PPS current-limit behavior varies from sustained regulation to a later Hard Reset | Requested current is a negotiated ceiling, not guaranteed electronic current limiting. Hardware overcurrent protection remains mandatory |
 | Poor, extended, or non-EPR-marked cables reduce advertised current, prevent EPR entry, or cause detach/PHY loss | Obey the reduced offer, bound recovery, turn the load off on protocol loss, and advise users to retry with a direct certified cable |
 | Some sources transition voltage slowly or answer a Request with `Wait` | Keep the load off for a changed operating point until `PS_RDY`; preserve an unchanged contract during `Wait` and retry only after SinkRequestTimer |
+| A Source can send Accept/PS_RDY yet electrically dip VBUS outside the new contract during a downward transition | Treat the message exchange and VBUS waveform as separate evidence. Direct high-to-5 V requests are valid; diagnose the rail with a scope or qualified detector rather than adding a brand-specific default sequence |
 
 ## AOHi AOC-C022 case study
 

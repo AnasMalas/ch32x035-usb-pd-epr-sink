@@ -286,6 +286,18 @@ Reset causes and, for the deep profile, PD headers, GoodCRC/retry state,
 protocol errors, and EPR keepalive phases. Retrieval shares the existing CDC
 sender queue but does not change compact control protocol v1.
 
+For one deliberate reproduction, close the browser console and arm a clean
+protocol-focused window first:
+
+```powershell
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\query-black-box.ps1 -Arm
+```
+
+Use `-Arm -TraceLevel Link` only when GoodCRC, retries, or PHY turnaround are
+the suspected boundary. It retains every numeric event and therefore fills the
+same 16-record ring more quickly. Reconnect the browser after the script exits;
+the script lowers DTR and closes the CDC session before releasing the port.
+
 ## Development and maintenance
 
 ### Repository checks

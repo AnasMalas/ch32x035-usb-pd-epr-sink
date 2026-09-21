@@ -83,11 +83,15 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
             if count == 3 && packet[..2] == crate::black_box::REQUEST_MAGIC {
                 decoder.reset();
                 let page = packet[2];
-                if page == crate::black_box::ARM_REQUEST_PAGE {
-                    crate::black_box::arm();
+                let arm = match page {
+                    crate::black_box::ARM_PROTOCOL_REQUEST_PAGE => Some(crate::black_box::ArmTrace::Protocol),
+                    crate::black_box::ARM_LINK_REQUEST_PAGE => Some(crate::black_box::ArmTrace::Link),
+                    _ => None,
+                };
+                if let Some(trace) = arm {
+                    crate::black_box::arm(trace);
                 }
-                let response =
-                    crate::black_box::response(if page == crate::black_box::ARM_REQUEST_PAGE { 0 } else { page });
+                let response = crate::black_box::response(if arm.is_some() { 0 } else { page });
                 CONTROL_PACKETS.send(ControlPacket::raw(response.as_bytes())).await;
                 continue;
             }

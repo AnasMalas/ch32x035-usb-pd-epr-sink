@@ -985,15 +985,16 @@ async function inspectBlackBox() {
       summary.overwritten ? "old records overwritten" : null,
       summary.writeError ? "storage write error" : null,
     ].filter(Boolean);
+    const profile = summary.traceLevel ? `${summary.profile}/${summary.traceLevel}` : summary.profile;
     addLog(
-      `Black box: ${summary.profile} profile; ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"}; generation ${summary.generation}${flags.length ? `; ${flags.join("; ")}` : ""}`,
+      `Black box: ${profile} profile; ${summary.eventCount} event${summary.eventCount === 1 ? "" : "s"}; generation ${summary.generation}${flags.length ? `; ${flags.join("; ")}` : ""}`,
       "system",
     );
     if (events.length === 0) addLog("Black box contains no recorded events.", "incoming");
     for (const event of events) {
       addLog(`Black box ${event.index + 1}/${events.length}: t=${event.uptime}ms ${event.text}`, "incoming");
     }
-    setFeedback(`Read the ${summary.profile} black box.`);
+    setFeedback(`Read the ${profile} black box.`);
   } catch (error) {
     addLog(`Black-box inspection failed: ${error.message}`, "system", "error");
     setFeedback(error.message, true);

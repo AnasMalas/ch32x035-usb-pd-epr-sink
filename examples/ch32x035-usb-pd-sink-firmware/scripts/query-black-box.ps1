@@ -2,7 +2,9 @@
 param(
     [string]$Port,
     [int]$TimeoutSeconds = 10,
-    [switch]$Arm
+    [switch]$Arm,
+    [ValidateSet('Protocol', 'Link')]
+    [string]$TraceLevel = 'Protocol'
 )
 
 $ErrorActionPreference = 'Stop'
@@ -180,19 +182,32 @@ do {
 if (-not $portName) { throw 'The reference USB serial port was not found.' }
 
 $serial = [System.IO.Ports.SerialPort]::new($portName, 115200, 'None', 8, 'One')
-$serial.DtrEnable = $true
+$serial.DtrEnable = $false
+$serial.RtsEnable = $false
 $serial.ReadTimeout = 100
 $serial.Open()
 try {
+    # Force a complete CDC session boundary even if the previous host left
+    # DTR asserted or abandoned an IN transfer while closing.
+    Start-Sleep -Milliseconds 50
+    $serial.DtrEnable = $true
     Start-Sleep -Milliseconds 150
-    $summaryResponse = Read-BlackBoxPage $serial $(if ($Arm) { [byte]0xff } else { [byte]0 })
+    $requestPage = if (-not $Arm) {
+        [byte]0
+    } elseif ($TraceLevel -eq 'Link') {
+        [byte]0xff
+    } else {
+        [byte]0xfe
+    }
+    $summaryResponse = Read-BlackBoxPage $serial $requestPage
     if ($summaryResponse.Kind -ne 0xb0 -or $summaryResponse.Payload.Length -ne 14) {
         throw 'The device returned an invalid black-box summary.'
     }
     $summary = $summaryResponse.Payload
     $stateFlags = $summary[1]
     $logFlags = $summary[3]
-    $profile = if ($summary[13] -eq 2) { 'deep numeric' } else { 'high-level' }
+    $storedTraceLevel = if ($summary[13] -ne 2) { 'n/a' } elseif ($logFlags -band 0x10) { 'link' } else { 'protocol' }
+    $profile = if ($summary[13] -eq 2) { "deep numeric ($storedTraceLevel)" } else { 'high-level' }
     Write-Host "Connected to $portName; profile=$profile"
     Write-Host ('Generation {0}; valid={1}, restored={2}, dirty={3}, write-error={4}; active-page={5}, prepared-page={6}' -f `
         [BitConverter]::ToUInt32($summary, 4), [bool]($stateFlags -band 1), [bool]($stateFlags -band 2), `
@@ -205,7 +220,7 @@ try {
         if ($summary[12] -eq 255 -or ($stateFlags -band 8)) {
             throw 'The device could not prepare a black-box journal page.'
         }
-        Write-Host 'Black box cleared and armed for the next incident.'
+        Write-Host "Black box cleared and armed for the next incident; trace level=$storedTraceLevel."
         return
     }
 
@@ -219,5 +234,10 @@ try {
     }
 }
 finally {
+    if ($serial.IsOpen) {
+        $serial.DtrEnable = $false
+        $serial.RtsEnable = $false
+        $serial.Close()
+    }
     $serial.Dispose()
 }

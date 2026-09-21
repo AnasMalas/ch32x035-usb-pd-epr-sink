@@ -171,6 +171,24 @@ Diagnostics can instead be combined with transition policy. For example,
 deep trace while retaining the uninterrupted-load transition policy. Use the
 same `-DeepBlackBox` modifier with `flash.ps1` or `program.ps1`.
 
+Before reproducing one deliberate incident, close the browser console and arm
+the recorder:
+
+```powershell
+# Recommended for contract transitions, resets, and unexplained VBUS loss.
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\query-black-box.ps1 -Arm
+
+# Retain every GoodCRC and successful keepalive record for link-layer faults.
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\query-black-box.ps1 -Arm -TraceLevel Link
+```
+
+The default `Protocol` level still keeps PD messages, retries, failures, Hard
+Resets, and failed keepalives, but removes successful acknowledgement traffic.
+It therefore covers a longer interval without increasing the one-page
+power-fail write. `Link` is intentionally noisier and is appropriate for a
+suspected missed GoodCRC or PHY turnaround failure. The level changes only
+which emitted diagnostics enter the ring; it cannot change PD behavior.
+
 Both use the storage-neutral `pd_sink::black_box` ABI: 12-byte records, an
 overwrite-oldest ring, a CRC-protected 256-byte page, and wrap-safe A/B
 generation selection. The crate owns no flash or detector. The reference
@@ -336,6 +354,23 @@ excellent way to retain post-failure records. It also changes the experiment:
 Label every capture as direct-powered or split-powered and repeat final safety
 tests on the real power path.
 
+### A successful protocol transition is not a VBUS measurement
+
+`Request`, `Accept`, and `PS_RDY` prove that the two policy engines completed a
+contract transition. They do not prove that the Source kept VBUS inside its
+electrical envelope. USB PD R3.2 section 4.1.3.1 permits a direct negative
+fixed-voltage transition, including 20 V to 5 V, but requires VBUS to remain
+above the new contract's `vSrcValid(min)`; at 5 V that boundary is 4.5 V. A
+Source that accepts the Request and then drops VBUS near zero has an electrical
+transition problem even if its messages are well formed. PPS can exhibit the
+same distinction.
+
+Use a scope, analyzer with VBUS capture, or a qualified board detector to
+establish the rail minimum. A retained `power-fail-sample` proves only that the
+reference board crossed its detector threshold before losing power; it does
+not reconstruct the analog waveform. Do not add source-specific request
+sequencing from a console transcript alone.
+
 ## Symptom-driven playbooks
 
 | Symptom | Minimum next evidence | Do not conclude yet |
@@ -346,7 +381,7 @@ tests on the real power path.
 | Missed GoodCRC | TX start/completion and GoodCRC wait, then temporary HAL/ISR or analyzer timing | that the Source rejected the message; GoodCRC is link acknowledgement |
 | Stable until USB/telemetry starts | sequence/loss counters and one-at-a-time workload removal | that the charger or policy engine is unstable |
 | Web Serial loss | device boot ID/uptime after reconnect, independent VBUS/CC evidence | detach, MCU reset, and USB loss are the same event |
-| VBUS off-on flash | Hard Reset origin/cause and simultaneous VBUS/MCU-rail capture | a brownout or firmware reset without measuring the MCU rail |
+| VBUS off-on flash | Hard Reset origin/cause, protocol-focused black box armed immediately before the transition, and simultaneous VBUS/MCU-rail capture | that Accept/PS_RDY proves electrical compliance, or that a brownout was a firmware reset |
 | `TRACE lost` | overwritten delta, sequence gap, host connection state | protocol messages were necessarily lost |
 | First plug works, replug fails | new boot/session IDs, VBUS waiter state, CC orientation, retained Source contract | permanent hardware damage or an EPR policy fault |
 

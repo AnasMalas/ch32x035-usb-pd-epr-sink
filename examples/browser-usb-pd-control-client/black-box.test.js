@@ -9,8 +9,12 @@ assert.deepEqual(blackBox.decodeSummary(summary), {
   abi: 1, valid: true, restored: true, dirty: false, writeError: false,
   eventCount: 2, hardReset: true, frozen: true, overwritten: false,
   generation: 7, nextSequence: 9, traceAbi: 1, activePage: 0, preparedPage: 1,
-  profile: "deep numeric",
+  profile: "deep numeric", traceLevel: "protocol",
 });
+
+const linkSummary = Uint8Array.from(summary);
+linkSummary[3] |= 16;
+assert.equal(blackBox.decodeSummary(linkSummary).traceLevel, "link");
 
 const response = Uint8Array.from([0x50, 0x44, 0x42, 0x42, 0xb0, 14, ...summary]);
 assert.equal(blackBox.parseResponse(response).kind, 0xb0);

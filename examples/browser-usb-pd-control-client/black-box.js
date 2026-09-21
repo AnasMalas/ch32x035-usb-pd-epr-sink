@@ -96,6 +96,7 @@
       activePage: payload[11],
       preparedPage: payload[12],
       profile: payload[13] === 2 ? "deep numeric" : "high-level",
+      traceLevel: payload[13] === 2 ? ((logFlags & 16) ? "link" : "protocol") : null,
     };
   }
 

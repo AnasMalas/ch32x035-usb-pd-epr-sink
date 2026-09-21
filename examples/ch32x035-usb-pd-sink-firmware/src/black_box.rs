@@ -10,6 +10,8 @@ use pd_sink::black_box::{
 };
 
 #[cfg(feature = "deep-black-box")]
+use pd_sink::black_box::TraceLevel;
+#[cfg(feature = "deep-black-box")]
 use pd_sink::numeric_trace::{
     set_numeric_trace_callback, NumericTraceEvent, NumericTraceEventKind, NumericTraceHardResetPhase,
     NUMERIC_TRACE_ABI_VERSION,
@@ -18,12 +20,19 @@ use pd_sink::numeric_trace::{
 use crate::black_box_flash;
 
 pub const REQUEST_MAGIC: [u8; 2] = *b"BB";
-pub const ARM_REQUEST_PAGE: u8 = u8::MAX;
+pub const ARM_PROTOCOL_REQUEST_PAGE: u8 = u8::MAX - 1;
+pub const ARM_LINK_REQUEST_PAGE: u8 = u8::MAX;
 const RESPONSE_MAGIC: [u8; 4] = *b"PDBB";
 const RESPONSE_SUMMARY: u8 = 0xb0;
 const RESPONSE_RECORD: u8 = 0xb1;
 pub const RESPONSE_MAX_LEN: usize = 6 + 16;
 const NO_PREPARED_PAGE: u8 = u8::MAX;
+
+#[derive(Clone, Copy)]
+pub enum ArmTrace {
+    Protocol,
+    Link,
+}
 
 #[derive(Clone, Copy)]
 struct State {
@@ -62,7 +71,7 @@ static POWER_FAIL_LATCHED: Mutex<CriticalSectionRawMutex, Cell<bool>> = Mutex::n
 
 #[cfg(feature = "deep-black-box")]
 static LIVE: Mutex<CriticalSectionRawMutex, Cell<Log>> =
-    Mutex::new(Cell::new(Log::new(NUMERIC_TRACE_ABI_VERSION, flags::DEEP_TRACE)));
+    Mutex::new(Cell::new(Log::new(NUMERIC_TRACE_ABI_VERSION, TraceLevel::Link.log_flags())));
 
 fn now_ms() -> u32 {
     Instant::now().as_millis().min(u64::from(u32::MAX)) as u32
@@ -93,7 +102,7 @@ pub fn initialize() {
             // Log::push() rejects later traffic while this flag remains set.
             state.log
         } else {
-            Log::new(NUMERIC_TRACE_ABI_VERSION, flags::DEEP_TRACE)
+            Log::new(NUMERIC_TRACE_ABI_VERSION, TraceLevel::Link.log_flags())
         });
     });
 }
@@ -142,7 +151,7 @@ pub fn power_fail_latched() -> bool {
 /// Discard the current in-memory incident and arm the next prepared journal
 /// page. This is a diagnostic operation intended to be invoked at a stable
 /// contract immediately before reproducing one specific failure.
-pub fn arm() -> bool {
+pub fn arm(_trace: ArmTrace) -> bool {
     critical_section::with(|_| {
         let state = STATE.lock(Cell::get);
         let target = if state.valid {
@@ -163,7 +172,14 @@ pub fn arm() -> bool {
         }
 
         #[cfg(feature = "deep-black-box")]
-        let mut log = Log::new(NUMERIC_TRACE_ABI_VERSION, flags::DEEP_TRACE);
+        let mut log = Log::new(
+            NUMERIC_TRACE_ABI_VERSION,
+            match _trace {
+                ArmTrace::Protocol => TraceLevel::Protocol,
+                ArmTrace::Link => TraceLevel::Link,
+            }
+            .log_flags(),
+        );
         #[cfg(not(feature = "deep-black-box"))]
         let mut log = Log::new(0, 0);
         // The next persisted incident must sort newer than the retained page.
@@ -300,6 +316,10 @@ fn capture_numeric_trace(event: NumericTraceEvent) {
         );
     LIVE.lock(|cell| {
         let mut live = cell.get();
+        let trace_level = if live.flags() & flags::LINK_TRACE != 0 { TraceLevel::Link } else { TraceLevel::Protocol };
+        if !trace_level.retains(event) {
+            return;
+        }
         live.push(Record::new(
             now_ms(),
             event.kind as u8,

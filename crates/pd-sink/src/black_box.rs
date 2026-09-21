@@ -24,6 +24,74 @@ pub mod flags {
     pub const OVERWROTE_OLD_RECORDS: u8 = 1 << 2;
     /// The profile records the full numeric protocol trace.
     pub const DEEP_TRACE: u8 = 1 << 3;
+    /// The deep trace retains link-level GoodCRC and successful keepalive traffic.
+    ///
+    /// Without this flag, the recorder keeps a protocol-focused subset so a
+    /// small persistent ring covers a longer interval around an incident.
+    pub const LINK_TRACE: u8 = 1 << 4;
+}
+
+#[cfg(feature = "numeric-trace")]
+use crate::numeric_trace::{NumericTraceEprKeepAlivePhase, NumericTraceEvent, NumericTraceEventKind};
+
+/// Amount of numeric protocol detail retained by a black-box callback.
+///
+/// This changes only which already-emitted trace records an application keeps;
+/// it does not change USB-PD policy, timers, or wire behavior.
+#[cfg(feature = "numeric-trace")]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+#[repr(u8)]
+pub enum TraceLevel {
+    /// Keep PD messages, retries, failures, resets, and failed keepalives while
+    /// omitting successful GoodCRC and periodic keepalive ceremony.
+    #[default]
+    Protocol = 0,
+    /// Keep every numeric event, including link acknowledgements.
+    Link = 1,
+}
+
+#[cfg(feature = "numeric-trace")]
+impl TraceLevel {
+    /// Flags to store with a deep trace captured at this level.
+    pub const fn log_flags(self) -> u8 {
+        flags::DEEP_TRACE | if matches!(self, Self::Link) { flags::LINK_TRACE } else { 0 }
+    }
+
+    /// Whether this level should retain one emitted numeric event.
+    pub fn retains(self, event: NumericTraceEvent) -> bool {
+        if matches!(self, Self::Link) {
+            return true;
+        }
+
+        match event.kind {
+            NumericTraceEventKind::GoodCrcWait
+            | NumericTraceEventKind::GoodCrcReceived
+            | NumericTraceEventKind::TxSuccess
+            | NumericTraceEventKind::GoodCrcTransmitted => false,
+            NumericTraceEventKind::RxMessage if is_good_crc(event.header) => false,
+            NumericTraceEventKind::TxStart | NumericTraceEventKind::RxMessage
+                if is_epr_keepalive_wire_message(event) =>
+            {
+                false
+            }
+            NumericTraceEventKind::EprKeepAlive => !matches!(
+                event.code,
+                code if code == NumericTraceEprKeepAlivePhase::Request as u8
+                    || code == NumericTraceEprKeepAlivePhase::Acknowledged as u8
+            ),
+            _ => true,
+        }
+    }
+}
+
+#[cfg(feature = "numeric-trace")]
+fn is_good_crc(header: u16) -> bool {
+    header != u16::MAX && header & 0x8000 == 0 && (header >> 12) & 0x7 == 0 && header & 0x1f == 1
+}
+
+#[cfg(feature = "numeric-trace")]
+fn is_epr_keepalive_wire_message(event: NumericTraceEvent) -> bool {
+    event.header != u16::MAX && event.header & 0x8000 != 0 && event.header & 0x1f == 0x10 && matches!(event.code, 3 | 4)
 }
 
 /// High-level application event IDs used by the reference firmware.
@@ -341,6 +409,56 @@ mod tests {
         log.push(Record::new(2, 2, 0, 0, 0, 0, 0));
         assert_eq!(log.len(), 1);
         assert_eq!(log.record(0).unwrap().uptime_ms(), 1);
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    fn event(kind: NumericTraceEventKind, code: u8, header: u16) -> NumericTraceEvent {
+        NumericTraceEvent { kind, code, message_id: 0, counter: 0, header, detail: u16::MAX }
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    #[test]
+    fn protocol_trace_keeps_messages_and_failures_but_drops_goodcrc_ceremony() {
+        let request = event(NumericTraceEventKind::TxStart, u8::MAX, 0x1282);
+        let accept = event(NumericTraceEventKind::RxMessage, u8::MAX, 0x0363);
+        let good_crc = event(NumericTraceEventKind::RxMessage, u8::MAX, 0x0161);
+        let wait = event(NumericTraceEventKind::GoodCrcWait, 0, 0x1282);
+        let failure = event(NumericTraceEventKind::ProtocolError, 5, u16::MAX);
+
+        assert!(TraceLevel::Protocol.retains(request));
+        assert!(TraceLevel::Protocol.retains(accept));
+        assert!(!TraceLevel::Protocol.retains(good_crc));
+        assert!(!TraceLevel::Protocol.retains(wait));
+        assert!(TraceLevel::Protocol.retains(failure));
+        assert!(TraceLevel::Link.retains(good_crc));
+        assert!(TraceLevel::Link.retains(wait));
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    #[test]
+    fn protocol_trace_drops_successful_keepalives_but_keeps_failures() {
+        let keepalive_request = event(NumericTraceEventKind::TxStart, 3, 0x9090);
+        let keepalive_ack = event(NumericTraceEventKind::RxMessage, 4, 0x91b0);
+        let acknowledged =
+            event(NumericTraceEventKind::EprKeepAlive, NumericTraceEprKeepAlivePhase::Acknowledged as u8, u16::MAX);
+        let timeout =
+            event(NumericTraceEventKind::EprKeepAlive, NumericTraceEprKeepAlivePhase::Timeout as u8, u16::MAX);
+
+        assert!(!TraceLevel::Protocol.retains(keepalive_request));
+        assert!(!TraceLevel::Protocol.retains(keepalive_ack));
+        assert!(!TraceLevel::Protocol.retains(acknowledged));
+        assert!(TraceLevel::Protocol.retains(timeout));
+        assert!(TraceLevel::Link.retains(acknowledged));
+    }
+
+    #[cfg(feature = "numeric-trace")]
+    #[test]
+    fn trace_level_flags_round_trip_through_page() {
+        let protocol = decode_page(&encode_page(Log::new(1, TraceLevel::Protocol.log_flags()))).unwrap();
+        let link = decode_page(&encode_page(Log::new(1, TraceLevel::Link.log_flags()))).unwrap();
+
+        assert_eq!(protocol.flags(), flags::DEEP_TRACE);
+        assert_eq!(link.flags(), flags::DEEP_TRACE | flags::LINK_TRACE);
     }
 
     #[test]
