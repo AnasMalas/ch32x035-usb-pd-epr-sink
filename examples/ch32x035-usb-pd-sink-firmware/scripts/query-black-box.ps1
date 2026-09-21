@@ -63,8 +63,9 @@ $hardResetReasons = @{
 }
 $applicationEvents = @{
     1='hard-reset'; 2='PHY-reset-failed'; 3='PHY-unstable'; 4='partner-timeout'
-    5='protocol-recovery'; 6='terminal'; 7='EPR-entry-failed'
+    5='protocol-recovery'; 6='terminal'; 7='EPR-entry-failed'; 8='VBUS-detector-low'
 }
+$vbusDetectorPaths = @{ 0='loop-observed-low'; 1='active-low-edge'; 2='output-enable-race' }
 $txReasons = @{
     1='driver-discarded'; 2='GoodCRC-timeout'; 3='hard-reset'; 4='detached'
     5='retries-exceeded'; 6='acknowledge-mismatch'; 255='other'
@@ -136,6 +137,11 @@ function Describe-Event([byte[]]$Event, [int]$Index) {
             $reason = Lookup $hardResetReasons ($code -band 0x7f) 'reason'
             return ('{0,2}: t={1}ms APP hard-reset {2}; reason={3}; recovery={4}ms; VBUS-present={5}' -f `
                 ($Index + 1), $uptime, $direction, $reason, $detail, [bool]($messageId -band 1))
+        }
+        if ($applicationKind -eq 8) {
+            $context = [uint32]$header -bor ([uint32]$detail -shl 16)
+            return ('{0,2}: t={1}ms APP VBUS-detector-low; path={2}; qualified-before={3}' -f `
+                ($Index + 1), $uptime, (Lookup $vbusDetectorPaths $code 'path'), [bool]($context -band 1))
         }
         $name = Lookup $applicationEvents $applicationKind 'event'
         $context = [uint32]$header -bor ([uint32]$detail -shl 16)

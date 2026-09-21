@@ -143,6 +143,7 @@ Useful interactive builds are:
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-pps
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-uninterrupted
+.\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-uninterrupted -DeepBlackBox
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-diagnostic
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-black-box
 .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile usb-epr-deep-black-box
@@ -163,13 +164,17 @@ regulated or dip-free output while the Source changes VBUS, and must be used
 only when the complete downstream path and load tolerate every requested
 voltage. Detector loss, detach, Hard Reset, protocol loss, and terminal faults
 remain unconditional shutoffs.
-`usb-epr-diagnostic` remains as a compatibility alias. The black-box profiles
-retain compact protocol v1 and add an independent three-byte `BB<page>` query
+`usb-epr-diagnostic` remains as a compatibility alias. Diagnostic
+instrumentation is composable: add `-DeepBlackBox` to either `usb-epr` or
+`usb-epr-uninterrupted`. The staged artifact name gains a
+`-deep-black-box` suffix, and the same switch selects it in `flash.ps1` or
+`program.ps1`. The older black-box profile names remain compatibility aliases.
+Black-box builds retain compact protocol v1 and add an independent three-byte `BB<page>` query
 understood by `scripts/query-black-box.ps1`. `usb-epr-black-box` stores only
 unusual high-level session events; `usb-epr-deep-black-box` also captures the
 most recent formatter-free numeric PD events in a 16-record ring, appends the
 final cause summary when available, and then freezes that same ring. Ordinary
-detach is not an incident. Both profiles reserve the
+detach is not an incident. Black-box instrumentation reserves the
 final two 256-byte flash pages, so their linker-owned application limit is
 62,976 bytes rather than 63,488. They erase only the inactive page at boot,
 then the 4.0 V PVD handler first clears and latches off active-high PB10 and programs the

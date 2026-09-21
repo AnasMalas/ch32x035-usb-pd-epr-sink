@@ -182,6 +182,16 @@ fn publish_vbus_state(present: bool) {
     }
 }
 
+#[cfg(feature = "deep-black-box")]
+fn record_qualified_vbus_detector_low(path: u8) {
+    if vbus_is_present() {
+        // PB10 is already low at every call site. Snapshot the most recent
+        // numeric trace before publishing detach so a subsequent rail collapse
+        // can preserve which board-level predicate fired first.
+        black_box::record_application(application_event_kind::VBUS_DETECTOR_LOW, path, 1);
+    }
+}
+
 fn set_pd_load_permitted(permitted: bool) {
     PD_LOAD_CONTROL.lock(|state| {
         let mut next = state.get();
@@ -392,6 +402,8 @@ async fn port_supervisor_task(
             // This is the latency-critical path. Cut the MCU request before
             // doing any debounce, logging, or policy-engine work.
             load_enable.set_low();
+            #[cfg(feature = "deep-black-box")]
+            record_qualified_vbus_detector_low(0);
             reset_pd_load_control();
             publish_vbus_state(false);
             #[cfg(feature = "rev0-board")]
@@ -437,6 +449,8 @@ async fn port_supervisor_task(
             match select3(vbus_present.wait_for_low(), PD_LOAD_CHANGED.wait(), USER_OUTPUT_REQUEST.wait()).await {
                 Either3::First(()) => {
                     load_enable.set_low();
+                    #[cfg(feature = "deep-black-box")]
+                    record_qualified_vbus_detector_low(1);
                     reset_pd_load_control();
                     publish_vbus_state(false);
                     needs_attach_debounce = true;
@@ -509,6 +523,8 @@ async fn port_supervisor_task(
                 USER_OUTPUT_REQUEST.reset();
             } else if vbus_present.is_low() {
                 load_enable.set_low();
+                #[cfg(feature = "deep-black-box")]
+                record_qualified_vbus_detector_low(2);
                 reset_pd_load_control();
                 publish_vbus_state(false);
                 needs_attach_debounce = true;

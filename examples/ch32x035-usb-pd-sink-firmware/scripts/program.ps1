@@ -23,7 +23,9 @@ param(
         'ch32x035g8u6',
         'ch32x035r8t6'
     )]
-    [string]$Chip = 'ch32x035f8u6'
+    [string]$Chip = 'ch32x035f8u6',
+
+    [switch]$DeepBlackBox
 )
 
 $ErrorActionPreference = 'Stop'
@@ -48,5 +50,5 @@ if ($Profile -in $rev0Profiles) {
     $Chip = 'ch32x035g8u6'
 }
 
-& (Join-Path $PSScriptRoot 'build.ps1') -Profile $Profile -Chip $Chip
-& (Join-Path $PSScriptRoot 'flash.ps1') -Profile $Profile -Chip $Chip
+& (Join-Path $PSScriptRoot 'build.ps1') -Profile $Profile -Chip $Chip -DeepBlackBox:$DeepBlackBox
+& (Join-Path $PSScriptRoot 'flash.ps1') -Profile $Profile -Chip $Chip -DeepBlackBox:$DeepBlackBox

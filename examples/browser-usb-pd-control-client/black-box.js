@@ -17,7 +17,10 @@
   });
   const applicationEvents = Object.freeze({
     1: "hard-reset", 2: "PHY-reset-failed", 3: "PHY-unstable", 4: "partner-timeout",
-    5: "protocol-recovery", 6: "terminal", 7: "EPR-entry-failed",
+    5: "protocol-recovery", 6: "terminal", 7: "EPR-entry-failed", 8: "VBUS-detector-low",
+  });
+  const vbusDetectorPaths = Object.freeze({
+    0: "loop-observed-low", 1: "active-low-edge", 2: "output-enable-race",
   });
   const txReasons = Object.freeze({
     1: "driver-discarded", 2: "GoodCRC-timeout", 3: "hard-reset", 4: "detached",
@@ -126,6 +129,9 @@
       const applicationKind = kind & 0x7f;
       if (applicationKind === 1) {
         text = `APP hard-reset ${(code & 0x80) ? "sent" : "received"}; reason=${lookup(hardResetReasons, code & 0x7f, "reason")}; recovery=${detail}ms; VBUS-present=${Boolean(messageId & 1)}`;
+      } else if (applicationKind === 8) {
+        const context = (header | (detail << 16)) >>> 0;
+        text = `APP VBUS-detector-low; path=${lookup(vbusDetectorPaths, code, "path")}; qualified-before=${Boolean(context & 1)}`;
       } else {
         const context = (header | (detail << 16)) >>> 0;
         text = `APP ${lookup(applicationEvents, applicationKind, "event")}; code=${code}; context=${context}`;

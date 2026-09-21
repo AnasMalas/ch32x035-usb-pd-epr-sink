@@ -27,6 +27,9 @@ param(
     )]
     [string]$Chip = 'ch32x035f8u6',
 
+    [Parameter(ParameterSetName = 'ByProfile')]
+    [switch]$DeepBlackBox,
+
     [Parameter(Mandatory, ParameterSetName = 'ByFirmware')]
     [string]$Firmware
 )
@@ -65,8 +68,14 @@ if ($PSCmdlet.ParameterSetName -eq 'ByProfile' -and $Profile -in $rev0Profiles) 
     $Chip = 'ch32x035g8u6'
 }
 
+if ($DeepBlackBox -and $Profile -notin @('usb-epr', 'usb-epr-uninterrupted')) {
+    throw '-DeepBlackBox is supported with usb-epr and usb-epr-uninterrupted.'
+}
+
+$artifactProfile = if ($DeepBlackBox) { "$Profile-deep-black-box" } else { $Profile }
+
 $firmwarePath = if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Join-Path $examples "generated-artifacts\ch32x035-usb-pd-epr-sink-reference-$Chip-$Profile.elf"
+    Join-Path $examples "generated-artifacts\ch32x035-usb-pd-epr-sink-reference-$Chip-$artifactProfile.elf"
 }
 else {
     Join-Path $workspace $Firmware
@@ -74,7 +83,8 @@ else {
 
 if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
     if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-        throw "Firmware profile '$Profile' for '$Chip' not found at $firmwarePath. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile $Profile -Chip $Chip first."
+        $deepBlackBoxArgument = if ($DeepBlackBox) { ' -DeepBlackBox' } else { '' }
+        throw "Firmware profile '$artifactProfile' for '$Chip' not found at $firmwarePath. Run .\examples\ch32x035-usb-pd-sink-firmware\scripts\build.ps1 -Profile $Profile -Chip $Chip$deepBlackBoxArgument first."
     }
     throw "Firmware not found at $firmwarePath. Run the reference firmware build script first."
 }
@@ -82,7 +92,7 @@ if (-not (Test-Path -LiteralPath $firmwarePath -PathType Leaf)) {
 $firmwareItem = Get-Item -LiteralPath $firmwarePath
 $firmwareHash = (Get-FileHash -LiteralPath $firmwarePath -Algorithm SHA256).Hash.ToLowerInvariant()
 if ($PSCmdlet.ParameterSetName -eq 'ByProfile') {
-    Write-Host "Profile:  $Profile"
+    Write-Host "Profile:  $artifactProfile"
     Write-Host "Chip:     $Chip"
 }
 Write-Host "Firmware: $($firmwareItem.FullName)"

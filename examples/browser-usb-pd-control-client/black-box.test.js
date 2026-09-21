@@ -29,4 +29,16 @@ assert.deepEqual(blackBox.decodeEvent(event, 0), {
 
 assert.equal(blackBox.describeHeader(0x0b61), "GoodCRC, id=5, objects=0, header=0x0b61");
 
+const detectorLow = Uint8Array.from([
+  1, 0, 1, 12,
+  0xd2, 0x04, 0, 0,
+  0x88, 1, 0xff, 0xff,
+  1, 0, 0, 0,
+]);
+assert.deepEqual(blackBox.decodeEvent(detectorLow, 1), {
+  index: 1,
+  uptime: 1234,
+  text: "APP VBUS-detector-low; path=active-low-edge; qualified-before=true",
+});
+
 console.log("Black-box browser decoder tests passed");

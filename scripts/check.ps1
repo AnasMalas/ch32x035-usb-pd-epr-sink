@@ -76,6 +76,7 @@ $rev0UsbEprTraceFeatures = "$rev0UsbEprFeatures,numeric-trace"
 $rev0UsbEprDriverTraceFeatures = "$rev0UsbEprFeatures,driver-boundary-trace"
 $rev0UsbEprBlackBoxFeatures = "$rev0UsbEprFeatures,persistent-black-box"
 $rev0UsbEprDeepBlackBoxFeatures = "$rev0UsbEprFeatures,deep-black-box"
+$rev0UsbEprUninterruptedDeepBlackBoxFeatures = "$rev0UsbEprDeepBlackBoxFeatures,uninterrupted-load-transitions"
 $rev0ValidationFeatures = "$rev0Chip,dev-text-console,output-default-off,rev0-validation"
 $firmwareFeatureSets = @(
     "$referenceChip,usb-control,rich-telemetry",
@@ -91,6 +92,7 @@ $firmwareFeatureSets = @(
     $rev0UsbEprDriverTraceFeatures,
     $rev0UsbEprBlackBoxFeatures,
     $rev0UsbEprDeepBlackBoxFeatures,
+    $rev0UsbEprUninterruptedDeepBlackBoxFeatures,
     $rev0ValidationFeatures
 )
 
@@ -192,6 +194,9 @@ try {
     cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprDeepBlackBoxFeatures -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "rev0 deep black-box firmware clippy failed with exit code $LASTEXITCODE" }
 
+    cargo clippy -p $firmwarePackage --release --locked --no-default-features --features $rev0UsbEprUninterruptedDeepBlackBoxFeatures -- -D warnings
+    if ($LASTEXITCODE -ne 0) { throw "rev0 uninterrupted deep black-box firmware clippy failed with exit code $LASTEXITCODE" }
+
     cargo clippy -p $ccWakeProbePackage --release --locked --no-default-features --features $referenceChip -- -D warnings
     if ($LASTEXITCODE -ne 0) { throw "CC wake probe clippy failed with exit code $LASTEXITCODE" }
 
@@ -253,9 +258,9 @@ try {
     foreach ($feature in $firmwareFeatureSets) {
         cargo build -p $firmwarePackage --release --locked --no-default-features --features $feature
         if ($LASTEXITCODE -ne 0) { throw "$feature firmware build failed with exit code $LASTEXITCODE" }
-        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0UsbEprDriverTraceFeatures, $rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures, $rev0ValidationFeatures)) {
+        if ($feature -in @($rev0UsbSafeFeatures, $rev0UsbPpsFeatures, $rev0UsbEprFeatures, $rev0LeanUsbEprFeatures, $rev0UsbEprDriverTraceFeatures, $rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures, $rev0UsbEprUninterruptedDeepBlackBoxFeatures, $rev0ValidationFeatures)) {
             $firmwareElf = Join-Path $targetDirectory "riscv32imc-unknown-none-elf/release/$firmwarePackage"
-            $applicationFlashBytes = if ($feature -in @($rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures)) { 0xF600 } else { 62 * 1024 }
+            $applicationFlashBytes = if ($feature -in @($rev0UsbEprBlackBoxFeatures, $rev0UsbEprDeepBlackBoxFeatures, $rev0UsbEprUninterruptedDeepBlackBoxFeatures)) { 0xF600 } else { 62 * 1024 }
             & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
                 -Firmware $firmwareElf `
                 -ApplicationFlashBytes $applicationFlashBytes
@@ -298,6 +303,15 @@ try {
                 -Firmware $profileArtifact `
                 -ApplicationFlashBytes $applicationFlashBytes
         }
+
+        & $profileBuild -Profile 'usb-epr-uninterrupted' -DeepBlackBox
+        $combinedArtifact = Join-Path $workspace "examples/generated-artifacts/ch32x035-usb-pd-epr-sink-reference-$rev0Chip-usb-epr-uninterrupted-deep-black-box.elf"
+        if (-not (Test-Path -LiteralPath $combinedArtifact -PathType Leaf)) {
+            throw "uninterrupted deep-black-box modifier did not stage $combinedArtifact"
+        }
+        & (Join-Path $PSScriptRoot 'check-elf-layout.ps1') `
+            -Firmware $combinedArtifact `
+            -ApplicationFlashBytes 0xF600
     }
 
     $guiCheckPath = Join-Path ([System.IO.Path]::GetTempPath()) "usb-pd-control-$([guid]::NewGuid().ToString('N')).html"

@@ -38,6 +38,8 @@ pub mod application_event_kind {
     pub const PROTOCOL_RECOVERY: u8 = 5;
     pub const TERMINAL: u8 = 6;
     pub const EPR_ENTRY_FAILED: u8 = 7;
+    /// A board-qualified VBUS-present predicate deasserted.
+    pub const VBUS_DETECTOR_LOW: u8 = 8;
 }
 
 const MAGIC: [u8; 4] = *b"PDBB";

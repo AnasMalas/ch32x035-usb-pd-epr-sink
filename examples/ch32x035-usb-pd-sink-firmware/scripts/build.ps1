@@ -23,7 +23,9 @@ param(
         'ch32x035g8u6',
         'ch32x035r8t6'
     )]
-    [string]$Chip = 'ch32x035f8u6'
+    [string]$Chip = 'ch32x035f8u6',
+
+    [switch]$DeepBlackBox
 )
 
 $ErrorActionPreference = 'Stop'
@@ -61,6 +63,10 @@ if ($Profile -in $rev0Profiles) {
     $Chip = 'ch32x035g8u6'
 }
 
+if ($DeepBlackBox -and $Profile -notin @('usb-epr', 'usb-epr-uninterrupted')) {
+    throw '-DeepBlackBox is supported with usb-epr and usb-epr-uninterrupted.'
+}
+
 Push-Location $workspace
 try {
     $profileFeatures = switch ($Profile) {
@@ -77,6 +83,11 @@ try {
         'usb-epr-text' { 'dev-text-console,epr-capable-hardware,output-default-off,rev0-board' }
     }
     $selectedFeatures = "$Chip,$profileFeatures"
+    $artifactProfile = $Profile
+    if ($DeepBlackBox) {
+        $selectedFeatures = "$selectedFeatures,deep-black-box"
+        $artifactProfile = "$Profile-deep-black-box"
+    }
 
     $arguments = @(
         'build',
@@ -95,17 +106,18 @@ try {
     $artifactDirectory = Join-Path $examples 'generated-artifacts'
     $builtFirmware = Join-Path $targetDirectory 'riscv32imc-unknown-none-elf\release\ch32x035-usb-pd-epr-sink-reference'
     New-Item -ItemType Directory -Path $artifactDirectory -Force | Out-Null
-    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Chip-$Profile.elf"
+    $profileArtifact = Join-Path $artifactDirectory "ch32x035-usb-pd-epr-sink-reference-$Chip-$artifactProfile.elf"
     Copy-Item -LiteralPath $builtFirmware -Destination $profileArtifact -Force
-    if ($Profile -in @('usb-epr-black-box', 'usb-epr-deep-black-box')) {
+    if ($DeepBlackBox -or $Profile -in @('usb-epr-black-box', 'usb-epr-deep-black-box')) {
         & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashBytes 0xF600
     }
     else {
         $applicationFlashKiB = if ($Chip -eq 'ch32x035f7p6') { 48 } else { 62 }
         & (Join-Path $PSScriptRoot 'size.ps1') -Firmware $profileArtifact -FlashKiB $applicationFlashKiB
     }
-    Write-Host "Built profile '$Profile' for '$Chip': $profileArtifact"
-    Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile -Chip $Chip"
+    Write-Host "Built profile '$artifactProfile' for '$Chip': $profileArtifact"
+    $deepBlackBoxArgument = if ($DeepBlackBox) { ' -DeepBlackBox' } else { '' }
+    Write-Host "Flash it with: .\examples\ch32x035-usb-pd-sink-firmware\scripts\flash.ps1 -Profile $Profile -Chip $Chip$deepBlackBoxArgument"
     if ($Profile -eq 'safe-5v' -and $Chip -eq 'ch32x035f8u6') {
         Copy-Item -LiteralPath $builtFirmware -Destination (Join-Path $artifactDirectory 'ch32x035-usb-pd-epr-sink-reference.elf') -Force
     }

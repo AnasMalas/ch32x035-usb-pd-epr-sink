@@ -158,16 +158,27 @@ the trace-loss counters; keep high-rate success records in bounded RAM.
 
 ## Persistent reference black box
 
-The G8U6 reference firmware provides two default-off diagnostic profiles:
+The G8U6 reference firmware provides two default-off diagnostic compatibility
+profiles:
 
 | Profile | Retained evidence |
 |---|---|
 | `usb-epr-black-box` | Up to 16 high-level exceptional session records: Hard Reset, PHY reset/instability, partner timeout, protocol recovery, terminal policy failure, and EPR-entry failure |
 | `usb-epr-deep-black-box` | A 16-record rolling incident trace of formatter-free numeric PD events; when the runtime callback is reached, its final Hard Reset cause/summary occupies the newest slot and freezes the ring |
 
+Diagnostics can instead be combined with transition policy. For example,
+`build.ps1 -Profile usb-epr-uninterrupted -DeepBlackBox` produces the same
+deep trace while retaining the uninterrupted-load transition policy. Use the
+same `-DeepBlackBox` modifier with `flash.ps1` or `program.ps1`.
+
 Both use the storage-neutral `pd_sink::black_box` ABI: 12-byte records, an
 overwrite-oldest ring, a CRC-protected 256-byte page, and wrap-safe A/B
 generation selection. The crate owns no flash or detector. The reference
+deep trace also snapshots `VBUS-detector-low` after PB10 has already been
+cleared but before detach is published. Its path identifies an active low
+edge, an already-low loop observation, or the output-enable edge-race check.
+This is diagnostic observation only; it does not change the comparator,
+qualification, load cutoff, or detach behavior. The reference
 firmware supplies a board-specific backend that reserves code-flash pages
 `0xF600` and `0xF700`; its linker region ends at `0xF600`, so application code
 cannot overlap the journal.
