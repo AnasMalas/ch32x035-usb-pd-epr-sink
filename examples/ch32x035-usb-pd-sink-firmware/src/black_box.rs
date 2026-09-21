@@ -84,6 +84,17 @@ pub fn initialize() {
         State::empty()
     };
     STATE.lock(|cell| cell.set(state));
+
+    #[cfg(feature = "deep-black-box")]
+    LIVE.lock(|cell| {
+        cell.set(if state.valid && state.log.flags() & flags::FROZEN != 0 {
+            // Preserve the initiating incident across secondary recovery boots.
+            // Log::push() rejects later traffic while this flag remains set.
+            state.log
+        } else {
+            Log::new(NUMERIC_TRACE_ABI_VERSION, flags::DEEP_TRACE)
+        });
+    });
 }
 
 /// Erase the inactive A/B page before PD, USB, and PVD are enabled.
@@ -179,7 +190,39 @@ pub fn record_hard_reset(sent: bool, cause: u8, recovery_ms: u64, vbus_present: 
             cell.set(live);
         });
         snapshot_live(true);
+        persist_frozen_snapshot();
     }
+}
+
+/// Commit the first frozen incident while the already-prepared journal page is
+/// still available. A PD Hard Reset does not normally reset the MCU, but some
+/// failing source/board combinations remove power or reset the application
+/// during recovery. Keeping this write synchronous makes the initiating trace
+/// survive that secondary reset.
+#[cfg(feature = "deep-black-box")]
+fn persist_frozen_snapshot() {
+    critical_section::with(|_| {
+        let state = STATE.lock(Cell::get);
+        if state.prepared_page > 1 || !state.dirty {
+            return;
+        }
+
+        let page = encode_page(state.log);
+        let written = black_box_flash::program_page(state.prepared_page, &page);
+
+        STATE.lock(|cell| {
+            let mut latest = cell.get();
+            latest.prepared_page = NO_PREPARED_PAGE;
+            latest.write_error = !written;
+            if written {
+                latest.active_page = state.prepared_page;
+                latest.valid = true;
+                latest.log = state.log;
+                latest.dirty = false;
+            }
+            cell.set(latest);
+        });
+    });
 }
 
 #[cfg(feature = "deep-black-box")]
