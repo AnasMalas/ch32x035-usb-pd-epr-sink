@@ -18,6 +18,7 @@
   const applicationEvents = Object.freeze({
     1: "hard-reset", 2: "PHY-reset-failed", 3: "PHY-unstable", 4: "partner-timeout",
     5: "protocol-recovery", 6: "terminal", 7: "EPR-entry-failed", 8: "VBUS-detector-low",
+    9: "power-fail-sample",
   });
   const vbusDetectorPaths = Object.freeze({
     0: "loop-observed-low", 1: "active-low-edge", 2: "output-enable-race",
@@ -132,6 +133,9 @@
       } else if (applicationKind === 8) {
         const context = (header | (detail << 16)) >>> 0;
         text = `APP VBUS-detector-low; path=${lookup(vbusDetectorPaths, code, "path")}; qualified-before=${Boolean(context & 1)}`;
+      } else if (applicationKind === 9) {
+        const context = (header | (detail << 16)) >>> 0;
+        text = `APP power-fail-sample; detector-low=${Boolean(code & 1)}; EXTI1-pending=${Boolean(code & 2)}; EXTI1-armed=${Boolean(code & 4)}; qualified-before=${Boolean(code & 8)}; GPIOB-IN=0x${(context & 0xffff).toString(16).padStart(4, "0")}; EXTI-pending=0x${(context >>> 16).toString(16).padStart(4, "0")}`;
       } else {
         const context = (header | (detail << 16)) >>> 0;
         text = `APP ${lookup(applicationEvents, applicationKind, "event")}; code=${code}; context=${context}`;

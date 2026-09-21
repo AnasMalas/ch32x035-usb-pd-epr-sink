@@ -41,4 +41,16 @@ assert.deepEqual(blackBox.decodeEvent(detectorLow, 1), {
   text: "APP VBUS-detector-low; path=active-low-edge; qualified-before=true",
 });
 
+const powerFailSample = Uint8Array.from([
+  1, 0, 1, 12,
+  0xd3, 0x04, 0, 0,
+  0x89, 0x0b, 0xff, 0xff,
+  0x02, 0x40, 0x02, 0,
+]);
+assert.deepEqual(blackBox.decodeEvent(powerFailSample, 2), {
+  index: 2,
+  uptime: 1235,
+  text: "APP power-fail-sample; detector-low=true; EXTI1-pending=true; EXTI1-armed=false; qualified-before=true; GPIOB-IN=0x4002; EXTI-pending=0x0002",
+});
+
 console.log("Black-box browser decoder tests passed");

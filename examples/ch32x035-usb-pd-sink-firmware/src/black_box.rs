@@ -236,7 +236,14 @@ pub fn enable_numeric_trace() {
 }
 
 /// Called only from the PVD interrupt after PB10 has already been cleared.
-pub fn persist_on_power_fail() {
+///
+/// Appending this event snapshots the current deep numeric ring even when the
+/// falling rail outruns the task-level VBUS-detector future. `sample_context`
+/// contains raw GPIOB inputs in bits 0..15 and raw EXTI pending bits in
+/// bits 16..31.
+pub fn persist_on_power_fail(sample_flags: u8, sample_context: u32) {
+    record_application(application_event_kind::POWER_FAIL_SAMPLE, sample_flags, sample_context);
+
     let state = STATE.lock(Cell::get);
     if state.prepared_page > 1 || !state.dirty {
         return;

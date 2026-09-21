@@ -6,7 +6,7 @@
 
 use ch32_hal as hal;
 use hal::{interrupt, pac};
-use pd_sink::black_box::{Record, PAGE_SIZE};
+use pd_sink::black_box::{power_fail_sample_flags, Record, PAGE_SIZE};
 
 const PAGE_A_OFFSET: u32 = 0x0000_f600;
 const PAGE_B_OFFSET: u32 = 0x0000_f700;
@@ -230,8 +230,31 @@ impl interrupt::typelevel::Handler<interrupt::typelevel::PVD> for PvdInterruptHa
 
         // Cut the active-high reference load request before any journal work.
         pac::GPIOB.bcr().write(|w| w.set_br(10, true));
+
+        // Sample the raw board detector and its interrupt handoff immediately
+        // after the safety action. EXTI1 enabled=0 with no pending bit can mean
+        // its ISR already dispatched the edge but the executor did not yet run.
+        let gpio_b_input = pac::GPIOB.indr().read().0;
+        let exti_pending = pac::EXTI.intfr().read().0;
+        let exti_enabled = pac::EXTI.intenr().read().0;
+        let qualified_present = crate::vbus_is_present();
+        let mut sample_flags = 0;
+        if gpio_b_input & (1 << 1) == 0 {
+            sample_flags |= power_fail_sample_flags::DETECTOR_LOW;
+        }
+        if exti_pending & (1 << 1) != 0 {
+            sample_flags |= power_fail_sample_flags::DETECTOR_EXTI_PENDING;
+        }
+        if exti_enabled & (1 << 1) != 0 {
+            sample_flags |= power_fail_sample_flags::DETECTOR_EXTI_ARMED;
+        }
+        if qualified_present {
+            sample_flags |= power_fail_sample_flags::VBUS_QUALIFIED_PRESENT;
+        }
+        let sample_context = (gpio_b_input & 0xffff) | ((exti_pending & 0xffff) << 16);
+
         crate::black_box::latch_power_fail();
-        crate::black_box::persist_on_power_fail();
+        crate::black_box::persist_on_power_fail(sample_flags, sample_context);
     }
 }
 

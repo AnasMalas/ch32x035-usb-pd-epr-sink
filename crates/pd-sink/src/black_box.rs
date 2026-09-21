@@ -40,6 +40,24 @@ pub mod application_event_kind {
     pub const EPR_ENTRY_FAILED: u8 = 7;
     /// A board-qualified VBUS-present predicate deasserted.
     pub const VBUS_DETECTOR_LOW: u8 = 8;
+    /// The board power-fail interrupt sampled its detector and persisted the log.
+    pub const POWER_FAIL_SAMPLE: u8 = 9;
+}
+
+/// Bit assignments for the reference firmware's power-fail sample event.
+///
+/// These describe the instant after the load request has already been cut but
+/// before the prepared flash page is programmed. They are observations, not a
+/// portable VBUS-safety policy.
+pub mod power_fail_sample_flags {
+    /// The raw board detector input was low.
+    pub const DETECTOR_LOW: u8 = 1 << 0;
+    /// The detector's EXTI line still had a pending edge.
+    pub const DETECTOR_EXTI_PENDING: u8 = 1 << 1;
+    /// The detector's EXTI line was still interrupt-enabled.
+    pub const DETECTOR_EXTI_ARMED: u8 = 1 << 2;
+    /// The task-level VBUS predicate was still qualified present.
+    pub const VBUS_QUALIFIED_PRESENT: u8 = 1 << 3;
 }
 
 const MAGIC: [u8; 4] = *b"PDBB";

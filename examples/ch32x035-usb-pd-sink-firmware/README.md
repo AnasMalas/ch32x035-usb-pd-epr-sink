@@ -178,7 +178,9 @@ detach is not an incident. Black-box instrumentation reserves the
 final two 256-byte flash pages, so their linker-owned application limit is
 62,976 bytes rather than 63,488. They erase only the inactive page at boot,
 then the 4.0 V PVD handler first clears and latches off active-high PB10 and programs the
-already-erased page from SRAM. This backend is restricted to the validated
+already-erased page from SRAM. The PVD path snapshots the current live ring and
+adds a raw detector/EXTI sample even if task-level detach handling was outrun.
+This backend is restricted to the validated
 rev0 board's 5 V VDD and hold-up behavior; do not copy its threshold into a
 3.3 V design. See the
 [persistent black-box guide](../../docs/debugging.md#persistent-reference-black-box).

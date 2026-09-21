@@ -177,6 +177,12 @@ generation selection. The crate owns no flash or detector. The reference
 deep trace also snapshots `VBUS-detector-low` after PB10 has already been
 cleared but before detach is published. Its path identifies an active low
 edge, an already-low loop observation, or the output-enable edge-race check.
+If the falling MCU rail outruns that task-level path, the PVD interrupt copies
+the current live numeric ring and appends `power-fail-sample` before programming
+flash. That record reports the raw PB1 detector level, whether EXTI1 was pending
+or still armed, and whether VBUS was still task-qualified. A raw low observed
+at the 4.0 V PVD threshold does not by itself prove that the detector caused
+the loss; it may be another consequence of the same collapsing supply.
 This is diagnostic observation only; it does not change the comparator,
 qualification, load cutoff, or detach behavior. The reference
 firmware supplies a board-specific backend that reserves code-flash pages
