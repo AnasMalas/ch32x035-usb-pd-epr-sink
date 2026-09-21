@@ -82,7 +82,12 @@ pub async fn receive(mut receiver: CdcReceiver<'static>) -> ! {
             #[cfg(feature = "persistent-black-box")]
             if count == 3 && packet[..2] == crate::black_box::REQUEST_MAGIC {
                 decoder.reset();
-                let response = crate::black_box::response(packet[2]);
+                let page = packet[2];
+                if page == crate::black_box::ARM_REQUEST_PAGE {
+                    crate::black_box::arm();
+                }
+                let response =
+                    crate::black_box::response(if page == crate::black_box::ARM_REQUEST_PAGE { 0 } else { page });
                 CONTROL_PACKETS.send(ControlPacket::raw(response.as_bytes())).await;
                 continue;
             }

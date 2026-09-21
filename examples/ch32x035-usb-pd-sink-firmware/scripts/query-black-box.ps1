@@ -1,7 +1,8 @@
 [CmdletBinding()]
 param(
     [string]$Port,
-    [int]$TimeoutSeconds = 10
+    [int]$TimeoutSeconds = 10,
+    [switch]$Arm
 )
 
 $ErrorActionPreference = 'Stop'
@@ -184,7 +185,7 @@ $serial.ReadTimeout = 100
 $serial.Open()
 try {
     Start-Sleep -Milliseconds 150
-    $summaryResponse = Read-BlackBoxPage $serial 0
+    $summaryResponse = Read-BlackBoxPage $serial $(if ($Arm) { [byte]0xff } else { [byte]0 })
     if ($summaryResponse.Kind -ne 0xb0 -or $summaryResponse.Payload.Length -ne 14) {
         throw 'The device returned an invalid black-box summary.'
     }
@@ -199,6 +200,14 @@ try {
     Write-Host ('Black box: {0} events; next sequence={1}; ABI={2}; trace ABI={3}; hard-reset={4}, frozen={5}, overwritten={6}' -f `
         $summary[2], [BitConverter]::ToUInt16($summary, 8), $summary[0], $summary[10], `
         [bool]($logFlags -band 1), [bool]($logFlags -band 2), [bool]($logFlags -band 4))
+
+    if ($Arm) {
+        if ($summary[12] -eq 255 -or ($stateFlags -band 8)) {
+            throw 'The device could not prepare a black-box journal page.'
+        }
+        Write-Host 'Black box cleared and armed for the next incident.'
+        return
+    }
 
     for ($index = 0; $index -lt [int]$summary[2]; $index++) {
         $response = Read-BlackBoxPage $serial ([byte]($index + 1))

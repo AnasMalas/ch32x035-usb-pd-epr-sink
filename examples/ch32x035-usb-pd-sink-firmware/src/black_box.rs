@@ -18,6 +18,7 @@ use pd_sink::numeric_trace::{
 use crate::black_box_flash;
 
 pub const REQUEST_MAGIC: [u8; 2] = *b"BB";
+pub const ARM_REQUEST_PAGE: u8 = u8::MAX;
 const RESPONSE_MAGIC: [u8; 4] = *b"PDBB";
 const RESPONSE_SUMMARY: u8 = 0xb0;
 const RESPONSE_RECORD: u8 = 0xb1;
@@ -136,6 +137,52 @@ pub fn latch_power_fail() {
 
 pub fn power_fail_latched() -> bool {
     POWER_FAIL_LATCHED.lock(Cell::get)
+}
+
+/// Discard the current in-memory incident and arm the next prepared journal
+/// page. This is a diagnostic operation intended to be invoked at a stable
+/// contract immediately before reproducing one specific failure.
+pub fn arm() -> bool {
+    critical_section::with(|_| {
+        let state = STATE.lock(Cell::get);
+        let target = if state.valid {
+            state.active_page ^ 1
+        } else if black_box_flash::page_is_erased(0) {
+            0
+        } else {
+            1
+        };
+        let ready = black_box_flash::page_is_erased(target) || black_box_flash::erase_page(target);
+        if !ready {
+            STATE.lock(|cell| {
+                let mut latest = cell.get();
+                latest.write_error = true;
+                cell.set(latest);
+            });
+            return false;
+        }
+
+        #[cfg(feature = "deep-black-box")]
+        let mut log = Log::new(NUMERIC_TRACE_ABI_VERSION, flags::DEEP_TRACE);
+        #[cfg(not(feature = "deep-black-box"))]
+        let mut log = Log::new(0, 0);
+        // The next persisted incident must sort newer than the retained page.
+        log.set_generation(state.log.generation());
+
+        #[cfg(feature = "deep-black-box")]
+        LIVE.lock(|cell| cell.set(log));
+        STATE.lock(|cell| {
+            let mut latest = cell.get();
+            latest.log = log;
+            latest.valid = false;
+            latest.restored = false;
+            latest.dirty = false;
+            latest.write_error = false;
+            latest.prepared_page = target;
+            cell.set(latest);
+        });
+        true
+    })
 }
 
 #[cfg(not(feature = "deep-black-box"))]
