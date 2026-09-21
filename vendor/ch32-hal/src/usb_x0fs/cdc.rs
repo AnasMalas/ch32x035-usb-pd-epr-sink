@@ -34,6 +34,7 @@ const STAGE_STATUS_IN: u8 = 4;
 const ACTION_NONE: u8 = 0;
 const ACTION_SET_ADDRESS: u8 = 1;
 const ACTION_SET_CONFIGURATION: u8 = 2;
+const ACTION_SET_CONTROL_LINE_STATE: u8 = 3;
 
 const REQUEST_TYPE_STANDARD: u8 = 0x00;
 const REQUEST_TYPE_CLASS: u8 = 0x20;
@@ -56,6 +57,7 @@ const SET_INTERFACE: u8 = 0x0b;
 const CDC_SET_LINE_CODING: u8 = 0x20;
 const CDC_GET_LINE_CODING: u8 = 0x21;
 const CDC_SET_CONTROL_LINE_STATE: u8 = 0x22;
+const CDC_CONTROL_LINE_DTR: u8 = 1 << 0;
 
 const DESCRIPTOR_DEVICE: u8 = 1;
 const DESCRIPTOR_CONFIGURATION: u8 = 2;
@@ -106,6 +108,7 @@ struct ControlState {
     action: u8,
     action_value: u8,
     configuration: u8,
+    dtr: bool,
 }
 
 static mut CONTROL: ControlState = ControlState {
@@ -115,6 +118,7 @@ static mut CONTROL: ControlState = ControlState {
     action: ACTION_NONE,
     action_value: 0,
     configuration: 0,
+    dtr: false,
 };
 
 static RX_WAKER: AtomicWaker = AtomicWaker::new();
@@ -130,6 +134,19 @@ fn advance_connection_generation() {
     // Called only by the USB interrupt handler on this single-core target.
     let next = CONNECTION_GENERATION.load(Ordering::SeqCst).wrapping_add(1);
     CONNECTION_GENERATION.store(next, Ordering::SeqCst);
+}
+
+unsafe fn publish_data_session(connected: bool) {
+    advance_connection_generation();
+    RX_READY.store(false, Ordering::SeqCst);
+    RX_LENGTH.store(0, Ordering::SeqCst);
+    TX_BUSY.store(false, Ordering::SeqCst);
+    endpoint_ctrl(1).write(|w| w.set_t_res(RESPONSE_NAK));
+    endpoint_ctrl(2).write(|w| w.set_r_res(if connected { RESPONSE_ACK } else { RESPONSE_NAK }));
+    endpoint_ctrl(3).write(|w| w.set_t_res(RESPONSE_NAK));
+    CONNECTION.publish(connected);
+    RX_WAKER.wake();
+    TX_WAKER.wake();
 }
 
 #[derive(Clone, Copy)]
@@ -384,7 +401,7 @@ unsafe fn handle_class_request(setup: SetupPacket) {
         }
         CDC_GET_LINE_CODING if setup.request_type & 0x80 != 0 => start_control_in(&LINE_CODING, setup.length),
         CDC_SET_CONTROL_LINE_STATE if setup.request_type & 0x80 == 0 && setup.length == 0 => {
-            start_status_in(ACTION_NONE, 0)
+            start_status_in(ACTION_SET_CONTROL_LINE_STATE, setup.value as u8)
         }
         _ => stall_control(),
     }
@@ -426,17 +443,18 @@ unsafe fn handle_ep0_in() {
                 ACTION_SET_ADDRESS => regs().dev_ad().write(|w| w.set_mask_usb_addr(state.action_value)),
                 ACTION_SET_CONFIGURATION => {
                     state.configuration = state.action_value;
-                    let configured = state.action_value != 0;
-                    advance_connection_generation();
-                    RX_READY.store(false, Ordering::SeqCst);
-                    RX_LENGTH.store(0, Ordering::SeqCst);
-                    TX_BUSY.store(false, Ordering::SeqCst);
-                    endpoint_ctrl(1).write(|w| w.set_t_res(RESPONSE_NAK));
-                    endpoint_ctrl(2).write(|w| w.set_r_res(if configured { RESPONSE_ACK } else { RESPONSE_NAK }));
-                    endpoint_ctrl(3).write(|w| w.set_t_res(RESPONSE_NAK));
-                    CONNECTION.publish(configured);
-                    RX_WAKER.wake();
-                    TX_WAKER.wake();
+                    // A host opening the CDC port must assert DTR after USB
+                    // configuration. Treat that edge as the application
+                    // session boundary rather than configuration itself.
+                    state.dtr = false;
+                    publish_data_session(false);
+                }
+                ACTION_SET_CONTROL_LINE_STATE => {
+                    let dtr = state.action_value & CDC_CONTROL_LINE_DTR != 0;
+                    if state.dtr != dtr {
+                        state.dtr = dtr;
+                        publish_data_session(state.configuration != 0 && dtr);
+                    }
                 }
                 _ => {}
             }
@@ -472,6 +490,7 @@ unsafe fn reset_device() {
     state.action = ACTION_NONE;
     state.action_value = 0;
     state.configuration = 0;
+    state.dtr = false;
 
     advance_connection_generation();
     RX_READY.store(false, Ordering::SeqCst);
@@ -629,6 +648,7 @@ impl Sender<'_> {
         EP_SIZE
     }
 
+    /// Wait until a configured CDC host opens the data session by asserting DTR.
     pub async fn wait_connection(&mut self) {
         CONNECTION.wait_sender().await;
     }
@@ -698,6 +718,7 @@ impl Receiver<'_> {
         EP_SIZE
     }
 
+    /// Wait until a configured CDC host opens the data session by asserting DTR.
     pub async fn wait_connection(&mut self) {
         CONNECTION.wait_receiver().await;
     }

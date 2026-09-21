@@ -44,6 +44,8 @@ for (const required of [
   "navigator.usb.requestDevice",
   "navigator.serial.getPorts",
   "navigator.usb.getDevices",
+  "dataTerminalReady: true",
+  "dataTerminalReady: false",
   "Condense stream: On",
   "Raw stream: Off",
   "epr-avs-nonstandard",

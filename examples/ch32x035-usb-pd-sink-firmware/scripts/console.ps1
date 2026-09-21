@@ -35,13 +35,15 @@ if (-not $Port) {
 
 $serial = [System.IO.Ports.SerialPort]::new($Port, $BaudRate)
 $serial.NewLine = "`n"
-$serial.DtrEnable = $true
+$serial.DtrEnable = $false
 $serial.RtsEnable = $false
 $serial.ReadTimeout = 100
 $serial.WriteTimeout = 1000
 
 try {
     $serial.Open()
+    Start-Sleep -Milliseconds 50
+    $serial.DtrEnable = $true
     Write-Host "Connected to $Port."
     Write-Host 'ASCII pass-through only; requires dev-text-console firmware. Use the browser GUI for compact usb-control.'
 
@@ -80,6 +82,8 @@ try {
 }
 finally {
     if ($serial.IsOpen) {
+        $serial.DtrEnable = $false
+        $serial.RtsEnable = $false
         $serial.Close()
     }
     $serial.Dispose()

@@ -1569,6 +1569,7 @@ async function connectWebSerial(authorizedPort = null) {
   const port = authorizedPort ?? await navigator.serial.requestPort();
   state.port = port;
   await port.open({ baudRate: 115200, bufferSize: 512 });
+  await port.setSignals({ dataTerminalReady: true, requestToSend: false });
   state.writer = port.writable.getWriter();
   const info = port.getInfo();
   const id = `VID ${formatUsbId(info.usbVendorId)} · PID ${formatUsbId(info.usbProductId)}`;
@@ -1712,6 +1713,26 @@ async function closeTransport() {
       // The browser may already have invalidated the stream.
     }
     state.writer = null;
+    try {
+      await port?.setSignals({ dataTerminalReady: false, requestToSend: false });
+    } catch (_) {
+      // A disconnected serial device cannot accept line-state changes.
+    }
+  } else if (api === "webusb-cdc" && port?.opened && port.configuration) {
+    try {
+      const communication = findUsbInterface(port.configuration, 0x02, 0x02);
+      if (communication) {
+        await port.controlTransferOut({
+          requestType: "class",
+          recipient: "interface",
+          request: 0x22,
+          value: 0,
+          index: communication.deviceInterface.interfaceNumber,
+        });
+      }
+    } catch (_) {
+      // A disconnected USB device cannot accept line-state changes.
+    }
   }
 
   try {
