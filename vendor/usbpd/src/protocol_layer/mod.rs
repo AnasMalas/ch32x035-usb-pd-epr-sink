@@ -924,7 +924,16 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Returns `Ok(true)` if this was a retransmission (caller should continue to next message),
     /// `Ok(false)` if this is a new message to process, or `Err` on failure.
     async fn handle_rx_ack(&mut self, header: Header) -> Result<bool, RxError> {
-        let is_good_crc = matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        let message_type = header.message_type();
+        let is_good_crc = matches!(message_type, MessageType::Control(ControlMessageType::GoodCRC));
+
+        // Soft Reset starts a new protocol sequence and must be processed even
+        // when its required MessageID 0 matches the preceding message. Clear
+        // only the remembered RX ID here so the existing first-message path
+        // records the reset's ID before GoodCRC is transmitted.
+        if matches!(message_type, MessageType::Control(ControlMessageType::SoftReset)) {
+            self.counters.rx_message = None;
+        }
 
         let is_retransmission = if is_good_crc { false } else { self.update_rx_message_counter(header) };
 
@@ -1977,7 +1986,8 @@ mod tests {
         ControlMessageType, DataMessageType, ExtendedMessageType, Header, SpecificationRevision,
     };
     use super::{
-        OutgoingMessage, ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, SinkTransmit, TxValidationError,
+        MessageType, OutgoingMessage, ProtocolError, ProtocolLayer, SinkPayload, SinkProtocolLayer, SinkTransmit,
+        TxValidationError,
     };
     use crate::counters::{Counter, CounterType};
     use crate::dummy::{
@@ -2369,6 +2379,45 @@ mod tests {
             ));
             assert!(!protocol_layer.driver().has_transmitted_data());
         }
+    }
+
+    #[tokio::test]
+    async fn partner_soft_reset_with_the_previous_message_id_is_not_discarded() {
+        let mut protocol_layer = get_protocol_layer();
+        let counter = Counter::new_from_value(CounterType::MessageId, 0);
+
+        let previous = Message::new(Header::new_control(source_header(), counter, ControlMessageType::Accept));
+        let mut previous_frame = [0; MAX_DATA_MESSAGE_SIZE];
+        let previous_length = previous.to_bytes(&mut previous_frame);
+        protocol_layer.driver.inject_received_data(&previous_frame[..previous_length]);
+        assert_eq!(protocol_layer.receive_message().await.unwrap().header, previous.header);
+
+        let first_good_crc = protocol_layer.driver.probe_transmitted_data();
+        let first_good_crc = Message::from_bytes(&first_good_crc).unwrap();
+        assert_eq!(first_good_crc.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        assert_eq!(first_good_crc.header.message_id(), 0);
+
+        let soft_reset = Message::new(Header::new_control(source_header(), counter, ControlMessageType::SoftReset));
+        let mut soft_reset_frame = [0; MAX_DATA_MESSAGE_SIZE];
+        let soft_reset_length = soft_reset.to_bytes(&mut soft_reset_frame);
+        // An ordinary duplicate with ID 0 is still acknowledged and skipped.
+        // The following Soft Reset with that same ID must not be skipped.
+        protocol_layer.driver.inject_received_data(&previous_frame[..previous_length]);
+        protocol_layer.driver.inject_received_data(&soft_reset_frame[..soft_reset_length]);
+        assert!(matches!(
+            protocol_layer.receive_message().await,
+            Err(ProtocolError::RxError(super::RxError::SoftReset))
+        ));
+
+        let duplicate_good_crc = protocol_layer.driver.probe_transmitted_data();
+        let duplicate_good_crc = Message::from_bytes(&duplicate_good_crc).unwrap();
+        assert_eq!(duplicate_good_crc.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        assert_eq!(duplicate_good_crc.header.message_id(), 0);
+
+        let reset_good_crc = protocol_layer.driver.probe_transmitted_data();
+        let reset_good_crc = Message::from_bytes(&reset_good_crc).unwrap();
+        assert_eq!(reset_good_crc.header.message_type(), MessageType::Control(ControlMessageType::GoodCRC));
+        assert_eq!(reset_good_crc.header.message_id(), 0);
     }
 
     #[test]
