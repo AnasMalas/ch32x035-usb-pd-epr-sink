@@ -148,9 +148,6 @@ impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandl
             receive_complete::<T>(status, byte_count);
         }
 
-        state
-            .events
-            .store(state.events.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
         state.waker.wake();
     }
 }
@@ -952,8 +949,6 @@ struct State {
     waker: AtomicWaker,
     /// One of the `PHASE_*` values.
     phase: AtomicU8,
-    /// Wrapping count of USBPD interrupts, used to detect stalled transfers.
-    events: AtomicU8,
     /// Wrapping count of partner Hard Resets observed by the handler.
     hard_resets: AtomicU8,
     /// `hard_resets` value already reported to the task.
@@ -979,7 +974,6 @@ impl State {
         Self {
             waker: AtomicWaker::new(),
             phase: AtomicU8::new(PHASE_IDLE),
-            events: AtomicU8::new(0),
             hard_resets: AtomicU8::new(0),
             hard_resets_seen: AtomicU8::new(0),
             tx_done: AtomicU8::new(0),
