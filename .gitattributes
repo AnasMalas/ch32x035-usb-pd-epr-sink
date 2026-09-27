@@ -7,3 +7,6 @@
 *.gif binary
 *.zip binary
 *.exe binary
+
+# Parallel branches add changelog entries at the same place; keep both sides.
+CHANGELOG.md merge=union
