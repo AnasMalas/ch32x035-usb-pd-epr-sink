@@ -35,8 +35,11 @@ parallel need.
   size difference in your changelog entry.
 - Label each claim as hardware-confirmed, host-tested, or inferred. A host
   test does not prove CH32 timing, register behavior, or load cutoff.
-- This repository is public. Keep private product details, personal paths,
-  serial numbers, and unpublished captures out of commits.
+- This repository is public on GitHub but not yet announced. `origin` serves
+  as a backup, so push after you commit. Even so, keep private product
+  details, personal paths, serial numbers, and unpublished captures out of
+  commits. The untracked `hardware/` directory is private and is excluded
+  locally.
 - Do not flash hardware or open serial ports unless the user asks for it in
   the current session.
 
