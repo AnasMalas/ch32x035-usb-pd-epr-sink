@@ -40,6 +40,8 @@ impl Timer for PpsRefreshTimer {
 }
 
 static TELEMETRY_CLOCK_MS: AtomicU32 = AtomicU32::new(0);
+static SOFTWARE_PPS_CLOCK_TICKS: AtomicU32 = AtomicU32::new(0);
+static SOFTWARE_CRC_TIMEOUTS: AtomicUsize = AtomicUsize::new(0);
 
 /// Advances only when the test DPM issues another telemetry inquiry. A
 /// deadline-based PPS timer reaches zero after five inquiries; a recreated
@@ -55,6 +57,31 @@ impl Timer for PpsTelemetryTimer {
         if milliseconds != 0 {
             pending().await
         }
+    }
+}
+
+/// Exercises the same software GoodCRC/retry path used by CH32X035. Two
+/// telemetry inquiries advance the clock by about two seconds each; the
+/// remaining 896 ms PPS-refresh deadline then wins before another inquiry.
+struct SoftwarePpsTimer;
+
+impl Timer for SoftwarePpsTimer {
+    fn now_128ms_ticks() -> u32 {
+        SOFTWARE_PPS_CLOCK_TICKS.load(Ordering::SeqCst)
+    }
+
+    async fn after_millis(milliseconds: u64) {
+        if milliseconds == 1
+            && SOFTWARE_CRC_TIMEOUTS
+                .fetch_update(Ordering::SeqCst, Ordering::SeqCst, |remaining| remaining.checked_sub(1))
+                .is_ok()
+        {
+            return;
+        }
+        if milliseconds == 896 {
+            return;
+        }
+        pending().await
     }
 }
 
@@ -159,6 +186,7 @@ impl Driver for ScriptedPpsDriver {
 
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, DriverRxError> {
         let transmitted = self.transmitted.lock().unwrap().len();
+        eprintln!("software receive: transmitted={transmitted}, front={:?}", self.receive.front().map(|entry| entry.0));
         let Some((required_transmits, _)) = self.receive.front() else {
             return if transmitted >= self.detach_after { Err(DriverRxError::Detached) } else { pending().await };
         };
@@ -181,6 +209,76 @@ impl Driver for ScriptedPpsDriver {
     }
 }
 
+struct SoftwarePpsDriver {
+    receive: VecDeque<(usize, Vec<u8>)>,
+    transmitted: Arc<Mutex<Vec<Vec<u8>>>>,
+    sink_tx_checks: Arc<AtomicUsize>,
+    duplicate_ps_rdy_delivered: Arc<AtomicBool>,
+    delay_first_good_crc_for: Option<MessageType>,
+    delayed_good_crc: bool,
+    ps_rdy_seen: bool,
+    soft_reset_followup_guard: Option<usize>,
+    detach_after: usize,
+}
+
+impl Driver for SoftwarePpsDriver {
+    async fn wait_for_vbus(&mut self) {}
+
+    fn sink_tx_ok(&mut self) -> bool {
+        self.sink_tx_checks.fetch_add(1, Ordering::SeqCst);
+        true
+    }
+
+    async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, DriverRxError> {
+        let transmitted = self.transmitted.lock().unwrap().len();
+        if self.soft_reset_followup_guard == Some(transmitted) {
+            return Err(DriverRxError::Detached);
+        }
+
+        let Some((required_transmits, _)) = self.receive.front() else {
+            return if transmitted >= self.detach_after { Err(DriverRxError::Detached) } else { pending().await };
+        };
+        if transmitted < *required_transmits {
+            pending().await
+        }
+
+        let (_, message) = self.receive.pop_front().unwrap();
+        let header = Header::from_bytes(&message[..2]).unwrap();
+        eprintln!("software receive -> {:?} id={}", header.message_type(), header.message_id());
+        match header.message_type() {
+            MessageType::Control(ControlMessageType::PsRdy) if self.ps_rdy_seen => {
+                self.duplicate_ps_rdy_delivered.store(true, Ordering::SeqCst);
+            }
+            MessageType::Control(ControlMessageType::PsRdy) => self.ps_rdy_seen = true,
+            MessageType::Control(ControlMessageType::SoftReset) => {
+                // A broken duplicate filter would immediately call receive()
+                // again after the software GoodCRC instead of advancing the
+                // policy engine to its reset Accept.
+                self.soft_reset_followup_guard = Some(transmitted + 1);
+            }
+            _ => {}
+        }
+        buffer[..message.len()].copy_from_slice(&message);
+        Ok(message.len())
+    }
+
+    async fn transmit(&mut self, data: &[u8]) -> Result<(), DriverTxError> {
+        let header = Header::from_bytes(&data[..2]).unwrap();
+        let message_type = header.message_type();
+        eprintln!("software transmit -> {message_type:?} id={}", header.message_id());
+        if !self.delayed_good_crc && self.delay_first_good_crc_for == Some(message_type) {
+            self.delayed_good_crc = true;
+            SOFTWARE_CRC_TIMEOUTS.store(1, Ordering::SeqCst);
+        }
+        self.transmitted.lock().unwrap().push(data.to_vec());
+        Ok(())
+    }
+
+    async fn transmit_hard_reset(&mut self) -> Result<(), DriverTxError> {
+        panic!("the production software GoodCRC path must recover without Hard Reset")
+    }
+}
+
 struct PpsDpm {
     detached: Arc<AtomicBool>,
     request_calls: Arc<AtomicUsize>,
@@ -191,6 +289,25 @@ struct TelemetryDpm {
     request_calls: Arc<AtomicUsize>,
     transitions: Arc<AtomicUsize>,
     queries: usize,
+    request: PowerSource,
+}
+
+struct SoftwareTelemetryDpm {
+    detached: Arc<AtomicBool>,
+    duplicate_ps_rdy_delivered: Arc<AtomicBool>,
+    request_calls: Arc<AtomicUsize>,
+    transitions: Arc<AtomicUsize>,
+    statuses: Arc<AtomicUsize>,
+    queries: usize,
+    request: PowerSource,
+}
+
+struct SoftwareSoftResetDpm {
+    detached: Arc<AtomicBool>,
+    request_calls: Arc<AtomicUsize>,
+    transitions: Arc<AtomicUsize>,
+    statuses: Arc<AtomicUsize>,
+    event_sent: bool,
     request: PowerSource,
 }
 
@@ -238,6 +355,84 @@ impl DevicePolicyManager for TelemetryDpm {
         let event = if self.transitions.load(Ordering::SeqCst) == 1 && self.queries < 5 {
             self.queries += 1;
             TELEMETRY_CLOCK_MS.store(self.queries as u32 * 8, Ordering::SeqCst);
+            Some(Event::RequestPpsStatus)
+        } else {
+            None
+        };
+        async move {
+            match event {
+                Some(event) => event,
+                None => pending().await,
+            }
+        }
+    }
+}
+
+impl DevicePolicyManager for SoftwareTelemetryDpm {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+        self.request_calls.fetch_add(1, Ordering::SeqCst);
+        self.request
+    }
+
+    fn transition_power(&mut self, _accepted: &PowerSource) {
+        self.transitions.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn inform_pps_status(&mut self, _status: &usbpd::protocol_layer::message::extended::pps_status::PpsStatus) {
+        self.statuses.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn detached(&mut self) {
+        self.detached.store(true, Ordering::SeqCst);
+    }
+
+    fn get_event(&mut self, _source_capabilities: &SourceCapabilities) -> impl Future<Output = Event> {
+        eprintln!(
+            "software event: transitions={} duplicate={} queries={}",
+            self.transitions.load(Ordering::SeqCst),
+            self.duplicate_ps_rdy_delivered.load(Ordering::SeqCst),
+            self.queries
+        );
+        let event = if self.transitions.load(Ordering::SeqCst) == 1
+            && self.duplicate_ps_rdy_delivered.load(Ordering::SeqCst)
+            && self.queries < 2
+        {
+            self.queries += 1;
+            SOFTWARE_PPS_CLOCK_TICKS.store(self.queries as u32 * 16, Ordering::SeqCst);
+            Some(Event::RequestPpsStatus)
+        } else {
+            None
+        };
+        async move {
+            match event {
+                Some(event) => event,
+                None => pending().await,
+            }
+        }
+    }
+}
+
+impl DevicePolicyManager for SoftwareSoftResetDpm {
+    fn request(&mut self, _source_capabilities: &SourceCapabilities) -> PowerSource {
+        self.request_calls.fetch_add(1, Ordering::SeqCst);
+        self.request
+    }
+
+    fn transition_power(&mut self, _accepted: &PowerSource) {
+        self.transitions.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn inform_pps_status(&mut self, _status: &usbpd::protocol_layer::message::extended::pps_status::PpsStatus) {
+        self.statuses.fetch_add(1, Ordering::SeqCst);
+    }
+
+    fn detached(&mut self) {
+        self.detached.store(true, Ordering::SeqCst);
+    }
+
+    fn get_event(&mut self, _source_capabilities: &SourceCapabilities) -> impl Future<Output = Event> {
+        let event = if self.transitions.load(Ordering::SeqCst) == 1 && !self.event_sent {
+            self.event_sent = true;
             Some(Event::RequestPpsStatus)
         } else {
             None
@@ -409,6 +604,168 @@ fn pps_telemetry_does_not_postpone_the_contract_refresh_deadline() {
             MessageType::Data(DataMessageType::Request),
         ]
     );
+}
+
+#[test]
+fn production_software_good_crc_path_survives_pps_traffic_and_refresh() {
+    SOFTWARE_PPS_CLOCK_TICKS.store(0, Ordering::SeqCst);
+    SOFTWARE_CRC_TIMEOUTS.store(0, Ordering::SeqCst);
+    let fixed_5v = fixed_pdo(5_000, 3_000);
+    let pps = pps_pdo(5_000, 21_000, 3_000);
+    let request = pps_request(2, 17_220, 3_000);
+    let pps_status = [0x5c, 0x03, 0, 0];
+    let receive = VecDeque::from([
+        (0, source_capabilities(0, &[fixed_5v, pps])),
+        (2, source_control(0, ControlMessageType::GoodCRC)),
+        (2, source_control(1, ControlMessageType::Accept)),
+        (3, source_control(2, ControlMessageType::PsRdy)),
+        // The Source retransmits PS_RDY because its first GoodCRC was lost.
+        // It must be acknowledged and ignored without disturbing the contract.
+        (4, source_control(2, ControlMessageType::PsRdy)),
+        // The first telemetry GoodCRC arrives only after one software retry.
+        (7, source_control(1, ControlMessageType::GoodCRC)),
+        (7, source_extended(3, ExtendedMessageType::PpsStatus, &pps_status)),
+        (9, source_control(2, ControlMessageType::GoodCRC)),
+        (9, source_extended(4, ExtendedMessageType::PpsStatus, &pps_status)),
+        // The mandatory PPS refresh wins after two roughly 2 s inquiries.
+        (11, source_control(3, ControlMessageType::GoodCRC)),
+        (11, source_control(5, ControlMessageType::Accept)),
+        (12, source_control(6, ControlMessageType::PsRdy)),
+    ]);
+
+    let transmitted = Arc::new(Mutex::new(Vec::new()));
+    let sink_tx_checks = Arc::new(AtomicUsize::new(0));
+    let duplicate_ps_rdy_delivered = Arc::new(AtomicBool::new(false));
+    let detached = Arc::new(AtomicBool::new(false));
+    let request_calls = Arc::new(AtomicUsize::new(0));
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let statuses = Arc::new(AtomicUsize::new(0));
+    let driver = SoftwarePpsDriver {
+        receive,
+        transmitted: Arc::clone(&transmitted),
+        sink_tx_checks: Arc::clone(&sink_tx_checks),
+        duplicate_ps_rdy_delivered: Arc::clone(&duplicate_ps_rdy_delivered),
+        delay_first_good_crc_for: Some(MessageType::Control(ControlMessageType::GetPpsStatus)),
+        delayed_good_crc: false,
+        ps_rdy_seen: false,
+        soft_reset_followup_guard: None,
+        detach_after: 13,
+    };
+    let dpm = SoftwareTelemetryDpm {
+        detached: Arc::clone(&detached),
+        duplicate_ps_rdy_delivered,
+        request_calls: Arc::clone(&request_calls),
+        transitions: Arc::clone(&transitions),
+        statuses: Arc::clone(&statuses),
+        queries: 0,
+        request,
+    };
+    let mut sink: Sink<_, SoftwarePpsTimer, _> = Sink::new(driver, dpm);
+
+    assert!(matches!(block_on(sink.run()), Err(SinkError::Detached)));
+    assert!(detached.load(Ordering::SeqCst));
+    assert_eq!(request_calls.load(Ordering::SeqCst), 2, "initial selection plus mandatory refresh");
+    assert_eq!(transitions.load(Ordering::SeqCst), 2);
+    assert_eq!(statuses.load(Ordering::SeqCst), 2);
+    assert!(sink_tx_checks.load(Ordering::SeqCst) >= 3, "telemetry and refresh must all be SinkTx gated");
+
+    let transmitted = transmitted.lock().unwrap();
+    let requests: Vec<&Vec<u8>> = transmitted
+        .iter()
+        .filter(|message| {
+            Header::from_bytes(&message[..2]).unwrap().message_type() == MessageType::Data(DataMessageType::Request)
+        })
+        .collect();
+    assert_eq!(requests.len(), 2);
+    assert_eq!(&requests[0][2..], &requests[1][2..], "refresh must preserve the accepted PPS RDO");
+
+    let telemetry: Vec<&Vec<u8>> = transmitted
+        .iter()
+        .filter(|message| {
+            Header::from_bytes(&message[..2]).unwrap().message_type()
+                == MessageType::Control(ControlMessageType::GetPpsStatus)
+        })
+        .collect();
+    assert_eq!(telemetry.len(), 3, "one missed GoodCRC must cause exactly one retry");
+    assert_eq!(telemetry[0], telemetry[1], "software retry must preserve the frame and MessageID");
+    assert_eq!(
+        Header::from_bytes(&telemetry[2][..2]).unwrap().message_id(),
+        (Header::from_bytes(&telemetry[0][..2]).unwrap().message_id() + 1) & 0x07
+    );
+}
+
+#[test]
+fn production_software_good_crc_path_recovers_from_same_id_soft_reset() {
+    SOFTWARE_CRC_TIMEOUTS.store(0, Ordering::SeqCst);
+    let fixed_5v = fixed_pdo(5_000, 3_000);
+    let pps = pps_pdo(5_000, 21_000, 3_000);
+    let request = pps_request(2, 17_220, 3_000);
+    let pps_status = [0x5c, 0x03, 0, 0];
+    let receive = VecDeque::from([
+        (0, source_capabilities(0, &[fixed_5v, pps])),
+        (2, source_control(0, ControlMessageType::GoodCRC)),
+        (2, source_control(1, ControlMessageType::Accept)),
+        (3, source_control(2, ControlMessageType::PsRdy)),
+        (5, source_control(1, ControlMessageType::GoodCRC)),
+        (5, source_extended(3, ExtendedMessageType::PpsStatus, &pps_status)),
+        // Soft Reset intentionally reuses the preceding PPS_Status MessageID.
+        (6, source_control(3, ControlMessageType::SoftReset)),
+        (8, source_control(0, ControlMessageType::GoodCRC)),
+        (8, source_capabilities(0, &[fixed_5v, pps])),
+        (10, source_control(1, ControlMessageType::GoodCRC)),
+        (10, source_control(1, ControlMessageType::Accept)),
+        (11, source_control(2, ControlMessageType::PsRdy)),
+    ]);
+
+    let transmitted = Arc::new(Mutex::new(Vec::new()));
+    let detached = Arc::new(AtomicBool::new(false));
+    let request_calls = Arc::new(AtomicUsize::new(0));
+    let transitions = Arc::new(AtomicUsize::new(0));
+    let statuses = Arc::new(AtomicUsize::new(0));
+    let driver = SoftwarePpsDriver {
+        receive,
+        transmitted: Arc::clone(&transmitted),
+        sink_tx_checks: Arc::new(AtomicUsize::new(0)),
+        duplicate_ps_rdy_delivered: Arc::new(AtomicBool::new(false)),
+        delay_first_good_crc_for: None,
+        delayed_good_crc: false,
+        ps_rdy_seen: false,
+        soft_reset_followup_guard: None,
+        detach_after: 12,
+    };
+    let dpm = SoftwareSoftResetDpm {
+        detached: Arc::clone(&detached),
+        request_calls: Arc::clone(&request_calls),
+        transitions: Arc::clone(&transitions),
+        statuses: Arc::clone(&statuses),
+        event_sent: false,
+        request,
+    };
+    let mut sink: Sink<_, NeverTimer, _> = Sink::new(driver, dpm);
+
+    assert!(matches!(block_on(sink.run()), Err(SinkError::Detached)));
+    assert!(detached.load(Ordering::SeqCst));
+    assert_eq!(request_calls.load(Ordering::SeqCst), 2);
+    assert_eq!(transitions.load(Ordering::SeqCst), 2, "the PPS contract must be restored after Soft Reset");
+    assert_eq!(statuses.load(Ordering::SeqCst), 1);
+
+    let transmitted = transmitted.lock().unwrap();
+    let accepts: Vec<Header> = transmitted
+        .iter()
+        .map(|message| Header::from_bytes(&message[..2]).unwrap())
+        .filter(|header| header.message_type() == MessageType::Control(ControlMessageType::Accept))
+        .collect();
+    assert_eq!(accepts.len(), 1, "one partner Soft Reset must produce one policy Accept");
+    assert_eq!(accepts[0].message_id(), 0, "Soft Reset must restart the TX MessageID sequence");
+
+    let same_id_good_crc_count = transmitted
+        .iter()
+        .map(|message| Header::from_bytes(&message[..2]).unwrap())
+        .filter(|header| {
+            header.message_type() == MessageType::Control(ControlMessageType::GoodCRC) && header.message_id() == 3
+        })
+        .count();
+    assert_eq!(same_id_good_crc_count, 2, "PPS_Status and same-ID Soft Reset must each receive GoodCRC");
 }
 
 #[test]
