@@ -149,7 +149,11 @@ maximums. Important fields are:
 - `RequestFlags::epr_capable`;
 - the EPR operational PDP, which must agree with the extended sink descriptor;
 - `transition_load_policy`, selected explicitly for the downstream load path;
-- `max_auto_epr_attempts` and `hard_reset_recovery_ms`.
+- `max_auto_epr_attempts` and `hard_reset_recovery_ms`;
+- `sink_ams_guard_ms`, a short quiet interval (the reference uses 20 ms)
+  after each message exchange before the sink starts its own query, refresh,
+  or request, so a partner's follow-up message is served first. Zero disables
+  it.
 
 `SinkDevice::new` validates values that would be truncated on the wire or
 advertised inconsistently. A 5 V-only application sets EPR fields and the

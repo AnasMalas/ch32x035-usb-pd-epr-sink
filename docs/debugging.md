@@ -265,8 +265,8 @@ Header in `header`; extended messages store the Extended Header in `detail`.
 | 13 | `EprKeepAlive` | keepalive phase below |
 
 Transmit-reason codes are 1 driver-discarded, 2 GoodCRC timeout, 3 Hard
-Reset, 4 detached, 5 retries exceeded, 6 acknowledgement mismatch, and 255
-other.
+Reset, 4 detached, 5 retries exceeded, 6 acknowledgement mismatch, 7
+discarded because a new partner message arrived first, and 255 other.
 
 Protocol-error codes are:
 
@@ -279,6 +279,7 @@ Protocol-error codes are:
 | 5 | RX timeout | 12 | local TX validation |
 | 6 | RX unsupported | 13 | TX retries exceeded |
 | 7 | RX parse error | 14 | unexpected message |
+| | | 15 | local message discarded by a received one |
 
 For local TX validation, `detail` is 1 unsupported unchunked extended
 messages, 2 invalid AVS voltage alignment, or 3 a required multi-chunk
@@ -297,25 +298,29 @@ record.
 ### CH32 RX boundary record decoding
 
 With `driver-boundary-trace`, `pd_sink::set_usbpd_trace_callback` receives a
-separate `Copy`, C-layout, eight-byte `UsbPdTraceEvent` (ABI version 1):
+separate `Copy`, C-layout, eight-byte `UsbPdTraceEvent` (ABI version 2):
 
 ```text
 kind:u8 | code:u8 | status:u8 | active_cc:u8 | byte_count:u16 | config:u16
 ```
 
-Kinds are 1 RX armed, 2 USBPD interrupt, 3 RX complete, and 4 RX cancelled.
-Codes are 1 task arm, 2 TX-end turnaround arm, 3 pre-armed consume, 4
+Kinds are 1 RX armed, 2 USBPD interrupt, 3 RX complete (the task took a
+queued frame), and 5 ISR frame (the interrupt handler classified a completed
+frame). Kind 4 (RX cancelled) is no longer emitted: receive futures own no
+hardware state since the interrupt handler owns reception. Codes are 4
 interrupt, 5 success, 6 Hard Reset, 7 buffer error, 8 destination too small,
-9 rejected frame, 10 cancellation, and 255 other. `active_cc` is 1 or 2.
+11 ISR re-armed RX, 12 frame queued and GoodCRC started, 13 queue full (not
+acknowledged), 14 dropped (non-SOP or inconsistent length, not acknowledged),
+15 GoodCRC queued for the transmitting task, and 255 other. Codes 1-3, 9 and
+10 belong to ABI version 1. `active_cc` is 1 or 2.
 `byte_count` is the raw nine-bit DMA count, including four CRC bytes for a
 complete ordinary frame. STATUS bits 2-7 are BUF_ERR, RX_BIT, RX_BYTE,
 RX_ACT, RX_RESET, and TX_END; bits 0-1 hold BMC_AUX. CONFIG is the raw
 peripheral register, including CC selection and RX interrupt enables.
 
-A cancellation record with no RX activity followed by a numeric protocol
-timeout means the receive future remained armed until its timer won. An ISR
-or completion record followed by parse/discard instead places the loss after
-physical activity reached the peripheral. Timestamp both callbacks into the
+A protocol timeout with no ISR frame record means nothing reached the
+peripheral. An ISR frame record followed by parse/discard instead places the
+loss after physical activity reached the peripheral. Timestamp both callbacks into the
 same application-owned bounded RAM ring when correlating the two streams.
 
 ## Isolation sequence

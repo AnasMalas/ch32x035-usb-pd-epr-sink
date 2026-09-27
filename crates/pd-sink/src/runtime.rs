@@ -64,6 +64,11 @@ pub struct SinkConfig {
     /// Receive window for fresh Source Capabilities after a sent or received
     /// Hard Reset. The PHY remains armed throughout this interval.
     pub hard_reset_recovery_ms: u64,
+    /// Quiet interval after each completed message exchange before the Sink
+    /// starts its own AMS (status queries, PPS refreshes, application
+    /// requests). The receiver stays active, so a partner's follow-up
+    /// message is handled first. Zero disables the guard.
+    pub sink_ams_guard_ms: u16,
 }
 
 /// Application-load behavior while an electrically significant USB-PD
@@ -950,6 +955,10 @@ impl<R: SinkRuntime> DevicePolicyManager for SinkDevice<R> {
 
     fn hard_reset_recovery_millis(&self) -> u32 {
         self.config.hard_reset_recovery_ms.min(u64::from(u32::MAX)) as u32
+    }
+
+    fn sink_ams_guard_millis(&self) -> u32 {
+        u32::from(self.config.sink_ams_guard_ms)
     }
 
     #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]

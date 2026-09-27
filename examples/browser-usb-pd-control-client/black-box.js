@@ -25,13 +25,13 @@
   });
   const txReasons = Object.freeze({
     1: "driver-discarded", 2: "GoodCRC-timeout", 3: "hard-reset", 4: "detached",
-    5: "retries-exceeded", 6: "acknowledge-mismatch", 255: "other",
+    5: "retries-exceeded", 6: "acknowledge-mismatch", 7: "discarded-by-receive", 255: "other",
   });
   const protocolErrors = Object.freeze({
     1: "RX-discarded", 2: "RX-detached", 3: "RX-soft-reset", 4: "RX-hard-reset",
     5: "RX-timeout", 6: "RX-unsupported", 7: "RX-parse", 8: "RX-acknowledge-mismatch",
     9: "TX-discarded", 10: "TX-detached", 11: "TX-hard-reset", 12: "TX-validation",
-    13: "TX-retries-exceeded", 14: "unexpected-message",
+    13: "TX-retries-exceeded", 14: "unexpected-message", 15: "TX-discarded-by-receive",
   });
   const hardResetPhases = Object.freeze({
     1: "received", 2: "transmit-start", 3: "transmit-retry", 4: "transmit-complete", 5: "transmit-failure",

@@ -10,7 +10,7 @@ use core::cell::RefCell;
 use critical_section::Mutex;
 
 /// USBPD peripheral trace record ABI version.
-pub const USBPD_TRACE_ABI_VERSION: u8 = 1;
+pub const USBPD_TRACE_ABI_VERSION: u8 = 2;
 
 /// USBPD receive-boundary event category.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -23,8 +23,11 @@ pub enum UsbPdTraceEventKind {
     Interrupt = 2,
     /// The receive future returned a result to its caller.
     RxComplete = 3,
-    /// The receive future was dropped before returning a result.
+    /// Reserved: receive futures no longer own hardware state, so dropping
+    /// one is not traced. Retained for ABI version 1 decoders.
     RxCancelled = 4,
+    /// The interrupt handler classified a completed frame.
+    IsrFrame = 5,
 }
 
 /// Event-specific code stored in [`UsbPdTraceEvent::code`].
@@ -52,6 +55,17 @@ pub enum UsbPdTraceCode {
     Rejected = 9,
     /// The future was cancelled before returning a result.
     Cancelled = 10,
+    /// The interrupt handler re-armed the receiver.
+    IsrArm = 11,
+    /// The interrupt handler queued the frame and started GoodCRC.
+    GoodCrcSent = 12,
+    /// The receive queue was full; the frame was not acknowledged.
+    QueueFull = 13,
+    /// The frame had a non-SOP header or an inconsistent length and was not
+    /// acknowledged.
+    Dropped = 14,
+    /// A GoodCRC frame was queued for the transmitting task.
+    GoodCrcQueued = 15,
     /// Another receive result not expected from the ordinary async path.
     Other = 255,
 }

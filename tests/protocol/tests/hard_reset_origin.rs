@@ -159,7 +159,14 @@ impl Driver for RecoveryDriver {
                 self.receive_step = 1;
                 Ok(source_fixed_capability(0, 20_000, buffer))
             }
-            1 if RECOVERY_LISTENER_ARMED.load(Ordering::SeqCst) == 1 => {
+            1 => {
+                // The receiver stays armed; the fresh capabilities arrive only
+                // once the recovery window's timer exists. The protocol layer
+                // polls the receiver before its timer, so re-check each poll.
+                std::future::poll_fn(|_| {
+                    if RECOVERY_LISTENER_ARMED.load(Ordering::SeqCst) == 1 { Poll::Ready(()) } else { Poll::Pending }
+                })
+                .await;
                 self.receive_step = 2;
                 Ok(source_fixed_capability(0, 5_000, buffer))
             }

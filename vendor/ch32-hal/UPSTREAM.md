@@ -32,6 +32,15 @@ Local changes relevant to this project:
    `88920cd5a36a13aef475ce0814aaa17294ee9bc9`, whose memory-script renderer
    emits the zero-address boot alias required by CH32X035 application images;
    the previous revision linked G8U6 code at its unusable `0x08000000` alias.
+10. move USB-PD reception into the interrupt handler: every accepted SOP frame
+    is queued, answered with GoodCRC after a 30 us inter-frame gap, and the
+    receiver is re-armed without task involvement. RX, TX, and GoodCRC use
+    separate DMA buffers; Hard Reset detection stays armed except during the
+    sink's own transmissions; transmissions and stalled GoodCRCs are bounded
+    by a 5 ms watchdog; and SinkTxOK is not sampled while the line is busy.
+    Previously the PD task sent GoodCRC and re-armed RX, so any executor
+    latency beyond about 0.5 ms produced late acknowledgements and a deaf
+    receiver.
 
 The fork keeps broadly reusable RX/TX and USB changes separable from
 sink-specific policy so they can be proposed upstream independently. The local

@@ -162,6 +162,11 @@ pub enum RxError {
     /// The received acknowledgement does not match the last transmitted message's ID.
     #[error("wrong tx id `{0}` acknowledged")]
     AcknowledgeMismatch(u8),
+    /// A new partner message arrived instead of the GoodCRC for the local
+    /// message. The local message was discarded and the partner's message is
+    /// delivered by the next receive (USB PD 6.12.2.2).
+    #[error("transmission discarded by a received message")]
+    TransmitDiscarded,
 }
 
 /// Errors that can occur during transmission of data.
@@ -406,6 +411,7 @@ fn emit_protocol_error(error: &ProtocolError) {
         ProtocolError::RxError(RxError::AcknowledgeMismatch(message_id)) => {
             (NumericTraceProtocolError::RxAcknowledgeMismatch, u16::from(*message_id))
         }
+        ProtocolError::RxError(RxError::TransmitDiscarded) => (NumericTraceProtocolError::RxTransmitDiscarded, 0),
         ProtocolError::TxError(TxError::Discarded) => (NumericTraceProtocolError::TxDiscarded, 0),
         ProtocolError::TxError(TxError::Detached) => (NumericTraceProtocolError::TxDetached, 0),
         ProtocolError::TxError(TxError::HardReset) => (NumericTraceProtocolError::TxHardReset, 0),
@@ -470,6 +476,9 @@ pub(crate) struct ProtocolLayer<DRIVER: Driver, TIMER: Timer> {
     local_revision: SpecificationRevision,
     negotiated_revision: Option<SpecificationRevision>,
     rx_buffer: [u8; MAX_PD_FRAME_SIZE],
+    /// Length of an acknowledged frame held in `rx_buffer` that interrupted
+    /// a transmission; it is delivered before any new driver frame.
+    pending_frame: Option<u8>,
     sink_source_capabilities: Option<SourceCapabilities>,
     extended_rx_buffer: Vec<u8, MAX_EXTENDED_MESSAGE_SIZE>,
     extended_rx_expected: Option<(ExtendedMessageType, u16, u8)>,
@@ -488,6 +497,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             local_revision,
             negotiated_revision: None,
             rx_buffer: [0; MAX_PD_FRAME_SIZE],
+            pending_frame: None,
             sink_source_capabilities: None,
             extended_rx_buffer: Vec::new(),
             extended_rx_expected: None,
@@ -498,6 +508,7 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// Reset the protocol layer.
     pub fn reset(&mut self) {
         self.counters = Default::default();
+        self.pending_frame = None;
         self.sink_source_capabilities = None;
         self.reset_chunked_rx();
     }
@@ -565,6 +576,11 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
     /// the driver retry/length/header checks and prepares the sink path to pass
     /// only compact metadata across its async boundary.
     async fn receive_frame(&mut self) -> Result<(Header, usize), RxError> {
+        if let Some(length) = self.pending_frame.take() {
+            // Already validated, traced, and acknowledged by the driver.
+            let header = Header::from_bytes(&self.rx_buffer[..MSG_HEADER_SIZE])?;
+            return Ok((header, usize::from(length)));
+        }
         let mut discarded = 0;
         loop {
             let length = match self.driver.receive(&mut self.rx_buffer).await {
@@ -598,58 +614,93 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
         }
     }
 
+    /// Return whether a received frame is waiting to be delivered.
+    pub(crate) fn has_pending_frame(&self) -> bool {
+        self.pending_frame.is_some()
+    }
+
+    /// Message type of the frame waiting to be delivered, if any.
+    pub(crate) fn pending_message_type(&self) -> Option<MessageType> {
+        self.pending_frame?;
+        Header::from_bytes(&self.rx_buffer[..MSG_HEADER_SIZE]).ok().map(|header| header.message_type())
+    }
+
     /// Get a timer future for a given type.
     pub fn get_timer(timer_type: TimerType) -> impl Future<Output = ()> {
         TimerType::get_timer::<TIMER>(timer_type)
     }
 
-    /// Receive a simple (non-chunked) message from the driver.
-    /// Used by wait_for_good_crc to avoid recursion with chunked message handling.
-    async fn receive_simple(&mut self) -> Result<Header, RxError> {
-        let (header, _) = self.receive_frame().await?;
-        Ok(header)
-    }
-
     /// Wait until a GoodCrc message is received, or a timeout occurs.
+    ///
+    /// A GoodCRC with another MessageID is a late acknowledgement of an
+    /// earlier transmission and is ignored. With an auto-GoodCRC driver, the
+    /// driver has already acknowledged any other frame: a retransmission of
+    /// the partner's previous message is ignored, while a new message
+    /// discards the local one (USB PD 6.12.2.2) and is held for the next
+    /// receive.
     async fn wait_for_good_crc(&mut self) -> Result<(), RxError> {
         trace!("Wait for GoodCrc");
 
         let timeout_fut = Self::get_timer(TimerType::CRCReceive);
         let receive_fut = async {
-            let header = self.receive_simple().await?;
+            loop {
+                let (header, length) = self.receive_frame().await?;
 
-            if matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
-                numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
-                    crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
-                    crate::numeric_trace::NumericTracePath::Software as u8,
-                    header.message_id(),
-                    self.counters.retry.value(),
-                    header.0,
-                    crate::numeric_trace::UNAVAILABLE_U16,
-                ));
-                trace!(
-                    "Received GoodCrc, TX message count: {}, expected: {}",
-                    header.message_id(),
-                    self.counters.tx_message.value()
-                );
-                if header.message_id() == self.counters.tx_message.value() {
-                    // See spec, [6.7.1.1]
-                    self.counters.retry.reset();
-                    _ = self.counters.tx_message.increment();
-                    Ok(())
-                } else {
-                    Err(RxError::AcknowledgeMismatch(header.message_id()))
+                if matches!(header.message_type(), MessageType::Control(ControlMessageType::GoodCRC)) {
+                    numeric_trace!(crate::numeric_trace::NumericTraceEvent::new(
+                        crate::numeric_trace::NumericTraceEventKind::GoodCrcReceived,
+                        crate::numeric_trace::NumericTracePath::Software as u8,
+                        header.message_id(),
+                        self.counters.retry.value(),
+                        header.0,
+                        crate::numeric_trace::UNAVAILABLE_U16,
+                    ));
+                    trace!(
+                        "Received GoodCrc, TX message count: {}, expected: {}",
+                        header.message_id(),
+                        self.counters.tx_message.value()
+                    );
+                    if header.message_id() == self.counters.tx_message.value() {
+                        // See spec, [6.7.1.1]
+                        self.counters.retry.reset();
+                        _ = self.counters.tx_message.increment();
+                        return Ok(());
+                    }
+                    continue;
                 }
-            } else if matches!(header.message_type(), MessageType::Control(_)) {
-                Err(ParseError::InvalidControlMessageType(header.message_type_raw()).into())
-            } else {
-                Err(ParseError::InvalidMessageType(header.message_type_raw()).into())
+
+                if !DRIVER::HAS_AUTO_GOOD_CRC {
+                    return Err(if matches!(header.message_type(), MessageType::Control(_)) {
+                        ParseError::InvalidControlMessageType(header.message_type_raw()).into()
+                    } else {
+                        ParseError::InvalidMessageType(header.message_type_raw()).into()
+                    });
+                }
+
+                let soft_reset = matches!(header.message_type(), MessageType::Control(ControlMessageType::SoftReset));
+                let retransmission = !soft_reset
+                    && self.counters.rx_message.is_some_and(|counter| counter.value() == header.message_id());
+                if retransmission {
+                    continue;
+                }
+
+                // The partner may have received the local message and lost
+                // only its GoodCRC, so the discarded MessageID is consumed:
+                // reusing it could make the partner drop our next message as
+                // a retransmission.
+                self.counters.retry.reset();
+                _ = self.counters.tx_message.increment();
+                self.reset_chunked_rx();
+                self.pending_frame = Some(length as u8);
+                return Err(RxError::TransmitDiscarded);
             }
         };
 
-        match select(timeout_fut, receive_fut).await {
-            Either::First(_) => Err(RxError::ReceiveTimeout),
-            Either::Second(receive_result) => receive_result,
+        // Poll the receiver first: a queued acknowledgement that arrived in
+        // time must win over a timer that expired while this task was busy.
+        match select(receive_fut, timeout_fut).await {
+            Either::First(receive_result) => receive_result,
+            Either::Second(_) => Err(RxError::ReceiveTimeout),
         }
     }
 
@@ -827,6 +878,9 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                                     }
                                     RxError::HardReset => crate::numeric_trace::NumericTraceTxReason::HardReset,
                                     RxError::Detached => crate::numeric_trace::NumericTraceTxReason::Detached,
+                                    RxError::TransmitDiscarded => {
+                                        crate::numeric_trace::NumericTraceTxReason::DiscardedByReceive
+                                    }
                                     _ => crate::numeric_trace::NumericTraceTxReason::Other,
                                 };
                                 #[cfg(feature = "numeric-trace")]
@@ -1224,6 +1278,12 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
             let (header, length) = self.receive_frame().await?;
             let message_type = header.message_type();
 
+            // Acknowledgements matter only while waiting for one. A late
+            // GoodCRC must not reach the policy engine as a message.
+            if matches!(message_type, MessageType::Control(ControlMessageType::GoodCRC)) {
+                continue;
+            }
+
             if let MessageType::Extended(extended_message_type) = message_type {
                 let ext_header_end = MSG_HEADER_SIZE + EXT_HEADER_SIZE;
                 let ext_header =
@@ -1451,16 +1511,16 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
 
         #[cfg(not(feature = "numeric-trace"))]
         {
-            match select(timeout_fut, receive_fut).await {
-                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
-                Either::Second(receive_result) => receive_result,
+            match select(receive_fut, timeout_fut).await {
+                Either::First(receive_result) => receive_result,
+                Either::Second(_) => Err(RxError::ReceiveTimeout.into()),
             }
         }
         #[cfg(feature = "numeric-trace")]
         {
-            let result = match select(timeout_fut, receive_fut).await {
-                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
-                Either::Second(receive_result) => receive_result,
+            let result = match select(receive_fut, timeout_fut).await {
+                Either::First(receive_result) => receive_result,
+                Either::Second(_) => Err(RxError::ReceiveTimeout.into()),
             };
             if let Err(error) = &result {
                 emit_protocol_error(error);
@@ -1685,6 +1745,9 @@ impl<DRIVER: Driver, TIMER: Timer> ProtocolLayer<DRIVER, TIMER> {
                             }
                             RxError::HardReset => crate::numeric_trace::NumericTraceTxReason::HardReset,
                             RxError::Detached => crate::numeric_trace::NumericTraceTxReason::Detached,
+                            RxError::TransmitDiscarded => {
+                                crate::numeric_trace::NumericTraceTxReason::DiscardedByReceive
+                            }
                             _ => crate::numeric_trace::NumericTraceTxReason::Other,
                         };
                         emit_tx_failure(&buffer[..offset], self.counters.retry.value(), reason);
@@ -1897,16 +1960,16 @@ impl<DRIVER: Driver, TIMER: Timer> SinkProtocolLayer<DRIVER, TIMER> {
 
         #[cfg(not(feature = "numeric-trace"))]
         {
-            match select(timeout_fut, receive_fut).await {
-                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
-                Either::Second(receive_result) => receive_result,
+            match select(receive_fut, timeout_fut).await {
+                Either::First(receive_result) => receive_result,
+                Either::Second(_) => Err(RxError::ReceiveTimeout.into()),
             }
         }
         #[cfg(feature = "numeric-trace")]
         {
-            let result = match select(timeout_fut, receive_fut).await {
-                Either::First(_) => Err(RxError::ReceiveTimeout.into()),
-                Either::Second(receive_result) => receive_result,
+            let result = match select(receive_fut, timeout_fut).await {
+                Either::First(receive_result) => receive_result,
+                Either::Second(_) => Err(RxError::ReceiveTimeout.into()),
             };
             if let Err(error) = &result {
                 emit_protocol_error(error);

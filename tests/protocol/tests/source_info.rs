@@ -33,19 +33,17 @@ impl Timer for NeverTimer {
     }
 }
 
-static SENDER_RESPONSE_CALLS: AtomicUsize = AtomicUsize::new(0);
+static SOURCE_INFO_SENT: AtomicBool = AtomicBool::new(false);
 static SOURCE_INFO_TIMEOUT_FIRED: AtomicBool = AtomicBool::new(false);
 
+/// Only the SenderResponse timer that follows Get_Source_Info expires.
 struct SourceInfoTimeoutTimer;
 
 impl Timer for SourceInfoTimeoutTimer {
     async fn after_millis(milliseconds: u64) {
-        if milliseconds == 30 {
-            let call = SENDER_RESPONSE_CALLS.fetch_add(1, Ordering::SeqCst);
-            if call >= 1 {
-                SOURCE_INFO_TIMEOUT_FIRED.store(true, Ordering::SeqCst);
-                return;
-            }
+        if milliseconds == 30 && SOURCE_INFO_SENT.load(Ordering::SeqCst) {
+            SOURCE_INFO_TIMEOUT_FIRED.store(true, Ordering::SeqCst);
+            return;
         }
         pending().await
     }
@@ -93,8 +91,13 @@ impl Driver for ScriptedDriver {
 
     async fn receive(&mut self, buffer: &mut [u8]) -> Result<usize, DriverRxError> {
         let Some((required_transmits, _)) = self.receive.front() else {
-            if self.silence_until_source_info_timeout && !SOURCE_INFO_TIMEOUT_FIRED.load(Ordering::SeqCst) {
-                pending().await
+            if self.silence_until_source_info_timeout {
+                // Stay silent until the query times out; the protocol layer
+                // polls the receiver before its timer, so re-check each poll.
+                std::future::poll_fn(|_| {
+                    if SOURCE_INFO_TIMEOUT_FIRED.load(Ordering::SeqCst) { Poll::Ready(()) } else { Poll::Pending }
+                })
+                .await;
             }
             return Err(DriverRxError::Detached);
         };
@@ -107,6 +110,10 @@ impl Driver for ScriptedDriver {
     }
 
     async fn transmit(&mut self, data: &[u8]) -> Result<(), DriverTxError> {
+        let header = Header::from_bytes(&data[..2]).unwrap();
+        if header.message_type() == MessageType::Control(ControlMessageType::GetSourceInfo) {
+            SOURCE_INFO_SENT.store(true, Ordering::SeqCst);
+        }
         self.transmitted.lock().unwrap().push(data.to_vec());
         Ok(())
     }
@@ -238,7 +245,7 @@ fn source_info_refusal_or_deferral_preserves_the_existing_contract() {
 
 #[test]
 fn source_info_timeout_preserves_the_existing_contract() {
-    SENDER_RESPONSE_CALLS.store(0, Ordering::SeqCst);
+    SOURCE_INFO_SENT.store(false, Ordering::SeqCst);
     SOURCE_INFO_TIMEOUT_FIRED.store(false, Ordering::SeqCst);
 
     let fixed_5v = ((5_000 / 50) << 10) | (3_000 / 10);

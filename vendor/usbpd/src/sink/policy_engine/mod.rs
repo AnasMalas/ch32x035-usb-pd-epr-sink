@@ -192,6 +192,14 @@ enum ReceiveOperation {
     EprKeepAlive,
 }
 
+/// Interval for re-sampling Rp while the Source holds SinkTxNG.
+///
+/// Sampling SinkTxOK briefly moves the receive comparator threshold, which
+/// corrupts a frame that is on the wire at that instant. The Source retries a
+/// corrupted frame after tReceive (about 1 ms), so the interval must be
+/// several times longer than one frame plus its retries.
+const SINK_TX_NG_POLL_MS: u64 = 10;
+
 const REQUEST_RESPONSE_TYPES: &[MessageType] = &[
     MessageType::Control(ControlMessageType::Accept),
     MessageType::Control(ControlMessageType::Wait),
@@ -307,6 +315,9 @@ pub struct Sink<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> {
     /// A power request received `Wait` and must be replanned by the DPM after
     /// SinkRequestTimer.
     wait_retry_pending: bool,
+    /// A message exchange just completed; wait the DPM's guard interval
+    /// before the Sink starts another AMS.
+    ams_guard_pending: bool,
     /// Absolute PPS Request-maintenance deadline. A relative timer recreated
     /// on every Ready entry can be starved by telemetry or Source traffic.
     pps_refresh_deadline_tick: Option<u32>,
@@ -388,6 +399,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             get_source_cap_pending: false,
             pending_sink_ams: None,
             wait_retry_pending: false,
+            ams_guard_pending: false,
             pps_refresh_deadline_tick: None,
             epr_keep_alive_deadline_tick: None,
             hard_reset_origin: HardResetOrigin::Source,
@@ -425,6 +437,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         self.get_source_cap_pending = false;
         self.pending_sink_ams = None;
         self.wait_retry_pending = false;
+        self.ams_guard_pending = false;
         self.pps_refresh_deadline_tick = None;
         self.epr_keep_alive_deadline_tick = None;
         self.hard_reset_origin = HardResetOrigin::Source;
@@ -465,6 +478,11 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
         };
         if result.is_ok() {
+            return Ok(());
+        }
+
+        if let Err(Error::Protocol(ProtocolError::RxError(RxError::TransmitDiscarded))) = result {
+            self.state = self.after_discarded_transmit();
             return Ok(());
         }
 
@@ -811,6 +829,13 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
         }
     }
 
+    /// Handle a partner message received in Ready. It is wire activity, so
+    /// the Sink's next AMS waits for the guard interval.
+    fn ready_message(&mut self, message: SinkMessage) -> State {
+        self.ams_guard_pending = true;
+        self.handle_ready_message(message)
+    }
+
     fn handle_ready_message(&mut self, message: SinkMessage) -> State {
         match message.header.message_type() {
             MessageType::Data(DataMessageType::SourceCapabilities) => {
@@ -883,6 +908,71 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             }
             _ => State::SendNotSupported,
         }
+    }
+
+    /// The receive operation that awaits the partner's answer to `operation`.
+    fn response_operation(operation: TransmitOperation) -> Option<ReceiveOperation> {
+        Some(match operation {
+            #[cfg(feature = "initial-capabilities-fallback")]
+            TransmitOperation::ProbeSourceCapabilities => ReceiveOperation::SourceCapabilities(CapabilityWait::Probe),
+            TransmitOperation::SelectCapability => ReceiveOperation::RequestResponse,
+            TransmitOperation::SendSoftReset => ReceiveOperation::SoftResetAccept,
+            TransmitOperation::GetSourceCap(mode) => ReceiveOperation::GetSourceCap(mode),
+            TransmitOperation::GetSourceInfo => ReceiveOperation::GetSourceInfo,
+            TransmitOperation::GetStatus(query) => ReceiveOperation::GetStatus(query),
+            TransmitOperation::EnterEprMode(pdp_watts) => ReceiveOperation::EprEntryAcknowledgement(pdp_watts),
+            TransmitOperation::EprKeepAlive => ReceiveOperation::EprKeepAlive,
+            _ => return None,
+        })
+    }
+
+    /// The Sink-initiated AMS to repeat after `operation` was discarded.
+    fn repeat_after_discard(&self, operation: TransmitOperation) -> Option<SinkInitiatedAms> {
+        Some(match operation {
+            TransmitOperation::GetSourceCap(mode) => SinkInitiatedAms::GetSourceCap(mode),
+            TransmitOperation::GetSourceInfo => SinkInitiatedAms::GetSourceInfo,
+            TransmitOperation::GetStatus(query) => SinkInitiatedAms::GetStatus(query),
+            TransmitOperation::EnterEprMode(pdp_watts) => {
+                SinkInitiatedAms::EnterEprMode(units::Power::from_watts(pdp_watts))
+            }
+            TransmitOperation::ExitEprMode => SinkInitiatedAms::ExitEprMode,
+            TransmitOperation::EprKeepAlive => SinkInitiatedAms::EprKeepAlive,
+            TransmitOperation::SelectCapability if matches!(self.contract, Contract::Explicit) => {
+                SinkInitiatedAms::RequestPower(self.proposed_power_source?)
+            }
+            _ => return None,
+        })
+    }
+
+    /// Choose the next state after a partner message discarded ours.
+    ///
+    /// The partner's message is already acknowledged and waits in the
+    /// protocol layer. If it answers what we sent, the partner received our
+    /// message and only its GoodCRC was lost, so continue as if the
+    /// transmission succeeded. Otherwise process the partner's message first
+    /// and repeat a Sink-initiated AMS afterwards.
+    fn after_discarded_transmit(&mut self) -> State {
+        if let State::Transmit(operation) = self.state {
+            if let Some(response) = Self::response_operation(operation) {
+                let answered = self
+                    .protocol_layer
+                    .pending_message_type()
+                    .is_some_and(|message_type| response.wire().0.contains(&message_type));
+                if answered {
+                    return State::Receive(response);
+                }
+            }
+            if matches!(operation, TransmitOperation::SendSoftReset | TransmitOperation::AcceptSoftReset) {
+                // The protocol layer was reset for this Soft Reset. The
+                // capability wait processes a partner Soft_Reset or new
+                // Source_Capabilities and soft-resets again on anything else.
+                return State::WaitForCapabilities;
+            }
+            if let Some(ams) = self.repeat_after_discard(operation) {
+                self.pending_sink_ams.get_or_insert(ams);
+            }
+        }
+        if matches!(self.contract, Contract::Explicit) { State::Ready } else { State::WaitForCapabilities }
     }
 
     fn after_transmit(&mut self, operation: TransmitOperation) -> State {
@@ -1401,16 +1491,34 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                 // - SinkEPRKeepAliveTimer: triggers EprKeepAlive in EPR mode
                 self.contract = Contract::Explicit;
 
-                if let Some(pending) = self.pending_sink_ams.take() {
-                    if self.protocol_layer.sink_tx_ok() {
+                let guard_ms = if core::mem::take(&mut self.ams_guard_pending) {
+                    self.device_policy_manager.sink_ams_guard_millis()
+                } else {
+                    0
+                };
+                if guard_ms != 0 {
+                    // Keep the line quiet briefly after an exchange so the
+                    // partner can finish a follow-up before the Sink transmits.
+                    // Timers and DPM events are re-evaluated on the next pass.
+                    match select(self.protocol_layer.receive_message(), TIMER::after_millis(u64::from(guard_ms))).await
+                    {
+                        Either::First(message) => self.ready_message(message?),
+                        Either::Second(()) => State::Ready,
+                    }
+                } else if let Some(pending) = self.pending_sink_ams.take() {
+                    // A received message that interrupted a transmission is
+                    // processed before the Sink starts another AMS.
+                    if !self.protocol_layer.has_pending_frame() && self.protocol_layer.sink_tx_ok() {
                         self.state_for_sink_ams(pending)
                     } else {
                         // While the Source owns CC, continue servicing its AMS
                         // and periodically re-sample Rp without dropping the
                         // exact user/timer request that is waiting.
                         self.pending_sink_ams = Some(pending);
-                        match select(self.protocol_layer.receive_message(), TIMER::after_millis(1)).await {
-                            Either::First(message) => self.handle_ready_message(message?),
+                        match select(self.protocol_layer.receive_message(), TIMER::after_millis(SINK_TX_NG_POLL_MS))
+                            .await
+                        {
+                            Either::First(message) => self.ready_message(message?),
                             Either::Second(()) => State::Ready,
                         }
                     }
@@ -1427,7 +1535,7 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
                     let timeout_fut = Self::wait_for_ready_timeout(timeout);
 
                     match select3(receive_fut, event_fut, timeout_fut).await {
-                        Either3::First(message) => self.handle_ready_message(message?),
+                        Either3::First(message) => self.ready_message(message?),
                         Either3::Second(event) => match Self::sink_ams_from_event(event) {
                             Some(ams) => self.begin_or_defer_sink_ams(ams),
                             None => State::Ready,
@@ -1609,6 +1717,10 @@ impl<DRIVER: Driver, TIMER: Timer, DPM: DevicePolicyManager> Sink<DRIVER, TIMER,
             _ => unreachable!(),
         };
 
+        // Re-entering Ready means a message exchange just completed.
+        if matches!(new_state, State::Ready) && !matches!(self.state, State::Ready) {
+            self.ams_guard_pending = true;
+        }
         self.state = new_state;
 
         Ok(())

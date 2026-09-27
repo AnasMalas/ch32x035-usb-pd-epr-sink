@@ -134,6 +134,8 @@ fn enqueue_console_log(arguments: fmt::Arguments<'_>) {
 }
 
 const ATTACH_DEBOUNCE_MS: u64 = 30;
+/// Quiet interval after each message exchange before a Sink-initiated AMS.
+const SINK_AMS_GUARD_MS: u16 = 20;
 const HARD_RESET_RECOVERY_MS: u64 = 2_000;
 const MAX_AUTO_EPR_ATTEMPTS: u8 = 2;
 #[cfg(not(feature = "uninterrupted-load-transitions"))]
@@ -299,6 +301,9 @@ fn sink_config() -> SinkConfig {
         transition_load_policy: TRANSITION_LOAD_POLICY,
         max_auto_epr_attempts: if epr_capable { MAX_AUTO_EPR_ATTEMPTS } else { 0 },
         hard_reset_recovery_ms: HARD_RESET_RECOVERY_MS,
+        // Let the Source finish any follow-up of its own before this sink
+        // starts a query or refresh.
+        sink_ams_guard_ms: SINK_AMS_GUARD_MS,
     }
 }
 

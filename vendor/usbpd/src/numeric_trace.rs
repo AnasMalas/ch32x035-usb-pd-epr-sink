@@ -80,6 +80,8 @@ pub enum NumericTraceTxReason {
     RetriesExceeded = 5,
     /// A received GoodCRC carried the wrong MessageID.
     AcknowledgeMismatch = 6,
+    /// A new partner message arrived instead of GoodCRC.
+    DiscardedByReceive = 7,
     /// Another receive or protocol error terminated transmission.
     Other = 255,
 }
@@ -117,6 +119,8 @@ pub enum NumericTraceProtocolError {
     TxRetriesExceeded = 13,
     /// A valid but unexpected message was received.
     UnexpectedMessage = 14,
+    /// A new partner message discarded the local transmission.
+    RxTransmitDiscarded = 15,
 }
 
 /// Hard Reset trace phase stored in [`NumericTraceEvent::code`].

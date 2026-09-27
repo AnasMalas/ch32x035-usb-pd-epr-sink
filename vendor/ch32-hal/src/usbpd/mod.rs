@@ -1,5 +1,13 @@
 //! USBPD, USB Power Delivery
 //!
+//! The asynchronous PHY owns reception in its interrupt handler. Every
+//! accepted SOP frame is copied into a small queue, acknowledged with GoodCRC
+//! after the inter-frame gap, and the receiver is re-armed without waiting
+//! for the PD task. The task only consumes queued frames and starts its own
+//! transmissions, so executor latency cannot delay GoodCRC or leave the
+//! receiver disarmed. The PD protocol layer must therefore treat this PHY as
+//! a driver with automatic GoodCRC and software retries.
+//!
 //! Design:
 //!
 //! - CC Pins:
@@ -8,9 +16,10 @@
 //! - [ ] UsbPdSink: USBPD Sink layer
 //! - [ ] UsbPdSource: USBPD Source layer
 
+use core::cell::UnsafeCell;
 use core::future::poll_fn;
 use core::marker::PhantomData;
-use core::sync::atomic::{AtomicBool, AtomicU32, Ordering};
+use core::sync::atomic::{AtomicBool, AtomicU32, AtomicU8, Ordering};
 use core::task::Poll;
 
 use embassy_sync::waitqueue::AtomicWaker;
@@ -21,20 +30,39 @@ use crate::mode::{Async, Blocking, Mode};
 use crate::pac::usbpd::vals;
 use crate::{interrupt, pac, Peri, PeripheralType, RccPeripheral};
 
+mod rx_queue;
 #[cfg(feature = "usbpd-driver-trace")]
 mod trace;
-mod turnaround;
 
+use rx_queue::{good_crc_header, is_good_crc, message_length, RxRing};
 #[cfg(feature = "usbpd-driver-trace")]
 pub use trace::{
     set_usbpd_trace_callback, UsbPdTraceCallback, UsbPdTraceCode, UsbPdTraceEvent, UsbPdTraceEventKind,
     USBPD_TRACE_ABI_VERSION,
 };
-use turnaround::{needs_rx_turnaround, TransferState};
 
 /// Maximum PD message size excluding the four-byte CRC appended by the PHY.
-pub const MAX_MESSAGE_BYTES: usize = 30;
+pub const MAX_MESSAGE_BYTES: usize = rx_queue::MESSAGE_BYTES;
 const RX_DMA_BYTES: usize = MAX_MESSAGE_BYTES + 4;
+/// Frames buffered between the interrupt handler and the PD task.
+const RX_QUEUE_FRAMES: usize = 4;
+/// USB PD requires at least 25 us (tInterFrameGap) between frames. WCH's
+/// reference sink waits 30 us before answering with GoodCRC; the spec allows
+/// up to 195 us (tTransmit).
+const GOOD_CRC_GAP_US: u32 = 30;
+/// Upper bound for a transmission to reach TX-end. A maximum 30-byte frame
+/// occupies the line for about 1.5 ms.
+#[cfg(feature = "embassy")]
+const TRANSFER_TIMEOUT_MS: u64 = 5;
+
+/// The receiver has not been armed since reset.
+const PHASE_IDLE: u8 = 0;
+/// The receiver is armed; the interrupt handler owns the line.
+const PHASE_RX: u8 = 1;
+/// The interrupt handler is transmitting GoodCRC.
+const PHASE_ACK: u8 = 2;
+/// A task transmission is in progress.
+const PHASE_TX: u8 = 3;
 
 #[derive(Debug)]
 pub enum Error {
@@ -60,7 +88,7 @@ pub enum Error {
     MaxRetry,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Sop {
     Sop = 0b00_00_00_00,
     SopPrime = 0b00_00_01_01,
@@ -75,63 +103,190 @@ pub struct InterruptHandler<T: Instance> {
 
 impl<T: Instance> interrupt::typelevel::Handler<T::Interrupt> for InterruptHandler<T> {
     unsafe fn on_interrupt() {
-        let usbpd = T::REGS;
+        let regs = T::REGS;
+        let state = T::state();
 
-        let status = usbpd.status().read();
-
-        if status.if_tx_end() || status.buf_err() {
-            // TX has stopped (or faulted), so release the CC transmitter
-            // before any ordinary-message receive turnaround is armed.
-            T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
-            T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
-        }
-
-        if status.if_tx_end() {
-            T::REGS.config().modify(|w| w.set_ie_tx_end(false));
-
-            // WCH's sink sequence switches directly from TX to RX. For an
-            // ordinary message, do that here before waking the executor so an
-            // immediate GoodCRC or Source response cannot begin in a blind
-            // window. GoodCRC and Hard Reset transmissions do not request it.
-            if !status.buf_err() {
-                T::state().transfer.complete_transmit(|| prepare_receive::<T, true>());
-                #[cfg(feature = "usbpd-driver-trace")]
-                emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TxTurnaroundArm, status.0);
-            }
-        }
-
-        if status.if_rx_act() {
-            T::REGS.control().modify(|w| w.set_bmc_start(false)); // stop
-            T::REGS.config().modify(|w| w.set_ie_rx_act(false));
-        }
-
-        if status.if_rx_reset() {
-            T::REGS.config().modify(|w| w.set_ie_rx_reset(false));
-        }
-
-        if status.buf_err() {
-            // No dedicated IE bit; gated by PD_DMA_EN. Latch and drop IEs
-            // so the poller observes the error and returns.
-            T::state().buf_err.store(true, Ordering::Release);
-            T::REGS.config().modify(|w| {
-                w.set_ie_rx_act(false);
-                w.set_ie_rx_reset(false);
-                w.set_ie_tx_end(false);
-            });
-        }
-
-        T::REGS.status().write_value(status);
-
-        // Wake the task to clear and re-enabled interrupts.
-        T::state().waker.wake();
+        let status = regs.status().read();
+        let byte_count = usize::from(regs.bmc_byte_cnt().read().bmc_byte_cnt());
+        // Clear exactly the flags observed; a later event raises its own IRQ.
+        regs.status().write_value(status);
 
         #[cfg(feature = "usbpd-driver-trace")]
-        emit_rx_trace::<T>(UsbPdTraceEventKind::Interrupt, UsbPdTraceCode::Interrupt, status.0);
+        emit_trace::<T>(UsbPdTraceEventKind::Interrupt, UsbPdTraceCode::Interrupt, status.0);
+
+        let phase = state.phase.load(Ordering::Relaxed);
+        let transmitting = phase == PHASE_ACK || phase == PHASE_TX;
+        let transfer_ended = transmitting && (status.if_tx_end() || status.buf_err());
+        if transfer_ended {
+            // TX has stopped (or faulted); release the CC transmitter before
+            // the receiver is armed again.
+            release_cc::<T>();
+        }
+
+        // RX-reset detection is disabled during our own transmissions, but
+        // the flag may still latch a partner Hard Reset that arrived then.
+        // Our own Hard Reset signaling is not a received reset.
+        let own_hard_reset = phase == PHASE_TX && state.tx_hard_reset.load(Ordering::Relaxed);
+        if status.if_rx_reset() && phase != PHASE_IDLE && !own_hard_reset {
+            state.hard_resets.store(
+                state.hard_resets.load(Ordering::Relaxed).wrapping_add(1),
+                Ordering::Release,
+            );
+            if transmitting {
+                release_cc::<T>();
+            }
+            if phase == PHASE_TX {
+                finish_transmit(state, false);
+            }
+            arm_receive::<T>();
+        } else if transfer_ended {
+            if phase == PHASE_TX {
+                finish_transmit(state, !status.buf_err());
+            }
+            arm_receive::<T>();
+        } else if phase == PHASE_RX && (status.if_rx_act() || status.buf_err()) {
+            receive_complete::<T>(status, byte_count);
+        }
+
+        state
+            .events
+            .store(state.events.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
+        state.waker.wake();
     }
 }
 
+/// Queue a completed frame, answer it with GoodCRC, and keep receiving.
+fn receive_complete<T: Instance>(status: pac::usbpd::regs::Status, byte_count: usize) {
+    let state = T::state();
+    if status.if_rx_act() && !status.buf_err() && status.bmc_aux() == vals::BmcAux::SOP0 {
+        // SAFETY: DMA into the staging buffer has completed, and only this
+        // handler re-arms it (below or after GoodCRC).
+        let frame = unsafe { &(*state.rx.get()).data };
+        if let Some(length) = message_length(frame, byte_count) {
+            let header = u16::from_le_bytes([frame[0], frame[1]]);
+            if state.ring.push(&frame[..length]) {
+                if !is_good_crc(header) {
+                    #[cfg(feature = "usbpd-driver-trace")]
+                    emit_trace::<T>(UsbPdTraceEventKind::IsrFrame, UsbPdTraceCode::GoodCrcSent, status.0);
+                    send_good_crc::<T>(good_crc_header(header));
+                    return;
+                }
+                #[cfg(feature = "usbpd-driver-trace")]
+                emit_trace::<T>(UsbPdTraceEventKind::IsrFrame, UsbPdTraceCode::GoodCrcQueued, status.0);
+            } else {
+                // The partner retries an unacknowledged frame once the task
+                // has drained the queue.
+                #[cfg(feature = "usbpd-driver-trace")]
+                emit_trace::<T>(UsbPdTraceEventKind::IsrFrame, UsbPdTraceCode::QueueFull, status.0);
+            }
+        } else {
+            #[cfg(feature = "usbpd-driver-trace")]
+            emit_trace::<T>(UsbPdTraceEventKind::IsrFrame, UsbPdTraceCode::Dropped, status.0);
+        }
+    } else {
+        #[cfg(feature = "usbpd-driver-trace")]
+        emit_trace::<T>(UsbPdTraceEventKind::IsrFrame, UsbPdTraceCode::Dropped, status.0);
+    }
+    arm_receive::<T>();
+}
+
+fn send_good_crc<T: Instance>(header: u16) {
+    let state = T::state();
+    // SAFETY: only this handler writes the acknowledgement buffer, and no
+    // GoodCRC is in flight while the receiver is armed.
+    let ack = unsafe { &mut *state.ack.get() };
+    ack.data[..2].copy_from_slice(&header.to_le_bytes());
+    let address = ack.address();
+
+    // Busy-wait instead of using SysTick `Delay`, which task code may be
+    // using when this interrupt preempts it.
+    qingke::riscv::asm::delay(GOOD_CRC_GAP_US * hclk_mhz());
+    state.phase.store(PHASE_ACK, Ordering::Relaxed);
+    start_transmit::<T>(Sop::Sop, address, 2);
+}
+
+/// Record the end of a task transmission. Called only from the interrupt
+/// handler or from task code inside a critical section.
+fn finish_transmit(state: &State, success: bool) {
+    state.tx_success.store(success, Ordering::Relaxed);
+    state
+        .tx_done
+        .store(state.tx_done.load(Ordering::Relaxed).wrapping_add(1), Ordering::Release);
+}
+
+fn release_cc<T: Instance>() {
+    T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
+    T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
+}
+
+/// Arm the receiver into the staging buffer with interrupts enabled. Called
+/// only from the interrupt handler or from task code inside a critical
+/// section.
+fn arm_receive<T: Instance>() {
+    let state = T::state();
+    state.phase.store(PHASE_RX, Ordering::Relaxed);
+    // SAFETY: the staging buffer's address is stable; DMA ownership passes
+    // back to the peripheral here.
+    let address = unsafe { &*state.rx.get() }.address();
+    prepare_receive::<T, true>(address);
+    #[cfg(feature = "usbpd-driver-trace")]
+    emit_trace::<T>(
+        UsbPdTraceEventKind::RxArmed,
+        UsbPdTraceCode::IsrArm,
+        T::REGS.status().read().0,
+    );
+}
+
+/// Configure the peripheral to receive into `address`.
+///
+/// The asynchronous path enables receive interrupts; the blocking path polls
+/// the same hardware sequence with the USBPD interrupt disabled.
+fn prepare_receive<T: Instance, const ENABLE_INTERRUPTS: bool>(address: u16) {
+    let usbpd = T::REGS;
+
+    usbpd.config().modify(|w| w.set_pd_all_clr(true));
+    usbpd.config().modify(|w| {
+        w.set_pd_all_clr(false);
+        if ENABLE_INTERRUPTS {
+            w.set_ie_tx_end(false);
+            w.set_ie_rx_act(true);
+            w.set_ie_rx_reset(true);
+        }
+    });
+
+    usbpd.dma().write_value(address);
+    usbpd.control().modify(|w| w.set_pd_tx_en(false));
+    usbpd.bmc_clk_cnt().modify(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_rx()));
+    usbpd.control().modify(|w| w.set_bmc_start(true));
+}
+
+/// Start transmitting `length` bytes at DMA `address` (0 for Hard Reset).
+fn start_transmit<T: Instance>(sop: Sop, address: u16, length: usize) {
+    let regs = T::REGS;
+    T::port_cc_reg(regs.config().read().cc_sel()).modify(|w| w.set_cc_lve(true));
+    regs.bmc_clk_cnt().write(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_tx()));
+    regs.dma().write_value(address);
+    regs.tx_sel().write(|w| w.0 = sop as u8);
+    regs.bmc_tx_sz().write(|w| w.set_bmc_tx_sz(length as _));
+    regs.control().modify(|w| w.set_pd_tx_en(true));
+    regs.status().write(|w| {
+        w.set_if_tx_end(true);
+        w.set_if_rx_reset(true);
+        w.set_if_rx_act(true);
+        w.set_if_rx_byte(true);
+        w.set_if_rx_bit(true);
+        w.set_buf_err(true);
+    });
+    regs.config().modify(|w| {
+        w.set_ie_rx_act(false);
+        w.set_ie_rx_reset(false);
+        w.set_ie_tx_end(true);
+    });
+    regs.control().modify(|w| w.set_bmc_start(true));
+}
+
 #[cfg(feature = "usbpd-driver-trace")]
-fn emit_rx_trace<T: Instance>(kind: UsbPdTraceEventKind, code: UsbPdTraceCode, status: u8) {
+fn emit_trace<T: Instance>(kind: UsbPdTraceEventKind, code: UsbPdTraceCode, status: u8) {
     let config = T::REGS.config().read();
     trace::emit(UsbPdTraceEvent {
         kind,
@@ -155,68 +310,8 @@ fn receive_result_code(result: &Result<(Sop, usize), Error>) -> UsbPdTraceCode {
     }
 }
 
-#[cfg(feature = "usbpd-driver-trace")]
-struct ReceiveTraceGuard<T: Instance> {
-    finished: bool,
-    _marker: PhantomData<T>,
-}
-
-#[cfg(feature = "usbpd-driver-trace")]
-impl<T: Instance> ReceiveTraceGuard<T> {
-    fn new() -> Self {
-        Self {
-            finished: false,
-            _marker: PhantomData,
-        }
-    }
-
-    fn finish(&mut self, result: &Result<(Sop, usize), Error>) {
-        emit_rx_trace::<T>(
-            UsbPdTraceEventKind::RxComplete,
-            receive_result_code(result),
-            T::REGS.status().read().0,
-        );
-        self.finished = true;
-    }
-}
-
-#[cfg(feature = "usbpd-driver-trace")]
-impl<T: Instance> Drop for ReceiveTraceGuard<T> {
-    fn drop(&mut self) {
-        if !self.finished {
-            emit_rx_trace::<T>(
-                UsbPdTraceEventKind::RxCancelled,
-                UsbPdTraceCode::Cancelled,
-                T::REGS.status().read().0,
-            );
-        }
-    }
-}
-
-/// Switch the peripheral from TX to RX using its stable singleton DMA buffer.
-///
-/// The asynchronous path enables receive interrupts; the blocking path polls
-/// the same hardware sequence with the USBPD interrupt disabled.
-fn prepare_receive<T: Instance, const ENABLE_INTERRUPTS: bool>() {
-    let usbpd = T::REGS;
-
-    usbpd.config().modify(|w| w.set_pd_all_clr(true));
-    usbpd.config().modify(|w| {
-        w.set_pd_all_clr(false);
-        if ENABLE_INTERRUPTS {
-            w.set_ie_tx_end(false);
-            w.set_ie_rx_act(true);
-            w.set_ie_rx_reset(true);
-        }
-    });
-
-    // SAFETY: State owns the stable, aligned singleton buffer. The transfer
-    // lifecycle serializes DMA, ISR, and task access to it.
-    let buffer = unsafe { &mut *T::state().transfer.buffer_ptr() };
-    usbpd.dma().write_value(buffer.mut_address());
-    usbpd.control().modify(|w| w.set_pd_tx_en(false));
-    usbpd.bmc_clk_cnt().modify(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_rx()));
-    usbpd.control().modify(|w| w.set_bmc_start(true));
+fn hclk_mhz() -> u32 {
+    crate::rcc::clocks().hclk.0 / 1_000_000
 }
 
 /// Interrupt handler for the USB-PD port-level wake input.
@@ -240,27 +335,20 @@ impl<T: Instance> interrupt::typelevel::Handler<T::WakeupInterrupt> for CcWakeIn
     }
 }
 
+/// A 4-byte-aligned DMA buffer, as required by the peripheral.
 #[repr(align(4))]
-struct UsbPdMsg {
-    pub data: [u8; RX_DMA_BYTES],
+struct DmaBuffer<const N: usize> {
+    data: [u8; N],
 }
-impl UsbPdMsg {
+
+impl<const N: usize> DmaBuffer<N> {
     const fn new() -> Self {
-        Self {
-            data: [0u8; RX_DMA_BYTES],
-        }
+        Self { data: [0u8; N] }
     }
 
-    fn to_slice(&self) -> &[u8] {
-        &self.data
-    }
-
+    /// The peripheral's 16-bit SRAM address of this buffer.
     fn address(&self) -> u16 {
         self.data.as_ptr() as u16
-    }
-
-    fn mut_address(&mut self) -> u16 {
-        self.data.as_mut_ptr() as u16
     }
 }
 
@@ -370,6 +458,12 @@ impl<T: Instance> Drop for CcWakeGuard<T> {
     }
 }
 
+enum TxStart {
+    Started(u8),
+    Busy,
+    HardReset,
+}
+
 impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
     pub fn new_async(
         peri: Peri<'d, T>,
@@ -411,122 +505,251 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         (phy, UsbPdCcMonitor { _marker: PhantomData })
     }
 
-    fn enable_tx_interrupt(&mut self) {
-        // Clear stale BUF_ERR (HW W1C, then latch) before re-arming IEs.
-        T::REGS.status().write(|w| w.set_buf_err(true));
-        T::state().buf_err.store(false, Ordering::Release);
-        T::REGS.config().modify(|w| {
-            w.set_ie_rx_act(false); // Receive completion interrupt disable
-            w.set_ie_rx_reset(false); // Receive reset interrupt disable
-            w.set_ie_tx_end(true); // End-of-transmit interrupt enable
-        });
-    }
-
-    /// Receives a PD message into the provided buffer.
+    /// Receive the next SOP message acknowledged by the interrupt handler.
     ///
-    /// Returns the SOP and number of received bytes, or an error.
+    /// Returns the SOP and number of received bytes, or an error. GoodCRC
+    /// frames are delivered too, so the caller can match them against its
+    /// own transmissions; they are never acknowledged. This future is
+    /// cancellation-safe: a frame leaves the queue only when it is returned.
     pub async fn receive(&mut self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
-        let prearmed = T::state().transfer.take_prearmed_receive();
-        if !prearmed {
-            // Clear stale BUF_ERR (HW W1C, then latch) before re-arming RX.
-            #[cfg(feature = "usbpd-driver-trace")]
-            let status_before_arm = T::REGS.status().read().0;
-            T::REGS.status().write(|w| w.set_buf_err(true));
-            T::state().buf_err.store(false, Ordering::Release);
-            prepare_receive::<T, true>();
-            #[cfg(feature = "usbpd-driver-trace")]
-            emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TaskArm, status_before_arm);
-        } else {
-            #[cfg(feature = "usbpd-driver-trace")]
-            emit_rx_trace::<T>(
-                UsbPdTraceEventKind::RxArmed,
-                UsbPdTraceCode::PrearmedReceive,
-                T::REGS.status().read().0,
-            );
+        critical_section::with(|_| {
+            if T::state().phase.load(Ordering::Relaxed) == PHASE_IDLE {
+                arm_receive::<T>();
+            }
+        });
+
+        loop {
+            if let Some(result) = Self::take_received(buf) {
+                #[cfg(feature = "usbpd-driver-trace")]
+                emit_trace::<T>(
+                    UsbPdTraceEventKind::RxComplete,
+                    receive_result_code(&result),
+                    T::REGS.status().read().0,
+                );
+                return result;
+            }
+            Self::wait_for_event().await;
         }
-
-        #[cfg(feature = "usbpd-driver-trace")]
-        let mut trace_guard = ReceiveTraceGuard::<T>::new();
-        let result = poll_fn(|cx| {
-            T::state().waker.register(cx.waker());
-
-            if T::state().buf_err.load(Ordering::Acquire) {
-                return Poll::Ready(Err(Error::BufferError));
-            }
-
-            if !T::REGS.config().read().ie_rx_reset() {
-                return Poll::Ready(Err(Error::HardReset));
-            }
-
-            if !T::REGS.config().read().ie_rx_act() {
-                Poll::Ready(Ok(()))
-            } else {
-                Poll::Pending
-            }
-        })
-        .await
-        .and_then(|()| self.post_receive(buf));
-        #[cfg(feature = "usbpd-driver-trace")]
-        trace_guard.finish(&result);
-        result
     }
 
+    /// Transmit an ordinary SOP message.
+    ///
+    /// Transmission starts once any GoodCRC in progress has finished. The
+    /// receiver is re-armed in the TX-end interrupt, so an immediate GoodCRC
+    /// or response is captured without task involvement.
     pub async fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {
         validate_message_length(buf.len())?;
-        T::state().transfer.begin_transmit(false);
-        self.enable_tx_interrupt();
-        self.transmit_inner(Sop::Sop, buf);
-        let result = self.wait_for_tx_complete().await;
-
-        if result.is_err() {
-            T::state().transfer.cancel();
-        }
-
-        result
-    }
-
-    /// Transmit an ordinary PD message and arm RX in the TX-end interrupt so
-    /// the following [`Self::receive`] can capture its immediate GoodCRC or
-    /// Source response. An exact GoodCRC automatically skips turnaround
-    /// because it is never acknowledged.
-    pub async fn transmit_with_rx_turnaround(&mut self, buf: &[u8]) -> Result<(), Error> {
-        validate_message_length(buf.len())?;
-        T::state().transfer.begin_transmit(needs_rx_turnaround(buf));
-        self.enable_tx_interrupt();
-        self.transmit_inner(Sop::Sop, buf);
-        let result = self.wait_for_tx_complete().await;
-
-        if result.is_err() {
-            T::state().transfer.cancel();
-        }
-
-        result
+        Self::transmit_frame(Sop::Sop, buf).await
     }
 
     /// Transmit a hard reset.
     pub async fn transmit_hardreset(&mut self) -> Result<(), Error> {
-        T::state().transfer.cancel();
-        self.enable_tx_interrupt();
-        self.transmit_inner(Sop::HardReset, &[]);
-        let result = self.wait_for_tx_complete().await;
-
-        result
+        // Frames received before the reset are obsolete.
+        T::state().ring.clear();
+        Self::transmit_frame(Sop::HardReset, &[]).await
     }
 
-    async fn wait_for_tx_complete(&mut self) -> Result<(), Error> {
-        poll_fn(|cx| {
-            T::state().waker.register(cx.waker());
+    /// Return whether the attached Source currently advertises SinkTxOK.
+    ///
+    /// This is meaningful only after an Explicit Contract, when PD collision
+    /// avoidance maps SinkTxNG to the 1.5 A Rp level and SinkTxOK to the 3 A
+    /// Rp level. With a compliant external Rd, the CH32X035's 1.23 V
+    /// comparator threshold lies between the two Type-C voltage ranges.
+    ///
+    /// Sampling briefly raises the threshold of the comparator the receiver
+    /// also uses, so this returns `false` (defer) without sampling while a
+    /// GoodCRC or transmission is in progress or a received frame is still
+    /// queued. Callers must not poll it faster than every few milliseconds:
+    /// a sample that coincides with an incoming frame corrupts that frame and
+    /// the partner must retry it.
+    pub fn sink_tx_ok(&self) -> bool {
+        let state = T::state();
+        let phase = state.phase.load(Ordering::Relaxed);
+        if phase == PHASE_ACK || phase == PHASE_TX || !state.ring.is_empty() {
+            return false;
+        }
+        self.sample_sink_tx_ok()
+    }
 
-            if T::state().buf_err.load(Ordering::Acquire) {
-                return Poll::Ready(Err(Error::BufferError));
-            }
+    fn take_hard_reset() -> bool {
+        let state = T::state();
+        let received = state.hard_resets.load(Ordering::Acquire);
+        if received == state.hard_resets_seen.load(Ordering::Relaxed) {
+            return false;
+        }
+        state.hard_resets_seen.store(received, Ordering::Relaxed);
+        // Frames that preceded the reset are obsolete.
+        state.ring.clear();
+        true
+    }
 
-            if !T::REGS.config().read().ie_tx_end() {
-                return Poll::Ready(Ok(()));
-            }
-            Poll::Pending
+    fn take_received(buf: &mut [u8]) -> Option<Result<(Sop, usize), Error>> {
+        if Self::take_hard_reset() {
+            return Some(Err(Error::HardReset));
+        }
+        Some(match T::state().ring.pop(buf)? {
+            Ok(length) => Ok((Sop::Sop, length)),
+            Err(required) => Err(Error::ReceiveBufferTooSmall {
+                required,
+                available: buf.len(),
+            }),
         })
-        .await
+    }
+
+    /// Wait for the next interrupt, a queued frame, or a Hard Reset.
+    ///
+    /// While a GoodCRC or transmission is in flight this also bounds the wait
+    /// and recovers the receiver if the transfer never signals TX-end.
+    async fn wait_for_event() {
+        let state = T::state();
+        let seen = state.events.load(Ordering::Acquire);
+        let phase = state.phase.load(Ordering::Relaxed);
+        let event = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            if state.events.load(Ordering::Acquire) != seen
+                || !state.ring.is_empty()
+                || state.hard_resets.load(Ordering::Acquire) != state.hard_resets_seen.load(Ordering::Relaxed)
+            {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        });
+
+        #[cfg(feature = "embassy")]
+        if phase == PHASE_ACK || phase == PHASE_TX {
+            let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
+            if embassy_time::with_timeout(timeout, event).await.is_err() {
+                critical_section::with(|_| {
+                    let phase = state.phase.load(Ordering::Relaxed);
+                    if state.events.load(Ordering::Relaxed) == seen && (phase == PHASE_ACK || phase == PHASE_TX) {
+                        Self::abort_transfer(phase);
+                    }
+                });
+            }
+            return;
+        }
+        #[cfg(not(feature = "embassy"))]
+        let _ = phase;
+
+        event.await
+    }
+
+    /// Stop a transfer that never reached TX-end and resume receiving. Call
+    /// only inside a critical section.
+    fn abort_transfer(phase: u8) {
+        T::REGS.control().modify(|w| w.set_bmc_start(false));
+        release_cc::<T>();
+        if phase == PHASE_TX {
+            finish_transmit(T::state(), false);
+        }
+        arm_receive::<T>();
+    }
+
+    /// Start a transmission unless the line is busy. Call only inside a
+    /// critical section.
+    fn try_start_transmit(sop: Sop, buf: &[u8]) -> TxStart {
+        let state = T::state();
+        if Self::take_hard_reset() {
+            return TxStart::HardReset;
+        }
+        let phase = state.phase.load(Ordering::Relaxed);
+        if phase == PHASE_ACK || phase == PHASE_TX {
+            return TxStart::Busy;
+        }
+        // A completed frame whose interrupt is still pending must be queued
+        // and acknowledged before the line is used.
+        if phase == PHASE_RX && T::REGS.status().read().if_rx_act() {
+            return TxStart::Busy;
+        }
+
+        let address = if buf.is_empty() {
+            0
+        } else {
+            // SAFETY: the TX buffer is only written here, inside a critical
+            // section, while no task transmission is in flight.
+            let tx = unsafe { &mut *state.tx.get() };
+            tx.data[..buf.len()].copy_from_slice(buf);
+            tx.address()
+        };
+        state.tx_hard_reset.store(sop == Sop::HardReset, Ordering::Relaxed);
+        state.phase.store(PHASE_TX, Ordering::Relaxed);
+        let ticket = state.tx_done.load(Ordering::Relaxed).wrapping_add(1);
+        start_transmit::<T>(sop, address, buf.len());
+        TxStart::Started(ticket)
+    }
+
+    async fn transmit_frame(sop: Sop, buf: &[u8]) -> Result<(), Error> {
+        let state = T::state();
+        // Registering before each attempt means a handler that frees the
+        // line after a busy check always wakes this future again.
+        let start = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            match critical_section::with(|_| Self::try_start_transmit(sop, buf)) {
+                TxStart::Started(ticket) => Poll::Ready(Ok(ticket)),
+                TxStart::HardReset => Poll::Ready(Err(Error::HardReset)),
+                TxStart::Busy => Poll::Pending,
+            }
+        });
+
+        #[cfg(feature = "embassy")]
+        let ticket = {
+            let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
+            match embassy_time::with_timeout(timeout, start).await {
+                Ok(started) => started?,
+                Err(_) => {
+                    // A GoodCRC or an abandoned transmission never reached
+                    // TX-end; recover the receiver and let the protocol
+                    // layer retry.
+                    critical_section::with(|_| {
+                        let phase = state.phase.load(Ordering::Relaxed);
+                        if phase == PHASE_ACK || phase == PHASE_TX {
+                            Self::abort_transfer(phase);
+                        }
+                    });
+                    return Err(Error::Timeout);
+                }
+            }
+        };
+        #[cfg(not(feature = "embassy"))]
+        let ticket = start.await?;
+
+        let done = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            if state.tx_done.load(Ordering::Acquire) == ticket {
+                Poll::Ready(())
+            } else {
+                Poll::Pending
+            }
+        });
+
+        #[cfg(feature = "embassy")]
+        {
+            let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
+            if embassy_time::with_timeout(timeout, done).await.is_err() {
+                let aborted = critical_section::with(|_| {
+                    let stuck = state.tx_done.load(Ordering::Relaxed) != ticket
+                        && state.phase.load(Ordering::Relaxed) == PHASE_TX;
+                    if stuck {
+                        Self::abort_transfer(PHASE_TX);
+                    }
+                    stuck
+                });
+                if aborted {
+                    return Err(Error::Timeout);
+                }
+            }
+        }
+        #[cfg(not(feature = "embassy"))]
+        done.await;
+
+        if state.tx_success.load(Ordering::Relaxed) {
+            Ok(())
+        } else if Self::take_hard_reset() {
+            Err(Error::HardReset)
+        } else {
+            Err(Error::BufferError)
+        }
     }
 }
 
@@ -543,11 +766,10 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::disable_interrupt(interrupt::USBPD.number() as _);
         }
-        #[cfg(feature = "usbpd-driver-trace")]
-        let status_before_arm = T::REGS.status().read().0;
-        prepare_receive::<T, false>();
-        #[cfg(feature = "usbpd-driver-trace")]
-        emit_rx_trace::<T>(UsbPdTraceEventKind::RxArmed, UsbPdTraceCode::TaskArm, status_before_arm);
+        // SAFETY: the interrupt handler is disabled; blocking mode owns the
+        // staging buffer.
+        let rx = unsafe { &*T::state().rx.get() };
+        prepare_receive::<T, false>(rx.address());
 
         let outcome = loop {
             let status = T::REGS.status().read();
@@ -566,14 +788,7 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::enable_interrupt(interrupt::USBPD.number() as _);
         }
-        let result = outcome.and_then(|()| self.post_receive(buf));
-        #[cfg(feature = "usbpd-driver-trace")]
-        emit_rx_trace::<T>(
-            UsbPdTraceEventKind::RxComplete,
-            receive_result_code(&result),
-            T::REGS.status().read().0,
-        );
-        result
+        outcome.and_then(|()| self.post_receive(buf))
     }
 
     pub fn transmit(&mut self, buf: &[u8]) -> Result<(), Error> {
@@ -581,7 +796,11 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
         unsafe {
             qingke::pfic::disable_interrupt(interrupt::USBPD.number() as _);
         }
-        self.transmit_inner(Sop::Sop, buf);
+        // SAFETY: the interrupt handler is disabled; blocking mode owns the
+        // TX buffer.
+        let tx = unsafe { &mut *T::state().tx.get() };
+        tx.data[..buf.len()].copy_from_slice(buf);
+        start_transmit::<T>(Sop::Sop, tx.address(), buf.len());
 
         let result = loop {
             let status = T::REGS.status().read();
@@ -594,14 +813,42 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Blocking> {
             core::hint::spin_loop();
         };
 
-        T::port_cc_reg(vals::CcSel::CC1).modify(|w| w.set_cc_lve(false));
-        T::port_cc_reg(vals::CcSel::CC2).modify(|w| w.set_cc_lve(false));
+        release_cc::<T>();
+        T::REGS.config().modify(|w| w.set_ie_tx_end(false));
 
         unsafe {
             qingke::pfic::enable_interrupt(interrupt::USBPD.number() as _);
         }
 
         result
+    }
+
+    /// Decodes a message received in blocking mode and returns a tuple
+    /// (Sop, length) or an error.
+    fn post_receive(&self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
+        if T::REGS.status().read().if_rx_reset() {
+            return Err(Error::HardReset);
+        }
+        let dma_byte_count = T::REGS.bmc_byte_cnt().read().bmc_byte_cnt() as usize;
+        if !(4..=RX_DMA_BYTES).contains(&dma_byte_count) {
+            return Err(Error::BufferError);
+        }
+        let byte_count = dma_byte_count - 4; // Strip the four-byte CRC written by the peripheral.
+        if byte_count > buf.len() {
+            return Err(Error::ReceiveBufferTooSmall {
+                required: byte_count,
+                available: buf.len(),
+            });
+        }
+        // SAFETY: DMA reception completed before this method is called.
+        let received = unsafe { &*T::state().rx.get() };
+        buf[..byte_count].copy_from_slice(&received.data[..byte_count]);
+        match T::REGS.status().read().bmc_aux() {
+            vals::BmcAux::SOP0 => Ok((Sop::Sop, byte_count)),
+            vals::BmcAux::SOP1 => Ok((Sop::SopPrime, byte_count)),
+            vals::BmcAux::SOP2 => Ok((Sop::SopDoublePrime, byte_count)),
+            _ => Err(Error::Rejected),
+        }
     }
 }
 
@@ -614,6 +861,7 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
         let afio = crate::pac::AFIO;
 
         T::enable_and_reset();
+        Self::forget_transfers();
 
         cc1.set_as_input(Pull::None);
         cc2.set_as_input(Pull::None);
@@ -659,9 +907,24 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
         this
     }
 
+    /// Discard queued frames, pending Hard Reset notifications, and the
+    /// receiver phase after a peripheral reset.
+    fn forget_transfers() {
+        critical_section::with(|_| {
+            let state = T::state();
+            state.phase.store(PHASE_IDLE, Ordering::Relaxed);
+            state
+                .hard_resets_seen
+                .store(state.hard_resets.load(Ordering::Relaxed), Ordering::Relaxed);
+            state.ring.clear();
+        });
+    }
+
     pub fn reset(&mut self) -> Result<(), Error> {
-        T::state().transfer.cancel();
-        T::enable_and_reset();
+        critical_section::with(|_| {
+            T::enable_and_reset();
+            Self::forget_transfers();
+        });
 
         T::REGS.config().write(|w| {
             w.set_pd_dma_en(true);
@@ -713,83 +976,18 @@ impl<'d, T: Instance + PeripheralType, M: Mode> UsbPdPhy<'d, T, M> {
         }
     }
 
-    /// Return whether the attached Source currently advertises SinkTxOK.
-    ///
-    /// This is meaningful only after an Explicit Contract, when PD collision
-    /// avoidance maps SinkTxNG to the 1.5 A Rp level and SinkTxOK to the 3 A
-    /// Rp level. With a compliant external Rd, the CH32X035's 1.23 V
-    /// comparator threshold lies between the two Type-C voltage ranges. The
-    /// normal 0.66 V receive threshold is restored after sampling.
-    pub fn sink_tx_ok(&self) -> bool {
+    /// Sample the active CC at the 1.23 V threshold and restore the normal
+    /// 0.66 V receive threshold.
+    fn sample_sink_tx_ok(&self) -> bool {
         let active_cc = T::REGS.config().read().cc_sel();
         let cc = T::port_cc_reg(active_cc);
         cc.modify(|w| w.set_cc_ce(vals::PortCcCe::V1_23));
-        crate::delay::Delay.delay_us(2);
+        // Busy-wait so a preempting interrupt cannot share SysTick with this
+        // settling delay.
+        qingke::riscv::asm::delay(2 * hclk_mhz());
         let allowed = cc.read().pa_cc_ai();
         cc.modify(|w| w.set_cc_ce(vals::PortCcCe::V0_66));
         allowed
-    }
-
-    /// Decodes the received PD message and returns a tuple (Sop, length) or an error.
-    fn post_receive(&self, buf: &mut [u8]) -> Result<(Sop, usize), Error> {
-        if T::REGS.status().read().if_rx_reset() {
-            return Err(Error::HardReset);
-        }
-        let dma_byte_count = T::REGS.bmc_byte_cnt().read().bmc_byte_cnt() as usize;
-        if !(4..=RX_DMA_BYTES).contains(&dma_byte_count) {
-            return Err(Error::BufferError);
-        }
-        let byte_count = dma_byte_count - 4; // Strip the four-byte CRC written by the peripheral.
-        if byte_count > buf.len() {
-            return Err(Error::ReceiveBufferTooSmall {
-                required: byte_count,
-                available: buf.len(),
-            });
-        }
-        // SAFETY: DMA reception completed before this method is called.
-        let received = unsafe { &*T::state().transfer.buffer_ptr() };
-        buf[..byte_count].copy_from_slice(&received.to_slice()[..byte_count]);
-        match T::REGS.status().read().bmc_aux() {
-            vals::BmcAux::SOP0 => Ok((Sop::Sop, byte_count)),
-            vals::BmcAux::SOP1 => Ok((Sop::SopPrime, byte_count)),
-            vals::BmcAux::SOP2 => Ok((Sop::SopDoublePrime, byte_count)),
-            _ => Err(Error::Rejected),
-        }
-    }
-
-    fn transmit_inner(&mut self, sop: Sop, buf: &[u8]) {
-        debug_assert!(buf.len() <= MAX_MESSAGE_BYTES);
-        T::port_cc_reg(T::REGS.config().read().cc_sel()).modify(|w| w.set_cc_lve(true));
-
-        T::REGS
-            .bmc_clk_cnt()
-            .write(|w| w.set_bmc_clk_cnt(calc_bmc_clk_for_tx()));
-
-        if buf.is_empty() {
-            T::REGS.dma().write_value(0);
-        } else {
-            // We use our own buffer to ensure it is 4-byte aligned, as required by the hardware.
-            // SAFETY: the singleton peripheral serializes all transfers.
-            let transmit = unsafe { &mut *T::state().transfer.buffer_ptr() };
-            transmit.data[..buf.len()].copy_from_slice(buf);
-            T::REGS.dma().write_value(transmit.address());
-        }
-
-        T::REGS.tx_sel().write(|w| w.0 = sop as u8);
-
-        T::REGS.bmc_tx_sz().write(|w| w.set_bmc_tx_sz(buf.len() as _));
-        T::REGS.control().modify(|w| w.set_pd_tx_en(true)); // TX
-
-        T::REGS.status().write(|w| {
-            w.set_if_tx_end(true);
-            w.set_if_rx_reset(true);
-            w.set_if_rx_act(true);
-            w.set_if_rx_byte(true);
-            w.set_if_rx_bit(true);
-            w.set_buf_err(true);
-        });
-
-        T::REGS.control().modify(|w| w.set_bmc_start(true));
     }
 }
 
@@ -804,19 +1002,52 @@ fn validate_message_length(length: usize) -> Result<(), Error> {
     }
 }
 
+/// Shared state of the singleton USBPD peripheral.
+///
+/// Each atomic has one writer: the interrupt handler, or task code running
+/// inside a critical section (which the handler cannot preempt). `ring`
+/// follows its own single-producer/single-consumer contract.
 struct State {
     waker: AtomicWaker,
-    // Set by the ISR on BUF_ERR; cleared at the start of each transfer.
-    buf_err: AtomicBool,
-    transfer: TransferState<UsbPdMsg>,
+    /// One of the `PHASE_*` values.
+    phase: AtomicU8,
+    /// Wrapping count of USBPD interrupts, used to detect stalled transfers.
+    events: AtomicU8,
+    /// Wrapping count of partner Hard Resets observed by the handler.
+    hard_resets: AtomicU8,
+    /// `hard_resets` value already reported to the task.
+    hard_resets_seen: AtomicU8,
+    /// Wrapping count of completed task transmissions.
+    tx_done: AtomicU8,
+    /// Whether the last completed task transmission reached TX-end.
+    tx_success: AtomicBool,
+    /// Whether the task transmission in flight is Hard Reset signaling.
+    tx_hard_reset: AtomicBool,
+    ring: RxRing<RX_QUEUE_FRAMES>,
+    rx: UnsafeCell<DmaBuffer<RX_DMA_BYTES>>,
+    tx: UnsafeCell<DmaBuffer<RX_DMA_BYTES>>,
+    ack: UnsafeCell<DmaBuffer<4>>,
 }
+
+// SAFETY: the DMA buffers are accessed only by the phase owner documented at
+// each access, and all other fields are atomics or internally synchronized.
+unsafe impl Sync for State {}
 
 impl State {
     pub const fn new() -> Self {
         Self {
             waker: AtomicWaker::new(),
-            buf_err: AtomicBool::new(false),
-            transfer: TransferState::new(UsbPdMsg::new()),
+            phase: AtomicU8::new(PHASE_IDLE),
+            events: AtomicU8::new(0),
+            hard_resets: AtomicU8::new(0),
+            hard_resets_seen: AtomicU8::new(0),
+            tx_done: AtomicU8::new(0),
+            tx_success: AtomicBool::new(false),
+            tx_hard_reset: AtomicBool::new(false),
+            ring: RxRing::new(),
+            rx: UnsafeCell::new(DmaBuffer::new()),
+            tx: UnsafeCell::new(DmaBuffer::new()),
+            ack: UnsafeCell::new(DmaBuffer::new()),
         }
     }
 }

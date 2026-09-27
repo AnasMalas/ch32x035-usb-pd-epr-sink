@@ -276,6 +276,11 @@ where
 }
 
 impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
+    // The HAL interrupt handler acknowledges every accepted SOP frame and
+    // re-arms the receiver itself; the protocol layer keeps MessageID
+    // de-duplication and its own transmit retries.
+    const HAS_AUTO_GOOD_CRC: bool = true;
+
     async fn wait_for_vbus(&mut self) {
         while !self.port.vbus_present() {
             self.port.wait_for_vbus_present().await;
@@ -323,13 +328,12 @@ impl<P: Ch32x035Port> Driver for Ch32x035UsbPdDriver<'_, P> {
             return Err(self.detached_tx());
         }
 
-        // The HAL skips turnaround for GoodCRC and pre-arms RX for every other
-        // ordinary message before the TX-end ISR wakes this task.
-        let transmitted =
-            match select(self.usbpd.transmit_with_rx_turnaround(data), self.port.wait_for_vbus_absent()).await {
-                Either::First(transmitted) => transmitted,
-                Either::Second(()) => return Err(self.detached_tx()),
-            };
+        // The HAL re-arms the receiver in the TX-end interrupt, before this
+        // task resumes, so the partner's GoodCRC or response is captured.
+        let transmitted = match select(self.usbpd.transmit(data), self.port.wait_for_vbus_absent()).await {
+            Either::First(transmitted) => transmitted,
+            Either::Second(()) => return Err(self.detached_tx()),
+        };
 
         if !self.port.vbus_present() {
             return Err(self.detached_tx());

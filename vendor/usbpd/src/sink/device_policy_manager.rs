@@ -274,6 +274,14 @@ pub trait DevicePolicyManager {
         0
     }
 
+    /// Quiet interval after each completed message exchange before the Sink
+    /// starts an AMS of its own, such as a status query, PPS refresh, or
+    /// application request. The receiver stays active meanwhile, so a
+    /// partner's follow-up message is serviced first. Zero disables it.
+    fn sink_ams_guard_millis(&self) -> u32 {
+        0
+    }
+
     /// Select a reason-specific recovery window without changing the generic
     /// Hard Reset recovery setting used by existing products.
     #[cfg(all(feature = "initial-capabilities-fallback", feature = "hard-reset-reasons"))]

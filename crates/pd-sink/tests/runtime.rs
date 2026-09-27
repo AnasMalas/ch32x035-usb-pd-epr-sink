@@ -115,6 +115,7 @@ fn safe_5v_config() -> SinkConfig {
         transition_load_policy: TransitionLoadPolicy::InhibitUntilReady,
         max_auto_epr_attempts: 0,
         hard_reset_recovery_ms: 2_000,
+        sink_ams_guard_ms: 0,
     }
 }
 
