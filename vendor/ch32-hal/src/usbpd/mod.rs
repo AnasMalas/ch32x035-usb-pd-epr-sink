@@ -518,18 +518,22 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
             }
         });
 
-        loop {
-            if let Some(result) = Self::take_received(buf) {
-                #[cfg(feature = "usbpd-driver-trace")]
-                emit_trace::<T>(
-                    UsbPdTraceEventKind::RxComplete,
-                    receive_result_code(&result),
-                    T::REGS.status().read().0,
-                );
-                return result;
+        let state = T::state();
+        let result = poll_fn(|cx| {
+            state.waker.register(cx.waker());
+            match Self::take_received(buf) {
+                Some(result) => Poll::Ready(result),
+                None => Poll::Pending,
             }
-            Self::wait_for_event().await;
-        }
+        })
+        .await;
+        #[cfg(feature = "usbpd-driver-trace")]
+        emit_trace::<T>(
+            UsbPdTraceEventKind::RxComplete,
+            receive_result_code(&result),
+            T::REGS.status().read().0,
+        );
+        result
     }
 
     /// Transmit an ordinary SOP message.
@@ -596,45 +600,6 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         })
     }
 
-    /// Wait for the next interrupt, a queued frame, or a Hard Reset.
-    ///
-    /// While a GoodCRC or transmission is in flight this also bounds the wait
-    /// and recovers the receiver if the transfer never signals TX-end.
-    async fn wait_for_event() {
-        let state = T::state();
-        let seen = state.events.load(Ordering::Acquire);
-        let phase = state.phase.load(Ordering::Relaxed);
-        let event = poll_fn(|cx| {
-            state.waker.register(cx.waker());
-            if state.events.load(Ordering::Acquire) != seen
-                || !state.ring.is_empty()
-                || state.hard_resets.load(Ordering::Acquire) != state.hard_resets_seen.load(Ordering::Relaxed)
-            {
-                Poll::Ready(())
-            } else {
-                Poll::Pending
-            }
-        });
-
-        #[cfg(feature = "embassy")]
-        if phase == PHASE_ACK || phase == PHASE_TX {
-            let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
-            if embassy_time::with_timeout(timeout, event).await.is_err() {
-                critical_section::with(|_| {
-                    let phase = state.phase.load(Ordering::Relaxed);
-                    if state.events.load(Ordering::Relaxed) == seen && (phase == PHASE_ACK || phase == PHASE_TX) {
-                        Self::abort_transfer(phase);
-                    }
-                });
-            }
-            return;
-        }
-        #[cfg(not(feature = "embassy"))]
-        let _ = phase;
-
-        event.await
-    }
-
     /// Stop a transfer that never reached TX-end and resume receiving. Call
     /// only inside a critical section.
     fn abort_transfer(phase: u8) {
@@ -679,77 +644,53 @@ impl<'d, T: Instance + PeripheralType> UsbPdPhy<'d, T, Async> {
         TxStart::Started(ticket)
     }
 
+    /// Start `buf` once the line is free and wait for its TX-end.
+    ///
+    /// The whole transfer is bounded: if a GoodCRC or transmission never
+    /// reaches TX-end, it is aborted and the receiver re-armed, so a missing
+    /// interrupt cannot leave the port deaf. Receptions are not bounded
+    /// themselves; the next transmission recovers a stalled GoodCRC.
     async fn transmit_frame(sop: Sop, buf: &[u8]) -> Result<(), Error> {
         let state = T::state();
-        // Registering before each attempt means a handler that frees the
-        // line after a busy check always wakes this future again.
-        let start = poll_fn(|cx| {
+        let mut ticket = None;
+        let transfer = poll_fn(|cx| {
+            // Registering before each attempt means a handler that frees the
+            // line after a busy check always wakes this future again.
             state.waker.register(cx.waker());
-            match critical_section::with(|_| Self::try_start_transmit(sop, buf)) {
-                TxStart::Started(ticket) => Poll::Ready(Ok(ticket)),
-                TxStart::HardReset => Poll::Ready(Err(Error::HardReset)),
-                TxStart::Busy => Poll::Pending,
-            }
-        });
-
-        #[cfg(feature = "embassy")]
-        let ticket = {
-            let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
-            match embassy_time::with_timeout(timeout, start).await {
-                Ok(started) => started?,
-                Err(_) => {
-                    // A GoodCRC or an abandoned transmission never reached
-                    // TX-end; recover the receiver and let the protocol
-                    // layer retry.
-                    critical_section::with(|_| {
-                        let phase = state.phase.load(Ordering::Relaxed);
-                        if phase == PHASE_ACK || phase == PHASE_TX {
-                            Self::abort_transfer(phase);
-                        }
-                    });
-                    return Err(Error::Timeout);
-                }
-            }
-        };
-        #[cfg(not(feature = "embassy"))]
-        let ticket = start.await?;
-
-        let done = poll_fn(|cx| {
-            state.waker.register(cx.waker());
-            if state.tx_done.load(Ordering::Acquire) == ticket {
-                Poll::Ready(())
-            } else {
+            let ticket = match ticket {
+                Some(ticket) => ticket,
+                None => match critical_section::with(|_| Self::try_start_transmit(sop, buf)) {
+                    TxStart::Started(started) => *ticket.insert(started),
+                    TxStart::Busy => return Poll::Pending,
+                    TxStart::HardReset => return Poll::Ready(Err(Error::HardReset)),
+                },
+            };
+            if state.tx_done.load(Ordering::Acquire) != ticket {
                 Poll::Pending
+            } else if state.tx_success.load(Ordering::Relaxed) {
+                Poll::Ready(Ok(()))
+            } else if Self::take_hard_reset() {
+                Poll::Ready(Err(Error::HardReset))
+            } else {
+                Poll::Ready(Err(Error::BufferError))
             }
         });
 
         #[cfg(feature = "embassy")]
         {
             let timeout = embassy_time::Duration::from_millis(TRANSFER_TIMEOUT_MS);
-            if embassy_time::with_timeout(timeout, done).await.is_err() {
-                let aborted = critical_section::with(|_| {
-                    let stuck = state.tx_done.load(Ordering::Relaxed) != ticket
-                        && state.phase.load(Ordering::Relaxed) == PHASE_TX;
-                    if stuck {
-                        Self::abort_transfer(PHASE_TX);
+            embassy_time::with_timeout(timeout, transfer).await.unwrap_or_else(|_| {
+                critical_section::with(|_| {
+                    let phase = state.phase.load(Ordering::Relaxed);
+                    if phase == PHASE_ACK || phase == PHASE_TX {
+                        Self::abort_transfer(phase);
                     }
-                    stuck
                 });
-                if aborted {
-                    return Err(Error::Timeout);
-                }
-            }
+                Err(Error::Timeout)
+            })
         }
         #[cfg(not(feature = "embassy"))]
-        done.await;
-
-        if state.tx_success.load(Ordering::Relaxed) {
-            Ok(())
-        } else if Self::take_hard_reset() {
-            Err(Error::HardReset)
-        } else {
-            Err(Error::BufferError)
-        }
+        transfer.await
     }
 }
 
